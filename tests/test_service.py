@@ -22,7 +22,10 @@ def test_import_master_and_export_empty_csv(tmp_path: Path) -> None:
     output = tmp_path / "empty.csv"
     assert export_csv(store, output) == 0
     with output.open(encoding="utf-8-sig", newline="") as file:
-        assert list(csv.reader(file))[0][0] == "管理番号"
+        assert list(csv.reader(file))[0][:2] == [
+            "フィルタ詳細(生データ)",
+            "集計・グルーピング詳細(生データ)",
+        ]
 
 
 def test_build_saved_report_and_apply(tmp_path: Path) -> None:
@@ -87,6 +90,9 @@ def test_collect_preserves_confirmed_mapping(tmp_path: Path) -> None:
             "reportFormat": "TABULAR",
             "reportType": {"type": "Account"},
             "detailColumns": ["A.NAME"],
+            "reportFilters": [{"column": "A.NAME", "operator": "equals", "value": "Acme"}],
+            "aggregates": ["RowCount"],
+            "groupingsDown": [{"name": "A.TYPE", "sortOrder": "Asc"}],
         }
     }
 
@@ -119,5 +125,17 @@ def test_collect_preserves_confirmed_mapping(tmp_path: Path) -> None:
 
     settings = Settings(tmp_path / "data.xlsx", tmp_path / "json", "")
     row = collect_one(settings, store, "00O000000000001", "Site", client_factory=Client)
-    assert row["SOQLドラフト"] == "SELECT ConfirmedName FROM Account"
+    assert row["SOQLドラフト"] == ("SELECT ConfirmedName FROM Account WHERE ConfirmedName = 'Acme'")
+    assert row["フィルタ詳細(生データ)"] == "A.NAME=equals:Acme"
+    assert row["集計・グルーピング詳細(生データ)"] == (
+        "aggregates: RowCount | groupingsDown: A.TYPE(Asc)"
+    )
     assert store.read_rows("FieldMappings")[0]["フィールドAPI名"] == "ConfirmedName"
+    output = tmp_path / "reports.csv"
+    assert export_csv(store, output) == 1
+    with output.open(encoding="utf-8-sig", newline="") as file:
+        exported = next(csv.DictReader(file))
+    assert exported["フィルタ詳細(生データ)"] == "A.NAME=equals:Acme"
+    assert exported["集計・グルーピング詳細(生データ)"] == (
+        "aggregates: RowCount | groupingsDown: A.TYPE(Asc)"
+    )

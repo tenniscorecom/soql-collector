@@ -11,12 +11,20 @@ from typing import Callable
 from openpyxl import load_workbook
 
 from soql_collector.settings import Settings
-from soql_collector.soql import Draft, compose_soql
+from soql_collector.soql import (
+    Draft,
+    _format_raw_aggregation,
+    _format_raw_cross_filters,
+    _format_raw_filters,
+    compose_soql,
+)
 from soql_collector.store import WorkbookStore, now_text, write_json
 
 REPORT_ID_RE = re.compile(r"\b(00O[a-zA-Z0-9]{12,15})\b")
 STATUSES = {"READY", "REVIEW", "BLOCKED", "INVALID", "ERROR", "PENDING"}
 CSV_HEADERS = (
+    "フィルタ詳細(生データ)",
+    "集計・グルーピング詳細(生データ)",
     "管理番号",
     "概要",
     "レポートID",
@@ -24,8 +32,6 @@ CSV_HEADERS = (
     "状態",
     "SOQLドラフト",
     "備考",
-    "フィルタ詳細(生データ)",
-    "集計・グルーピング詳細(生データ)",
 )
 
 
@@ -139,7 +145,17 @@ def collect_one(
     json_path = settings.json_dir / f"{report_id}.json"
     write_json(json_path, metadata)
     master = next((row for row in store.read_rows("Master") if row["レポートID"] == report_id), {})
+    raw_filters = _format_raw_filters(report_metadata.get("reportFilters", []))
+    raw_cross_filters = _format_raw_cross_filters(report_metadata.get("crossFilters", []))
+    if raw_cross_filters:
+        raw_filters = (
+            f"{raw_filters} | crossFilters: {raw_cross_filters}"
+            if raw_filters
+            else f"crossFilters: {raw_cross_filters}"
+        )
     row = {
+        "フィルタ詳細(生データ)": raw_filters,
+        "集計・グルーピング詳細(生データ)": _format_raw_aggregation(report_metadata),
         "管理番号": master.get("管理番号", ""),
         "概要": master.get("概要", ""),
         "レポートID": report_id,

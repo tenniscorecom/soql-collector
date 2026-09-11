@@ -122,29 +122,72 @@ def _filter_to_condition(field: str, field_type: str, operator: str, value: str)
     if operator in _COMPARISON_OPERATORS:
         return f"{field} {_COMPARISON_OPERATORS[operator]} {quoted}"
     if operator in _LIKE_OPERATORS and field_type in _STRING_TYPES:
-        raw = value if operator == "startsWith" else f"%{value}%"
+        raw = f"{value}%" if operator == "startsWith" else f"%{value}%"
         return f"{field} LIKE {_quote_value(raw, field_type)}"
     return None
 
 
 def _format_raw_filters(report_filters: list[object]) -> str:
-    return " | ".join(_format_raw_dict(item) for item in report_filters if isinstance(item, dict))
+    parts = []
+    for item in report_filters:
+        if not isinstance(item, dict):
+            parts.append("(不正な要素)")
+            continue
+        column = _stringify_filter_field(item.get("column"))
+        operator = _stringify_filter_field(item.get("operator"))
+        value = _stringify_filter_field(item.get("value"))
+        parts.append(f"{column}={operator}:{value}")
+    return "; ".join(parts)
 
 
 def _format_raw_cross_filters(cross_filters: list[object]) -> str:
-    return " | ".join(_format_raw_dict(item) for item in cross_filters if isinstance(item, dict))
+    return "; ".join(
+        _format_raw_dict(item) if isinstance(item, dict) else "(不正な要素)"
+        for item in cross_filters
+    )
 
 
 def _format_raw_dict(data: dict) -> str:
-    return ", ".join(f"{key}={value}" for key, value in data.items())
+    return ", ".join(
+        f"{key}=[{_format_raw_filters(value)}]"
+        if key == "criteria" and isinstance(value, list)
+        else f"{key}={_stringify_filter_field(value)}"
+        for key, value in data.items()
+    )
+
+
+def _stringify_filter_field(value: object) -> str:
+    return "" if value is None else str(value)
+
+
+def _format_raw_groupings(groupings: object) -> str:
+    if not isinstance(groupings, list):
+        return str(groupings)
+    parts = []
+    for grouping in groupings:
+        if not isinstance(grouping, dict):
+            parts.append(str(grouping))
+            continue
+        name = _stringify_filter_field(grouping.get("name"))
+        sort_order = grouping.get("sortOrder")
+        parts.append(f"{name}({sort_order})" if sort_order else name)
+    return ", ".join(parts)
 
 
 def _format_raw_aggregation(report_metadata: dict) -> str:
     parts = []
-    for key in ("aggregates", "groupingsDown", "groupingsAcross"):
-        value = report_metadata.get(key)
-        if value:
-            parts.append(f"{key}: {value}")
+    aggregates = report_metadata.get("aggregates")
+    if aggregates:
+        text = (
+            ", ".join(str(item) for item in aggregates)
+            if isinstance(aggregates, list)
+            else str(aggregates)
+        )
+        parts.append(f"aggregates: {text}")
+    for key in ("groupingsDown", "groupingsAcross"):
+        groupings = report_metadata.get(key)
+        if groupings:
+            parts.append(f"{key}: {_format_raw_groupings(groupings)}")
     return " | ".join(parts)
 
 

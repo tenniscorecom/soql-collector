@@ -12,6 +12,8 @@ from openpyxl import Workbook, load_workbook
 SHEETS: dict[str, tuple[str, ...]] = {
     "Master": ("管理番号", "概要", "レポートID", "URL"),
     "Reports": (
+        "フィルタ詳細(生データ)",
+        "集計・グルーピング詳細(生データ)",
         "管理番号",
         "概要",
         "レポートID",
