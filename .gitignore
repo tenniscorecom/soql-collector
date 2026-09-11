@@ -1,0 +1,28 @@
+# 機密情報・環境設定（絶対に git に含めない。example だけ含める）
+config.ini
+state.ini
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+
+# Config の補完スタブ（自動生成。エディタ補完専用なので git に含めない）
+typings/
+config.pyi
+src/config.pyi
+
+# ログ・出力・一時ファイル
+logs/
+# backup_dir にプロジェクト内を指定した場合の安全網
+backup/
+output/
+*.log
