@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from openpyxl import Workbook
 
 from soql_collector.cli import main
 
@@ -46,3 +47,48 @@ def test_note_mark_and_confirm_mapping(tmp_path: Path, monkeypatch: pytest.Monke
     assert main(["mark", "00O000000000001", "REVIEW"]) == 0
     assert main(["confirm-mapping", "Site", "Account", "A.NAME", "Name", "string"]) == 0
     assert len(store.read_rows("Notes")) == 2
+
+
+def test_import_master_falls_back_to_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "input" / "master.xlsx"
+    source.parent.mkdir()
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(["管理番号", "概要", "URL"])
+    worksheet.append(["1", "例", "https://example/00O000000000001/view"])
+    workbook.save(source)
+    (tmp_path / "config.ini").write_text(
+        "[FILES]\nMASTER_XLSX_PATH = ./input/master.xlsx\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["import-master"]) == 0
+
+    from soql_collector.store import WorkbookStore
+
+    store = WorkbookStore(tmp_path / "data" / "soql_collector.xlsx")
+    assert store.read_rows("Master")[0]["レポートID"] == "00O000000000001"
+
+
+def test_import_master_no_path_returns_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert main(["import-master"]) == 2
+
+
+def test_export_csv_falls_back_to_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "config.ini").write_text(
+        "[FILES]\nCSV_PATH = ./output/soql_drafts.csv\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["export-csv"]) == 0
+    assert (tmp_path / "output" / "soql_drafts.csv").exists()
+
+
+def test_export_csv_no_path_returns_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert main(["export-csv"]) == 2

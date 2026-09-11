@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     command = commands.add_parser("import-master", help="管理表を取り込む")
-    command.add_argument("path", type=Path)
+    command.add_argument("path", type=Path, nargs="?", default=None)
     command = commands.add_parser("collect", help="Report Describe を取得する")
     command.add_argument("--url")
     command.add_argument("--master", action="store_true")
@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("target")
     command.add_argument("--apply", action="store_true")
     command = commands.add_parser("export-csv", help="旧形式 CSV を出力する")
-    command.add_argument("path", type=Path)
+    command.add_argument("path", type=Path, nargs="?", default=None)
     return parser
 
 
@@ -64,7 +64,11 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings()
     store = WorkbookStore(settings.excel_path)
     if args.command == "import-master":
-        logger.info("%d 件取り込みました", import_master(store, args.path))
+        path = args.path or settings.master_xlsx_path
+        if not path:
+            logger.error("管理表のパスを指定してください（CLI引数または [FILES] MASTER_XLSX_PATH）")
+            return 2
+        logger.info("%d 件取り込みました", import_master(store, path))
         return 0
     if args.command == "collect":
         urls = [args.url] if args.url else [row["URL"] for row in store.read_rows("Master")]
@@ -142,6 +146,10 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("%s", draft.soql or "SOQL を自動組立できません")
         return 0 if draft.soql else 2
     if args.command == "export-csv":
-        export_csv(store, args.path)
+        path = args.path or settings.csv_path
+        if not path:
+            logger.error("CSV の出力先を指定してください（CLI引数または [FILES] CSV_PATH）")
+            return 2
+        export_csv(store, path)
         return 0
     return 2

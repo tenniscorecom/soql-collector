@@ -44,8 +44,14 @@
 ; INPUT_FOLDER = ./input
 ; INPUT_受注_EXCEL = 受注一覧.xlsx
 ; INPUT_請求_CSV = 請求data.csv
+; input（見る Excel）。省略時は import-master の CLI 引数が必須
+; MASTER_XLSX_PATH = ./input/master.xlsx
+
+; output（書く先）
 EXCEL_PATH = ./data/soql_collector.xlsx
 JSON_DIR = ./data/describe_json
+; エクスポート CSV の出力先。省略時は export-csv の CLI 引数が必須
+; CSV_PATH = ./output/soql_drafts.csv
 
 [EXCEL]
 HEADER_ROW = 1

@@ -123,7 +123,7 @@ def test_collect_preserves_confirmed_mapping(tmp_path: Path) -> None:
         def __exit__(self, *args: object) -> None:
             return None
 
-    settings = Settings(tmp_path / "data.xlsx", tmp_path / "json", "")
+    settings = Settings(tmp_path / "data.xlsx", tmp_path / "json", None, None, "")
     row = collect_one(settings, store, "00O000000000001", "Site", client_factory=Client)
     assert row["SOQLドラフト"] == ("SELECT ConfirmedName FROM Account WHERE ConfirmedName = 'Acme'")
     assert row["フィルタ詳細(生データ)"] == "A.NAME=equals:Acme"
