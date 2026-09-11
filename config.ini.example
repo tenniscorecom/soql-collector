@@ -44,14 +44,19 @@
 ; INPUT_FOLDER = ./input
 ; INPUT_受注_EXCEL = 受注一覧.xlsx
 ; INPUT_請求_CSV = 請求data.csv
-OUTPUT_FOLDER = ./output
+EXCEL_PATH = ./data/soql_collector.xlsx
+JSON_DIR = ./data/describe_json
 
 [EXCEL]
+HEADER_ROW = 1
 ; Excel の読み書き設定（シート名・見出し行など）。[CSV] と同格の「フォーマット
 ; ごとの設定」であり、[FILES] の「ファイルの場所」とは別物として分ける。
 ; キー名は [FILES] 側と揃える（例: INPUT_受注_EXCEL ⇔ INPUT_受注_SHEET）
 ; INPUT_受注_SHEET = Sheet1
 ; INPUT_受注_HEADER_ROW = 1
+
+[SF]
+CREDENTIAL_PREFIX =
 
 [BROWSER]
 ; ブラウザ自動操作を使う場合。HEADLESS = True で画面を出さずに動かす

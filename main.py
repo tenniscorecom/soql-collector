@@ -12,7 +12,7 @@ import logging
 from comken import comken_logger, debug
 from comken.exceptions import ComkenError
 
-from src.run import run
+from soql_collector.cli import main as cli_main
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def main() -> None:
     こうするとテンプレートの起動方法と業務コードの責務が混ざらない。
     """
     # 設定の読み取りも処理も src/run.py に書く。ここは呼ぶだけにしておく
-    run()
+    cli_main()
 
 
 if __name__ == "__main__":

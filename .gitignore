@@ -25,4 +25,5 @@ logs/
 # backup_dir にプロジェクト内を指定した場合の安全網
 backup/
 output/
+data/
 *.log
