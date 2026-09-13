@@ -92,3 +92,34 @@ def test_export_csv_falls_back_to_config(tmp_path: Path, monkeypatch: pytest.Mon
 def test_export_csv_no_path_returns_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     assert main(["export-csv"]) == 2
+
+
+def test_run_interactive_list_then_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from soql_collector.cli import run_interactive
+
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(["3", "", "", "0"])
+    monkeypatch.setattr("builtins.input", lambda *_args: next(inputs))
+    assert run_interactive() == 0
+
+
+def test_run_interactive_note_requires_memo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from soql_collector.cli import run_interactive
+
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(["5", "00O000000000001", "", "0"])
+    monkeypatch.setattr("builtins.input", lambda *_args: next(inputs))
+    assert run_interactive() == 0
+
+
+def test_main_with_empty_argv_runs_interactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(["0"])
+    monkeypatch.setattr("builtins.input", lambda *_args: next(inputs))
+    assert main([]) == 0

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 from soql_collector.service import (
@@ -18,6 +19,18 @@ from soql_collector.settings import load_settings
 from soql_collector.store import WorkbookStore, now_text
 
 logger = logging.getLogger(__name__)
+
+MENU_COMMANDS = (
+    ("import-master", "管理表を取り込む"),
+    ("collect", "Report Describe を取得する"),
+    ("list", "蓄積済み一覧を表示する"),
+    ("show", "レポート詳細を表示する"),
+    ("note", "メモを追記する"),
+    ("mark", "状態を変更する"),
+    ("confirm-mapping", "列マッピングを確認済みにする"),
+    ("build-soql", "SOQL ドラフトを組み立てる"),
+    ("export-csv", "旧形式 CSV を出力する"),
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,9 +70,98 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _prompt_argv(command: str) -> list[str] | None:
+    """対話メニューで選んだコマンドに必要な追加引数を聞く。入力が不足していれば None。"""
+    argv = [command]
+    if command == "import-master":
+        path = input("管理表のパス（Enterで config.ini の設定を使用）: ").strip()
+        if path:
+            argv.append(path)
+    elif command == "collect":
+        target = input("URL を1件指定（Enterで管理表の全件を対象にする）: ").strip()
+        if target:
+            argv += ["--url", target]
+        else:
+            argv.append("--master")
+        org = input("組織名（Enterで自動判定）: ").strip()
+        if org:
+            argv += ["--org", org]
+        if input("dry-run で実行しますか？ [y/N]: ").strip().lower() == "y":
+            argv.append("--dry-run")
+    elif command == "list":
+        status_choices = ", ".join(sorted(STATUSES))
+        status = input(f"状態で絞り込む（候補: {status_choices} / Enterで全件）: ").strip()
+        if status:
+            argv += ["--status", status]
+        org = input("組織で絞り込む（Enterで全件）: ").strip()
+        if org:
+            argv += ["--org", org]
+    elif command in ("show", "note", "mark", "build-soql"):
+        target = input("対象のレポートID または URL: ").strip()
+        if not target:
+            logger.error("対象の指定が必要です")
+            return None
+        argv.append(target)
+        if command == "note":
+            memo = input("メモ内容: ").strip()
+            if not memo:
+                logger.error("メモ内容が必要です")
+                return None
+            argv.append(memo)
+        elif command == "mark":
+            status = input(f"新しい状態（候補: {', '.join(sorted(STATUSES))}）: ").strip()
+            if status not in STATUSES:
+                logger.error("状態が不正です: %s", status)
+                return None
+            argv.append(status)
+        elif command == "build-soql":
+            answer = input("Excel に反映しますか？ [y/N]: ").strip().lower()
+            if answer == "y":
+                argv.append("--apply")
+    elif command == "confirm-mapping":
+        fields = ("サイト", "レポートタイプ", "列キー", "フィールドAPI名", "型")
+        values = [input(f"{field}: ").strip() for field in fields]
+        if not all(values):
+            logger.error("すべての項目の入力が必要です")
+            return None
+        argv += values
+    elif command == "export-csv":
+        path = input("出力先パス（Enterで config.ini の設定を使用）: ").strip()
+        if path:
+            argv.append(path)
+    return argv
+
+
+def run_interactive() -> int:
+    """引数なしで起動したときの対話メニュー。番号でコマンドを選ぶ。"""
+    while True:
+        logger.info("=== soql_collector ===")
+        for index, (_, description) in enumerate(MENU_COMMANDS, start=1):
+            logger.info("%d. %s", index, description)
+        logger.info("0. 終了")
+        choice = input("番号を選択してください: ").strip()
+        if choice in ("", "0"):
+            return 0
+        try:
+            command = MENU_COMMANDS[int(choice) - 1][0]
+        except (ValueError, IndexError):
+            logger.error("番号が不正です: %s", choice)
+            continue
+        argv = _prompt_argv(command)
+        if argv is None:
+            continue
+        code = main(argv)
+        if code != 0:
+            logger.error("[終了コード %d]", code)
+
+
 def main(argv: list[str] | None = None) -> int:
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        return run_interactive()
     args = build_parser().parse_args(argv)
     settings = load_settings()
     store = WorkbookStore(settings.excel_path)
