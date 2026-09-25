@@ -24,22 +24,13 @@
 | エラー名 | 意味 | 自分でできる対処 |
 |---|---|---|
 | `SheetNotFoundError` | 指定した名前のシートがない | Excel を開いて、下のシート名（タブ）が変わっていないか確認する。変えた場合は元に戻す |
-| `ExcelNameError` | Excel のシート名・テーブル名に関するエラー | - 既に存在する名前は避ける（シート／テーブル）- ``PY_`` 接頭辞は ``create_data_sheet`` 用なので ``create_sheet`` には付けない- 空白・数字始まり・セル参照のような名前はテーブル名に使わない |
-| `TableNotFoundError` | 指定したテーブルがシートにない | エラーに表示された既存テーブル名を確認する |
 | `ComkenFileNotFoundError` | ファイルまたはフォルダが見つからない | エラーに表示されたパスと名前が正しいか、存在するかを確認する |
 | `ExcelColumnNotFoundError` | Excel の列見出しが見つからない | Excel の1行目を確認する |
-| `MacroError` | Excel のマクロが失敗した | Excel をすべて閉じて再実行する。続く場合は管理者へ |
-| `ExcelHeaderError` | Excel の見出し行・テーブル定義に関するエラー | - Excel の1行目（見出し行）の空欄・重複を直す- テーブル定義範囲が狭すぎないか、データシートと表示用シートの取り違えがないか確認する |
-| `ExcelUsageError` | Excel の使い方に反する操作をした | エラーに表示された操作名・見出し数・拡張子を確認する。- ``read_only=True`` への書き込みは read_only=False で開き直す- データシート／表示用シートの API は ``Excel`` クラスのドキュメントを参照する |
 
 ## Access のエラー
 
 | エラー名 | 意味 | 対処 |
 |---|---|---|
-| `AccessBackupError` | 元 DB を開く前のバックアップに失敗した | 保存先の空き容量・書き込み権限・元 DB の読み取り権限を確認する |
-| `AccessLocalCopyError` | Access ファイルを一時フォルダへコピーできない | 使用状況・読み取り権限・空き容量を確認する |
-| `AccessRoutineError` | Access マクロまたは VBA の実行に失敗した | 表示された名前と Access 側の内容を確認する |
-| `AccessSourceNotFoundError` | テーブルまたはクエリが見つからない | エラーに表示された存在する名前を確認する |
 | `PermissionError` | ファイルが誰かに開かれている | 自分や他の人がそのファイルを開いていないか確認して閉じる |
 
 ---
@@ -51,14 +42,7 @@
 | `FileNotFoundError` | ファイルが見つからない | ファイルの置き場所と名前を確認する。「今日の日付のファイル」を探す処理なら、今日のファイルが作られているか確認する |
 | `TimeoutError` | ダウンロードが終わらない | ネットワークの状態を確認して再実行する |
 | `UnsupportedFileSuffixError` | 対応外の拡張子が指定された | CSV / Excel の対応する拡張子のファイルを指定する |
-| `EncodingDetectionError` | CSV の文字コードを判定できない | CSV の保存形式を確認し、管理者へ連絡する |
-| `CSVHeaderError` | CSV の見出し行に関するエラー | - 見出し行を追加するか、ヘッダーなし CSV なら ``columns`` を指定する- 1行目にある空欄・重複した見出しを直す- 新規 CSV に書き出すときは ``CSV(columns=[...])`` で列を指定する |
-| `CSVRowLengthError` | CSV のデータ行の列数が見出し数と一致しない | 表示された行の区切り文字と値の数を確認する |
-| `KeyColumnNotFoundError` | 比較に使うキー列が見つからない | Excel・CSV の列名を確認する |
 | `InvalidColumnError` | 列の指定が正しくない（打ち間違いなど） | 列は番号（1, 2, …）か列記号（"A", "AA"）で指定する |
-| `ConfigCreatedFromExampleError` | config.ini が無かったので example から作った | 作られた config.ini の値を書き換えて、もう一度実行する |
-| `ConfigLowerCaseNameError` | config.ini のセクション名・キー名に小文字がある | 表示された名前を大文字に書き換える（`[files]` → `[FILES]`） |
-| `ConfigSectionNotFoundError` | config.ini の必要な節がない | 表示されたセクション名を config.ini に追加する |
 
 ---
 
@@ -71,11 +55,11 @@
 | 分類名 | まとめるエラー |
 |---|---|
 | `ComkenError` | comken が出す固有エラー全体 |
-| `ExcelError` | Excel に関するエラー |
-| `AccessError` | Access に関するエラー |
-| `CSVError` | CSV に関するエラー |
-| `ColumnNotFoundError` | Excel・CSV・データ比較で列が見つからないエラー |
-| `ConfigError` | config.ini に関するエラー |
+| `ExcelError` | Excel に関するエラー。具体的な状況はメッセージに出る | メッセージに書かれた対処に従う。直らなければ画面全体のスクリーンショットを管理者へ |
+| `AccessError` | Access に関するエラー。具体的な状況はメッセージに出る | メッセージに書かれた対処に従う。直らなければ画面全体のスクリーンショットを管理者へ |
+| `CSVError` | CSV に関するエラー。具体的な状況はメッセージに出る | メッセージに書かれた対処に従う。直らなければ画面全体のスクリーンショットを管理者へ |
+| `ColumnNotFoundError` | Excel・CSV・データ比較で列が見つからないエラー。具体的な状況はメッセージに出る | メッセージに書かれた対処に従う。直らなければ画面全体のスクリーンショットを管理者へ |
+| `ConfigError` | config.ini に関するエラー。具体的な状況はメッセージに出る | メッセージに書かれた対処に従う。直らなければ画面全体のスクリーンショットを管理者へ |
 
 ---
 
@@ -94,9 +78,7 @@
 
 | エラー名 | 意味 | 対処 |
 |---|---|---|
-| `OutlookError` | Outlook 関連エラーの分類 | 下の個別エラーを確認する |
-| `ClassicOutlookNotAvailableError` | Classic Outlook を利用できない | Classic Outlook を使うか管理者に相談する |
-| `OutlookFolderNotFoundError` | 指定したフォルダがない | エラーに表示された存在するフォルダ名を確認する |
+| `OutlookError` | Outlook 関連エラーの分類。具体的な状況はメッセージに出る | メッセージに書かれた対処に従う。直らなければ画面全体のスクリーンショットを管理者へ |
 
 ---
 
