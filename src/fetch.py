@@ -5,7 +5,9 @@
 1. 管理番号 → 管理表の行（無ければ呼び出し側の ``cli`` でエラー）
 2. URL から ``site_for(url)`` で接続先を決め、 ``with site() as client:`` で開く
 3. ``metadata = client.report.describe(report_id)`` （レポートの describe）
-4. ``主オブジェクト名 = metadata["reportMetadata"]["reportType"]["type"]``
+4. ``主オブジェクト名 = client.report.main_object(metadata)`` 。
+   ``$`` / ``@`` を含まない値はそのまま返し、 含む値は候補を ``describe_object``
+   で順に試して通った名前を返す（全滅なら ``None`` ）。
    ``client.describe_object(主オブジェクト名)`` が HTTP エラー
    （``SalesforceRequestError``）や ``ValueError`` になったら、 主オブジェクトは
    「特定できず」として警告に残し、 レポート describe だけで続ける。 401 /
@@ -399,7 +401,7 @@ def _fetch_one(
                 warnings.append(object_error)
             column_map = fields_table.to_rows()
 
-            main_object_name = _main_object_name(metadata)
+            main_object_name = client.report.main_object(metadata)
 
             # 主オブジェクト
             if main_object_name:
@@ -487,25 +489,6 @@ def _fetch_one(
         warnings=tuple(warnings),
         error=None,
     )
-
-
-def _main_object_name(metadata: dict[str, Any]) -> str | None:
-    """``metadata["reportMetadata"]["reportType"]["type"]`` を取り出す。
-
-    レポートタイプ（カスタムレポートタイプなど）は ``type`` を持たないことが
-    あるため、その場合は ``None``。comken の ``ReportAPI.describe`` の戻り値
-    と同じ読み方。
-    """
-    if not isinstance(metadata, dict):
-        return None
-    report_metadata = metadata.get("reportMetadata")
-    if not isinstance(report_metadata, dict):
-        return None
-    report_type = report_metadata.get("reportType")
-    if not isinstance(report_type, dict):
-        return None
-    name = report_type.get("type")
-    return name if isinstance(name, str) and name else None
 
 
 def _collect_related_object_names(describe: dict[str, Any], *, exclude: str | None) -> list[str]:

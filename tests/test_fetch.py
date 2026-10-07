@@ -13,7 +13,6 @@ from src.fetch import (
     _apply_related_limit,
     _collect_related_object_names,
     _fetch_object_cached,
-    _main_object_name,
     _slim_object,
     _slim_report,
     run_fetch,
@@ -28,9 +27,16 @@ DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
 
 class _ReportStub:
-    def __init__(self, describe: dict, fields: tuple[Table, str | None]) -> None:
+    def __init__(
+        self,
+        describe: dict,
+        fields: tuple[Table, str | None],
+        *,
+        main_object: str | None = None,
+    ) -> None:
         self._describe = describe
         self._fields = fields
+        self._main_object = main_object
 
     def describe(self, report_id: str) -> dict:
         self.last_report_id = report_id
@@ -38,6 +44,30 @@ class _ReportStub:
 
     def describe_fields_with_object_status(self, metadata: dict) -> tuple[Table, str | None]:
         return self._fields
+
+    def main_object(self, metadata: dict) -> str | None:
+        """comken ``ReportAPI.main_object`` 互換の偽物。
+
+        コンストラクタで ``main_object`` が指定されていればそれを返す。
+        ``None`` のときは ``reportType.type`` をそのまま返す（ ``$`` /
+        ``@`` 付きでも解決せず、 生文字列をそのまま返す）。
+        comken の ``CustomEntity$`` 展開ロジックは comken 側のテストで
+        検証済みのため、ここでは複製しない。
+        """
+        if self._main_object is not None:
+            return self._main_object
+        if not isinstance(metadata, dict):
+            return None
+        report_metadata = metadata.get("reportMetadata")
+        if not isinstance(report_metadata, dict):
+            return None
+        report_type = report_metadata.get("reportType")
+        if not isinstance(report_type, dict):
+            return None
+        object_name = report_type.get("type", "")
+        if isinstance(object_name, str) and object_name:
+            return object_name
+        return None
 
 
 class _FakeClient:
@@ -47,10 +77,12 @@ class _FakeClient:
         fields: tuple[Table, str | None],
         object_describes: dict[str, dict] | None = None,
         errors: dict[str, BaseException] | None = None,
+        *,
+        main_object: str | None = None,
     ) -> None:
-        self.report = _ReportStub(describe, fields)
         self._object_describes = object_describes or {}
         self._errors = errors or {}
+        self.report = _ReportStub(describe, fields, main_object=main_object)
         self.describe_object_calls: list[str] = []
 
     def describe_object(self, name: str) -> dict:
@@ -376,6 +408,44 @@ def test_related_max_overflow_warns(tmp_path: Path) -> None:
     assert "2" in warning
     assert "3 件" in warning
     assert "Lead" in warning and "User" in warning and "Campaign" in warning
+
+
+def test_main_object_resolves_custom_entity_dollar_type(tmp_path: Path) -> None:
+    """``reportType.type`` が ``CustomEntity$Project__c`` のとき、
+    ``client.report.main_object(metadata)`` が ``Project__c`` を返し、
+    JSON の ``主オブジェクト`` も ``Project__c`` に、 ``objects`` にも
+    ``Project__c`` が入る。関連はその ``AccountId`` から ``Account`` が続く。
+    """
+    main = _main_describe("Project__c", fields_map={"AccountId": ["Account"]})
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "CustomEntity$Project__c"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["Project__c.Name"],
+        }
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=metadata,
+        fields=_make_fields(),
+        object_describes={
+            "Project__c": main,
+            "Account": _main_describe("Account"),
+        },
+        main_object="Project__c",
+    )
+    site_for, _ = _site_for(client)
+    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    # 主オブジェクトが解決済みで、 objects に Project__c が入る
+    assert payload["主オブジェクト"] == "Project__c"
+    assert "Project__c" in payload["objects"]
+    # 関連オブジェクトも取れている
+    assert "Account" in payload["objects"]
+    # CustomEntity$Project__c という生文字列が主オブジェクト欄にも objects にも残らない
+    assert payload["主オブジェクト"] != "CustomEntity$Project__c"
+    assert "CustomEntity$Project__c" not in payload["objects"]
 
 
 def test_main_object_describe_failure_yields_null(tmp_path: Path) -> None:
@@ -709,17 +779,6 @@ def test_existing_json_not_corrupted_on_failure(tmp_path: Path) -> None:
 
 
 # ── ヘルパー関数 ─────────────────────────────────────────────────────────
-
-
-def test_main_object_name_extracts_type() -> None:
-    metadata = {"reportMetadata": {"reportType": {"type": "Opportunity"}}}
-    assert _main_object_name(metadata) == "Opportunity"
-
-
-def test_main_object_name_missing_returns_none() -> None:
-    assert _main_object_name({}) is None
-    assert _main_object_name({"reportMetadata": {}}) is None
-    assert _main_object_name({"reportMetadata": {"reportType": {}}}) is None
 
 
 def test_collect_related_object_names_excludes_main_and_dedups() -> None:
