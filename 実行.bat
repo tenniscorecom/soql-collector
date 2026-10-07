@@ -15,7 +15,7 @@ if not exist "%PYTHON_LIBRARY%\comken\__init__.py" (
   popd & exit /b 1
 )
 :run
-python main.py %*
+python main.py
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 if not "%EXIT_CODE%"=="0" echo [失敗] 終了コード %EXIT_CODE%

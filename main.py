@@ -2,6 +2,7 @@
 main.py — エントリポイント
 
 このプロジェクトの入口。`実行.bat` か `python main.py` で実行する。
+取るレポートは管理表の「有効」列が ○ の行で決まる。引数は使わない。
 
 処理の本体は src/ 以下に書き、ここでは「実行 → エラーの受け止め」だけを行う。
 社内 RPA 基盤から動かす場合は、下の「社内 RPA 基盤から実行する場合」を参照。
@@ -25,7 +26,7 @@ def main() -> None:
     """
     # 設定の読み取りも処理も src/run.py に書く。ここは呼ぶだけにしておく
     code = run()
-    # CLI の終了コードを捨てない（ ``実行.bat`` / RPA が受け取れるようにする）
+    # ``run()`` の終了コードを捨てない（ ``実行.bat`` / RPA が受け取れるようにする）
     if code:
         raise SystemExit(code)
 
@@ -52,7 +53,7 @@ if __name__ == "__main__":
         logger.error("処理を中断しました: %s", e)
         raise
     except SystemExit:
-        # main() が CLI の終了コードを SystemExit で上げるのでそのまま伝搬させる
+        # main() が終了コードを SystemExit で上げるのでそのまま伝搬させる
         raise
     except Exception:
         logger.exception("予期しないエラーが発生しました")

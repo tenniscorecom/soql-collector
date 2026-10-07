@@ -1,14 +1,17 @@
 """OUTPUT_DIR の ``{管理番号}.json`` を読み、SOQL 組み立て支援の CSV を作る。
 
 AI にチャットで SOQL を組み立ててもらうための小さな表を、``fetch`` が書いた
-JSON から組み立てる。**入力は OUTPUT_DIR の JSON だけ**で、Salesforce には
-接続しない。出力も同じ ``OUTPUT_DIR``。
+JSON と ``OUTPUT_DIR/objects/{オブジェクト名}.json`` から組み立てる。
+**入力は OUTPUT_DIR の JSON だけ**で、Salesforce には接続しない。
+出力も同じ ``OUTPUT_DIR``。
 
 書き出す CSV:
 
 - ``対応表_{管理番号}.csv`` … 1 ID 分のレポート1列（ID ごと）
 - ``対応表.csv`` … ``OUTPUT_DIR`` の全 JSON を連結（管理番号昇順）
-- ``項目表.csv`` … 全 JSON を集めた「オブジェクト×項目」1 枚
+- ``項目表.csv`` … 全 JSON と ``OUTPUT_DIR/objects/*.json`` を集めた
+  「オブジェクト×項目」1 枚。 同じ名前がどちらにもあれば ``取得日時`` が
+  新しい方が勝つ
 
 すべて UTF-8 BOM つき + CRLF。一時ファイル経由で書く（``atomic_write``）。
 comken の ``CSV`` クラスで書き出す（``comken.toolbox.csv.CSV``）。
@@ -32,6 +35,9 @@ CSV_ENCODING = "utf-8-sig"
 
 # 1 つの CSV ファイルあたりの選択肢の最大値数。超えたら末尾に ``…`` を付ける
 PICKLIST_LIMIT = 30
+
+# ``[OBJECTS] NAMES`` 由来のオブジェクト JSON を入れるサブフォルダ
+OBJECT_SUBDIR = "objects"
 
 
 # 対応表の列名
@@ -94,6 +100,8 @@ def run_tables(
             ``tables`` サブコマンドの側で「先に fetch してください」と扱う。
     """
     payloads, skipped = _read_all_jsons(output_dir)
+    object_payloads, object_skipped = _read_object_jsons(output_dir)
+    skipped = tuple(skipped) + tuple(object_skipped)
 
     # per-ID CSV は ``only_keys`` で絞った payloads だけ対象にする
     if only_keys is not None:
@@ -120,7 +128,7 @@ def run_tables(
     _write_csv(correspondence_path, CORRESPONDENCE_COLUMNS, all_correspondence_rows)
     wrote.append(correspondence_path)
 
-    field_rows = _build_field_table_rows(sorted_payloads)
+    field_rows = _build_field_table_rows(sorted_payloads, object_payloads)
     field_path = output_dir / "項目表.csv"
     _write_csv(field_path, FIELD_TABLE_COLUMNS, field_rows)
     wrote.append(field_path)
@@ -143,6 +151,7 @@ def _read_all_jsons(output_dir: Path) -> tuple[list[tuple[str, dict]], list[Path
 
     壊れた JSON・トップレベルが dict でないもの・ ``管理番号`` が無いものは
     そのファイルだけ飛ばして警告ログを出す（他の ID は止めない）。
+    ``OUTPUT_DIR/objects/`` 配下は読まない（トップレベルの ``*.json`` だけ）。
     """
     payloads: list[tuple[str, dict]] = []
     skipped: list[Path] = []
@@ -165,6 +174,39 @@ def _read_all_jsons(output_dir: Path) -> tuple[list[tuple[str, dict]], list[Path
             skipped.append(path)
             continue
         payloads.append((key, data))
+    return payloads, skipped
+
+
+def _read_object_jsons(output_dir: Path) -> tuple[list[tuple[str, dict]], list[Path]]:
+    """``OUTPUT_DIR/objects/*.json`` を全部読み、 ``(オブジェクト名, payload)`` と
+    読み込めなかったファイル一覧を返す。
+
+    存在しないときは空タプルを返す（エラーにしない）。 壊れた JSON・
+    トップレベルが dict でないもの・ ``オブジェクト`` が無いものは
+    そのファイルだけ飛ばして警告ログを出す（他の名前は止めない）。
+    """
+    payloads: list[tuple[str, dict]] = []
+    skipped: list[Path] = []
+    objects_dir = output_dir / OBJECT_SUBDIR
+    if not objects_dir.exists():
+        return payloads, skipped
+    for path in sorted(objects_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("JSON を読み込めないので飛ばします: %s (%s)", path, exc)
+            skipped.append(path)
+            continue
+        if not isinstance(data, dict):
+            logger.warning("JSON のトップレベルが dict ではないので飛ばします: %s", path)
+            skipped.append(path)
+            continue
+        name = data.get("オブジェクト")
+        if not isinstance(name, str) or not name:
+            logger.warning("JSON に オブジェクト が無いので飛ばします: %s", path)
+            skipped.append(path)
+            continue
+        payloads.append((name, data))
     return payloads, skipped
 
 
@@ -260,14 +302,19 @@ def _build_field_lookup(describe: object) -> dict[str, dict[str, str]]:
 
 def _build_field_table_rows(
     payloads: Sequence[tuple[str, dict]],
+    object_payloads: Sequence[tuple[str, dict]] = (),
 ) -> list[dict[str, str]]:
     """全 JSON から項目表の行を作る（``オブジェクト × 項目`` のフラット表）。
 
-    同じオブジェクトが複数の JSON に出ても 1 回だけ。**``取得日時`` が新しい方**
-    の describe を使う。並びは「``objects`` のキー名の昇順 → describe の
+    ``OUTPUT_DIR/objects/*.json`` もここで一緒に集約する。 同じオブジェクトが
+    レポートの ``objects`` と ``objects/*.json`` の両方にあれば
+    **``取得日時`` が新しい方** の describe を使う （レポート側・個別側を
+    区別しない）。並びは「``objects`` のキー名の昇順 → describe の
     ``fields`` の並び順」のまま。
     """
     merged: dict[str, tuple[str, dict]] = {}
+
+    # レポート JSON の ``objects`` 側
     for _, payload in payloads:
         objects = payload.get("objects")
         if not isinstance(objects, dict):
@@ -282,6 +329,20 @@ def _build_field_table_rows(
             existing = merged.get(obj_name)
             if existing is None or timestamp_str > existing[0]:
                 merged[obj_name] = (timestamp_str, describe)
+
+    # ``OUTPUT_DIR/objects/*.json`` 側（ ``object`` キーを持つ）
+    for _, payload in object_payloads:
+        describe = payload.get("object")
+        name = payload.get("オブジェクト")
+        if not isinstance(name, str) or not name:
+            continue
+        if not isinstance(describe, dict):
+            continue
+        timestamp = payload.get("取得日時")
+        timestamp_str = timestamp if isinstance(timestamp, str) else ""
+        existing = merged.get(name)
+        if existing is None or timestamp_str > existing[0]:
+            merged[name] = (timestamp_str, describe)
 
     rows: list[dict[str, str]] = []
     for obj_name in sorted(merged.keys()):

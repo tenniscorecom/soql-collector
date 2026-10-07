@@ -650,3 +650,145 @@ def test_tables_logs_counts_and_skipped_only(
             assert field_token not in message, (
                 f"describe の中身 {field_token!r} が漏れています: {message}"
             )
+
+
+# ── objects/*.json ──────────────────────────────────────────────────────
+
+
+def _write_object_json(output_dir: Path, name: str, payload: dict) -> Path:
+    """``OUTPUT_DIR/objects/{Name}.json`` を書く（ テスト用 ）。"""
+    objects_dir = output_dir / "objects"
+    objects_dir.mkdir(parents=True, exist_ok=True)
+    path = objects_dir / f"{name}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _make_object_payload(
+    name: str,
+    *,
+    label: str = "オブジェクト",
+    fields: list[dict] | None = None,
+    timestamp: str = "2024-01-01T00:00:00",
+) -> dict:
+    """``objects/{Name}.json`` 用の payload を作る。"""
+    fields = fields if fields is not None else [{"name": "Name", "label": "名前", "type": "string"}]
+    return {
+        "取得日時": timestamp,
+        "オブジェクト": name,
+        "object": {"name": name, "label": label, "custom": False, "fields": fields},
+    }
+
+
+def test_field_table_includes_objects_subdirectory(tmp_path: Path) -> None:
+    """``objects/*.json`` のオブジェクトが項目表に集約される。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    _write_object_json(
+        output,
+        "Account",
+        _make_object_payload(
+            "Account",
+            label="取引先",
+            fields=[
+                {"name": "Name", "label": "取引先名", "type": "string"},
+                {"name": "Industry", "label": "業種", "type": "picklist"},
+            ],
+        ),
+    )
+
+    run_tables(output)
+
+    _, rows = _read_csv(output / "項目表.csv")
+    account_rows = [r for r in rows if r["オブジェクト"] == "Account"]
+    assert len(account_rows) == 2
+    field_names = {r["項目API名"] for r in account_rows}
+    assert field_names == {"Name", "Industry"}
+
+
+def test_field_table_prefers_newer_timestamp_across_report_and_object(
+    tmp_path: Path,
+) -> None:
+    """同じオブジェクトがレポート JSON と ``objects/*.json`` の両方にあれば、
+    ``取得日時`` が新しい方の describe が使われる。
+    """
+    output = tmp_path / "output"
+    output.mkdir()
+
+    # レポート JSON 側 （ 古 ）
+    payload_report = _make_correspondence_payload(
+        "1001", main_object="Opportunity", timestamp="2024-01-01T00:00:00"
+    )
+    payload_report["objects"]["Opportunity"]["label"] = "古いラベル"
+    payload_report["objects"]["Opportunity"]["fields"] = [
+        {"name": "OldOnly", "label": "古い項目", "type": "string"},
+    ]
+    _write_json(output, payload_report)
+
+    # objects/ 側（ 新 ）
+    _write_object_json(
+        output,
+        "Opportunity",
+        _make_object_payload(
+            "Opportunity",
+            label="新しいラベル",
+            fields=[{"name": "NewOnly", "label": "新しい項目", "type": "string"}],
+            timestamp="2024-12-01T00:00:00",
+        ),
+    )
+
+    run_tables(output)
+
+    _, rows = _read_csv(output / "項目表.csv")
+    opp_rows = [r for r in rows if r["オブジェクト"] == "Opportunity"]
+    labels = {r["オブジェクト表示名"] for r in opp_rows}
+    assert labels == {"新しいラベル"}
+    field_names = {r["項目API名"] for r in opp_rows}
+    assert field_names == {"NewOnly"}
+
+
+def test_objects_subdirectory_not_read_as_report_json(tmp_path: Path) -> None:
+    """``objects/`` 配下の JSON はレポート JSON として読まれない
+    （ 対応表には行が出ない ）。
+    """
+    output = tmp_path / "output"
+    output.mkdir()
+
+    # レポート JSON 側（ `管理番号` 付き ）
+    _write_json(output, _make_correspondence_payload("1001", main_object="Opportunity"))
+
+    # objects/ 側（ `オブジェクト` 付き ）
+    _write_object_json(
+        output,
+        "Account",
+        _make_object_payload(
+            "Account",
+            fields=[{"name": "Name", "label": "名前", "type": "string"}],
+        ),
+    )
+
+    run_tables(output)
+
+    # 対応表はレポート側 のみ
+    _, corr_rows = _read_csv(output / "対応表.csv")
+    keys = {r["管理番号"] for r in corr_rows}
+    assert keys == {"1001"}
+    # Account は項目表には出る （ objects/ は正しく拾われる ）
+    _, field_rows = _read_csv(output / "項目表.csv")
+    objects_in_field = {r["オブジェクト"] for r in field_rows}
+    assert "Account" in objects_in_field
+    assert "Opportunity" in objects_in_field
+
+
+def test_objects_subdirectory_handles_missing_folder(tmp_path: Path) -> None:
+    """``OUTPUT_DIR/objects/`` が無いときは普通に動く。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    _write_json(output, _make_correspondence_payload("1001", main_object="Opportunity"))
+
+    outcome = run_tables(output)
+
+    # エラーにならず、 既存の挙動と同じく ``対応表.csv`` / ``項目表.csv`` を作る
+    assert (output / "対応表.csv").exists()
+    assert (output / "項目表.csv").exists()
+    assert outcome.skipped == ()

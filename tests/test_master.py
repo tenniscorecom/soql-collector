@@ -152,7 +152,7 @@ def test_is_enabled_aligned_with_downloader() -> None:
     """``_is_enabled`` は英語の ``"true"`` と ``Salesforceレポートダウンローダー`` の
     ``_to_bool`` と同じ判定を返す。空白つき ``" ○ "`` のような表記も吸収する。
     # なぜ: 「有効」判定の仕様はダウンローダー側と1つしか持たない
-    # べきで、ここの判定が違うと fetch --all の対象が食い違うため
+    # べきで、ここの判定が違うと取れる行が食い違うため
     """
     # 真
     assert _is_enabled("○") is True

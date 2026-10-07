@@ -98,6 +98,8 @@ def _settings(tmp_path: Path, related_max: int = 40) -> Settings:
         output_dir=tmp_path / "output",
         related_max=related_max,
         credential_prefix="",
+        objects_names=(),
+        objects_org_id=None,
     )
 
 
@@ -520,7 +522,7 @@ def test_partial_failure_exit_code_is_one(tmp_path: Path) -> None:
 
 
 def test_dry_run_does_not_open_site(tmp_path: Path) -> None:
-    """``--dry-run`` は ``site`` を一度も開かず、JSON を書かない。"""
+    """``run_fetch(dry_run=True)`` は ``site`` を一度も開かず、JSON を書かない。"""
     output = _output_dir_exists(tmp_path)
     entry = MasterEntry(
         key="1", summary="顧客一覧", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True
@@ -655,207 +657,7 @@ def test_json_write_oserror_marks_id_failed(tmp_path: Path) -> None:
     assert files == {"ok.json", "ok2.json"}
 
 
-# ── fetch → tables の接続（ ``_cmd_fetch`` 経由） ─────────────────────────
-
-
-def _build_settings(tmp_path: Path) -> Settings:
-    """CLI テスト用の ``Settings`` を作る（ ``output_dir`` を含む）。"""
-    return Settings(
-        master_xlsx_path=tmp_path / "master.xlsx",
-        output_dir=tmp_path / "output",
-        related_max=40,
-        credential_prefix="",
-    )
-
-
-def _write_empty_master(tmp_path: Path, rows: list[dict] | None = None) -> None:
-    """管理表 xlsx を ``tmp_path/master.xlsx`` に置く（既定は 0 行）。
-    ``rows`` を渡すとその行も書き込む（ ``fetch --dry-run`` の対象用）。
-    """
-    from openpyxl import Workbook
-    from openpyxl.worksheet.table import Table, TableStyleInfo
-
-    rows = rows or []
-    path = tmp_path / "master.xlsx"
-    workbook = Workbook()
-    active = workbook.active
-    if active is not None:
-        workbook.remove(active)
-    sheet = workbook.create_sheet("PY_管理表")
-    headers = [
-        "ID",
-        "グループ名",
-        "担当者",
-        "概要",
-        "Salesforce URL",
-        "保存先",
-        "有効",
-        "0件あり",
-        "備考",
-    ]
-    sheet.append(headers)
-    for row in rows:
-        sheet.append([row.get(col, "") for col in headers])
-    table = Table(displayName="PY_T_ReportEntry", ref=f"A1:I{len(rows) + 1}")
-    table.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium2",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    sheet.add_table(table)
-    workbook.save(path)
-
-
-def test_cmd_fetch_calls_tables_only_for_ok_ids(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``fetch`` のあと、 ``_cmd_fetch`` が ``run_tables`` を呼び、
-    成功した ID の ``対応表_{管理番号}.csv`` だけ作る。失敗した ID の
-    既存 CSV はそのまま残る。
-    """
-    from src import cli as cli_module
-    from src.fetch import FetchOutcome
-
-    _write_empty_master(
-        tmp_path,
-        [
-            {
-                "ID": "good",
-                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
-                "有効": "○",
-            },
-            {
-                "ID": "bad",
-                "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view",
-                "有効": "○",
-            },
-        ],
-    )
-    output = _output_dir_exists(tmp_path)
-    # 失敗した ID の既存 CSV （fetch 前に手動で作ったもの）
-    bad_csv = output / "対応表_bad.csv"
-    bad_csv.write_text("既存のまま", encoding="utf-8")
-
-    # 成功 1 件・失敗 1 件を返す偽 ``run_fetch`` に差し替える
-    good = MasterEntry(key="good", summary="", url=f"{DOMAIN}/00O5g00000AAAAA/view", enabled=True)
-    bad = MasterEntry(
-        key="bad",
-        summary="",
-        url=f"{DOMAIN}/00O5g00000BBBBB/view",
-        enabled=True,
-    )
-
-    good_payload_path = output / "good.json"
-    import json as _json
-
-    good_payload_path.write_text(
-        _json.dumps(
-            {
-                "管理番号": "good",
-                "概要": "",
-                "レポートID": "00O000000000001",
-                "URL": "",
-                "取得日時": "",
-                "主オブジェクト": "Opportunity",
-                "report": {},
-                "objects": {
-                    "Opportunity": {
-                        "name": "Opportunity",
-                        "label": "商談",
-                        "fields": [{"name": "Name", "label": "商談名", "type": "string"}],
-                    }
-                },
-                "column_map": [
-                    {
-                        "列キー": "Opp.Name",
-                        "表示名": "商談名",
-                        "対応フィールドAPI名": "Name",
-                        "型": "string",
-                        "備考": "",
-                    }
-                ],
-                "warnings": [],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    def fake_run_fetch(settings, entries, *, dry_run=False, site_for=None):
-        return [
-            FetchOutcome(
-                entry=good,
-                status="ok",
-                output_path=good_payload_path,
-                warnings=(),
-                error=None,
-            ),
-            FetchOutcome(
-                entry=bad,
-                status="failed",
-                output_path=None,
-                warnings=(),
-                error="何かで失敗",
-            ),
-        ]
-
-    monkeypatch.setattr(cli_module, "run_fetch", fake_run_fetch)
-    settings = _build_settings(tmp_path)
-    monkeypatch.setattr(cli_module, "load_settings", lambda: settings)
-    monkeypatch.chdir(tmp_path)
-
-    args = cli_module.build_parser().parse_args(["fetch", "good", "bad"])
-    exit_code = cli_module._cmd_fetch(settings, args)
-    # 失敗 ID が 1 件あるので exit code は 1
-    assert exit_code == 1
-
-    # 成功 ID の CSV は作られ、 失敗 ID の既存 CSV は残る
-    assert (output / "対応表_good.csv").exists()
-    assert bad_csv.read_text(encoding="utf-8") == "既存のまま"
-    # 全体対応表・項目表も作られる
-    assert (output / "対応表.csv").exists()
-    assert (output / "項目表.csv").exists()
-
-
-def test_cmd_fetch_dry_run_does_not_call_tables(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``fetch --dry-run`` は ``run_tables`` を呼ばず、 CSV も作らない。"""
-    from src import cli as cli_module
-
-    _write_empty_master(
-        tmp_path,
-        [
-            {
-                "ID": "1001",
-                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
-                "有効": "○",
-            }
-        ],
-    )
-    output = _output_dir_exists(tmp_path)
-    called = {"count": 0}
-
-    def fake_run_tables(output_dir, *, only_keys=None):
-        called["count"] += 1
-        from src.tables import TableOutcome
-
-        return TableOutcome(wrote=(), skipped=())
-
-    monkeypatch.setattr(cli_module, "run_tables", fake_run_tables)
-    settings = _build_settings(tmp_path)
-    monkeypatch.setattr(cli_module, "load_settings", lambda: settings)
-    monkeypatch.chdir(tmp_path)
-
-    args = cli_module.build_parser().parse_args(["fetch", "1001", "--dry-run"])
-    assert cli_module._cmd_fetch(settings, args) == 0
-
-    # ``run_tables`` は呼ばれていない
-    assert called["count"] == 0
-    # CSV も作られていない
-    assert list(output.iterdir()) == []
+# ── run 経由のテストは tests/test_run.py 側（ CLI は削除 ） ──────────────
 
 
 def test_existing_json_not_corrupted_on_failure(tmp_path: Path) -> None:

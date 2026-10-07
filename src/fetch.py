@@ -120,6 +120,7 @@ def run_fetch(
     *,
     dry_run: bool = False,
     site_for: SiteFor | None = None,
+    object_cache: dict[str, dict[str, Any]] | None = None,
 ) -> list[FetchOutcome]:
     """``entries`` の各エントリについて、describe を取り JSON に書く。
 
@@ -128,6 +129,9 @@ def run_fetch(
         entries: 処理対象の管理表エントリ（既に ``--all`` 絞り込み済み）。
         dry_run: True なら接続せず、対象だけ表示用 ``FetchOutcome`` を返す。
         site_for: URL → Salesforce サイトクラスの関数。テスト用差し替え。
+        object_cache: ``describe_object`` の結果共有辞書。``None`` なら内部で作る。
+            同じ実行内で個別オブジェクトの取得 (``run_objects``) と共有するための
+            入口。テストでも同じ名前に 2 回 HTTP を打たないことを検証する。
 
     Returns:
         入力と同じ順の ``FetchOutcome`` リスト。失敗 ID を含む個別では continue する。
@@ -140,7 +144,7 @@ def run_fetch(
     assert site_for is not None  # 上の分岐で必ず代入される
 
     # 同じ実行内で重複する describe_object を 1 回にまとめる（User / Account 等）
-    object_cache: dict[str, dict[str, Any]] = {}
+    cache = object_cache if object_cache is not None else {}
 
     outcomes: list[FetchOutcome] = []
     for entry in entries:
@@ -155,7 +159,7 @@ def run_fetch(
                 )
             )
             continue
-        outcomes.append(_fetch_one(settings, entry, site_for=site_for, cache=object_cache))
+        outcomes.append(_fetch_one(settings, entry, site_for=site_for, cache=cache))
     return outcomes
 
 

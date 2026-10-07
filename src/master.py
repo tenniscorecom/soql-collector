@@ -6,7 +6,7 @@ soql-collector が管理表で必要とする列は ``ID``・``概要``・``Sale
 ``PY_管理表`` を探す（comken の ``Excel.data_sheet('管理表')`` が ``PY_`` プレ
 フィックスを自動で補う）。
 
-「有効」が ``×`` の行は ``fetch --all`` の対象外とする。URL が壊れている行は
+「有効」が ``×`` の行は ``filter_enabled`` で落とす。URL が壊れている行は
 行ごと読み込みエラーにせず、``fetch`` 側で個別に失敗として扱う（他の ID を止め
 ない）。
 """
@@ -51,7 +51,7 @@ def read_master(path: Path) -> list[MasterEntry]:
     """管理表を読んで、行のリストを返す（管理表に並んでいる順を保つ）。
 
     空行（全列空）は読み飛ばす。``ID`` が空の行も飛ばす（管理番号が特定
-    できない行は ``fetch`` 側で個別指定もできないので対象外）。
+    できない行は対象外）。
     """
     logger.debug("レポート管理表読込開始: path=%s", path)
     with Excel(path, read_only=True) as excel_obj:
@@ -74,7 +74,7 @@ def read_master(path: Path) -> list[MasterEntry]:
 
 
 def filter_enabled(entries: list[MasterEntry]) -> list[MasterEntry]:
-    """「有効」が真の行だけを残す（``--all`` のフィルタに使う）。"""
+    """「有効」が真の行だけを残す。"""
     return [entry for entry in entries if entry.enabled]
 
 
