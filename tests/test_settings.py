@@ -1,40 +1,53 @@
 from pathlib import Path
 
+import pytest
+from comken.exceptions import ConfigKeyNotFoundError
+
 from soql_collector.settings import load_settings
 
 
-def test_load_settings_with_master_and_csv_paths(tmp_path: Path) -> None:
+def _write_ini(tmp_path: Path, content: str) -> None:
+    (tmp_path / "config.ini").write_text(content, encoding="utf-8")
+
+
+def test_load_settings_with_master(tmp_path: Path) -> None:
     master_path = tmp_path / "master.xlsx"
-    csv_path = tmp_path / "output.csv"
-    (tmp_path / "config.ini").write_text(
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\nCSV_PATH = {csv_path}\n",
-        encoding="utf-8",
-    )
+    _write_ini(tmp_path, f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n")
 
     settings = load_settings(tmp_path)
 
     assert settings.master_xlsx_path == master_path
-    assert settings.csv_path == csv_path
-
-
-def test_load_settings_without_optional_paths(tmp_path: Path) -> None:
-    (tmp_path / "config.ini").write_text("[FILES]\n", encoding="utf-8")
-
-    settings = load_settings(tmp_path)
-
-    assert settings.master_xlsx_path is None
-    assert settings.csv_path is None
+    assert settings.output_dir == tmp_path / "output"
+    assert settings.related_max == 40
+    assert settings.credential_prefix == ""
 
 
 def test_load_settings_relative_paths_resolved(tmp_path: Path) -> None:
-    (tmp_path / "config.ini").write_text(
-        "[FILES]\nMASTER_XLSX_PATH = ./input/master.xlsx\nCSV_PATH = ./output/soql_drafts.csv\n",
-        encoding="utf-8",
+    _write_ini(
+        tmp_path,
+        "[FILES]\n"
+        "MASTER_XLSX_PATH = ./input/master.xlsx\n"
+        "OUTPUT_DIR = ./output\n"
+        "[LIMITS]\nRELATED_MAX = 12\n"
+        "[SF]\nCREDENTIAL_PREFIX = dev\n",
     )
 
     settings = load_settings(tmp_path)
 
     assert settings.master_xlsx_path == tmp_path / "input" / "master.xlsx"
-    assert settings.csv_path == tmp_path / "output" / "soql_drafts.csv"
-    assert settings.master_xlsx_path.is_absolute()
-    assert settings.csv_path.is_absolute()
+    assert settings.output_dir == tmp_path / "output"
+    assert settings.related_max == 12
+    assert settings.credential_prefix == "dev"
+
+
+def test_load_settings_without_master_path_raises(tmp_path: Path) -> None:
+    _write_ini(tmp_path, "[FILES]\n")
+
+    with pytest.raises(ConfigKeyNotFoundError):
+        load_settings(tmp_path)
+
+
+def test_load_settings_missing_config_file_raises(tmp_path: Path) -> None:
+    # config.ini が無い場合も MASTER_XLSX_PATH 不足と同じエラー
+    with pytest.raises(ConfigKeyNotFoundError):
+        load_settings(tmp_path)

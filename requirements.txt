@@ -4,8 +4,9 @@
 
 # comken は PyPI に無い。共有サーバーを PYTHONPATH で直接参照する
 #（README「プロジェクトの準備」）。ここに書くと pip install -r が失敗するので入れない。
-openpyxl
-pywin32
+
+# openpyxl / pywin32 は comken.toolbox.excel が依存するため、ここには書かない
+#（comken 経由で利用する）
 
 # 使う機能に応じて追加する（使わないものは消す）
 # selenium            # ブラウザ操作

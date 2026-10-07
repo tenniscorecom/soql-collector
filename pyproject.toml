@@ -7,6 +7,11 @@ target-version = "py311"
 select = ["E", "F", "W", "I"]  # E=style, F=pyflakes, W=warning, I=import order
 ignore = []
 
+[tool.ruff.lint.per-file-ignores]
+# テストのフィクスチャは日本語の見出しや URL を含むので、行が 100 字を超える。改行すると
+# データ構造が壊れて読みづらくなるため、テストに限り E501 を許容する
+"tests/**/*.py" = ["E501"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src", "F:/dev"]
 
@@ -18,7 +23,7 @@ build-backend = "setuptools.build_meta"
 name = "soql-collector"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["openpyxl"]
+dependencies = []
 
 [tool.setuptools.packages.find]
 where = ["src"]

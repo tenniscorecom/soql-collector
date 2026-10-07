@@ -1,161 +1,111 @@
-"""コマンドラインインターフェース。"""
+"""コマンドラインインターフェース。
+
+サブコマンド:
+
+- ``fetch [管理番号 ...] [--all] [--dry-run]``: 指定した管理番号（または「有効」な
+  全件）を取得し、``[FILES] OUTPUT_DIR`` の ``{管理番号}.json`` に書く。続いて
+  ``tables`` 相当の CSV を作り直す（ ``--dry-run`` のときは CSV を作らない）
+- ``list``: 管理表の管理番号・概要・有効・レポート ID を表示する
+- ``tables``: ``OUTPUT_DIR`` の ``*.json`` から ``対応表.csv`` / ``項目表.csv``
+  を再生成する（ ``fetch`` の最後で自動実行もされる）
+
+``main.py`` から呼ばれる。引数なしで起動すると対話メニュー。
+"""
 
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
-from pathlib import Path
 
-from soql_collector.service import (
-    STATUSES,
-    build_saved_report,
-    collect_one,
-    export_csv,
-    import_master,
-    report_id_from_text,
-)
-from soql_collector.settings import load_settings
-from soql_collector.store import WorkbookStore, now_text
+from comken.toolbox.salesforce.report import report_id_from_url
+
+from soql_collector.fetch import run_fetch
+from soql_collector.master import filter_enabled, read_master
+from soql_collector.settings import Settings, load_settings
+from soql_collector.tables import run_tables
 
 logger = logging.getLogger(__name__)
 
+# 対話メニューの選択肢（番号 → 説明）。
 MENU_COMMANDS = (
-    ("import-master", "管理表を取り込む"),
-    ("collect", "Report Describe を取得する"),
-    ("list", "蓄積済み一覧を表示する"),
-    ("show", "レポート詳細を表示する"),
-    ("note", "メモを追記する"),
-    ("mark", "状態を変更する"),
-    ("confirm-mapping", "列マッピングを確認済みにする"),
-    ("build-soql", "SOQL ドラフトを組み立てる"),
-    ("export-csv", "旧形式 CSV を出力する"),
+    ("1", "管理番号を指定して取る", "fetch"),
+    ("2", "有効なものをすべて取る", "fetch --all"),
+    ("3", "一覧を見る", "list"),
+    ("4", "CSV を作り直す", "tables"),
+    ("0", "終了", ""),
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """argparse の ``ArgumentParser`` を組み立てる。"""
     parser = argparse.ArgumentParser(
-        prog="soql_collector", description="Salesforce レポート情報を蓄積して SOQL 化を支援します"
+        prog="soql_collector",
+        description="レポート管理表の ID ごとに Salesforce の describe を取得し JSON に保存します",
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    command = commands.add_parser("import-master", help="管理表を取り込む")
-    command.add_argument("path", type=Path, nargs="?", default=None)
-    command = commands.add_parser("collect", help="Report Describe を取得する")
-    command.add_argument("--url")
-    command.add_argument("--master", action="store_true")
-    command.add_argument("--org")
-    command.add_argument("--dry-run", action="store_true")
-    command = commands.add_parser("show", help="レポート詳細を表示する")
-    command.add_argument("target")
-    command = commands.add_parser("list", help="蓄積済み一覧を表示する")
-    command.add_argument("--status", choices=sorted(STATUSES))
-    command.add_argument("--org")
-    command = commands.add_parser("note", help="メモを追記する")
-    command.add_argument("target")
-    command.add_argument("memo", nargs="+")
-    command = commands.add_parser("mark", help="状態を変更する")
-    command.add_argument("target")
-    command.add_argument("status", choices=sorted(STATUSES))
-    command = commands.add_parser("confirm-mapping", help="列マッピングを確認済みにする")
-    command.add_argument("site")
-    command.add_argument("report_type")
-    command.add_argument("column_key")
-    command.add_argument("field_api_name")
-    command.add_argument("field_type")
-    command = commands.add_parser("build-soql", help="SOQL ドラフトを組み立てる")
-    command.add_argument("target")
-    command.add_argument("--apply", action="store_true")
-    command = commands.add_parser("export-csv", help="旧形式 CSV を出力する")
-    command.add_argument("path", type=Path, nargs="?", default=None)
+
+    fetch_cmd = commands.add_parser("fetch", help="管理番号ごとに describe を取得して JSON に書く")
+    fetch_cmd.add_argument("keys", nargs="*", help="管理番号（例: 1001 1002）。省略時は --all 必須")
+    fetch_cmd.add_argument(
+        "--all",
+        action="store_true",
+        help="管理表の「有効」が ○ のものすべてを対象にする",
+    )
+    fetch_cmd.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="接続せず、対象の管理番号・概要・レポートID・出力先を表示するだけ",
+    )
+
+    commands.add_parser("list", help="管理表の一覧を表示する")
+
+    commands.add_parser(
+        "tables",
+        help="OUTPUT_DIR の JSON から 対応表.csv / 項目表.csv を作り直す",
+    )
+
     return parser
 
 
-def _prompt_argv(command: str) -> list[str] | None:
-    """対話メニューで選んだコマンドに必要な追加引数を聞く。入力が不足していれば None。"""
-    argv = [command]
-    if command == "import-master":
-        path = input("管理表のパス（Enterで config.ini の設定を使用）: ").strip()
-        if path:
-            argv.append(path)
-    elif command == "collect":
-        target = input("URL を1件指定（Enterで管理表の全件を対象にする）: ").strip()
-        if target:
-            argv += ["--url", target]
-        else:
-            argv.append("--master")
-        org = input("組織名（Enterで自動判定）: ").strip()
-        if org:
-            argv += ["--org", org]
-        if input("dry-run で実行しますか？ [y/N]: ").strip().lower() == "y":
-            argv.append("--dry-run")
-    elif command == "list":
-        status_choices = ", ".join(sorted(STATUSES))
-        status = input(f"状態で絞り込む（候補: {status_choices} / Enterで全件）: ").strip()
-        if status:
-            argv += ["--status", status]
-        org = input("組織で絞り込む（Enterで全件）: ").strip()
-        if org:
-            argv += ["--org", org]
-    elif command in ("show", "note", "mark", "build-soql"):
-        target = input("対象のレポートID または URL: ").strip()
-        if not target:
-            logger.error("対象の指定が必要です")
-            return None
-        argv.append(target)
-        if command == "note":
-            memo = input("メモ内容: ").strip()
-            if not memo:
-                logger.error("メモ内容が必要です")
-                return None
-            argv.append(memo)
-        elif command == "mark":
-            status = input(f"新しい状態（候補: {', '.join(sorted(STATUSES))}）: ").strip()
-            if status not in STATUSES:
-                logger.error("状態が不正です: %s", status)
-                return None
-            argv.append(status)
-        elif command == "build-soql":
-            answer = input("Excel に反映しますか？ [y/N]: ").strip().lower()
-            if answer == "y":
-                argv.append("--apply")
-    elif command == "confirm-mapping":
-        fields = ("サイト", "レポートタイプ", "列キー", "フィールドAPI名", "型")
-        values = [input(f"{field}: ").strip() for field in fields]
-        if not all(values):
-            logger.error("すべての項目の入力が必要です")
-            return None
-        argv += values
-    elif command == "export-csv":
-        path = input("出力先パス（Enterで config.ini の設定を使用）: ").strip()
-        if path:
-            argv.append(path)
-    return argv
+def _prompt_argv() -> list[str]:
+    """対話メニューで選んだ結果の argv を組み立てる。"""
+    while True:
+        logger.info("=== soql_collector ===")
+        for number, description, _ in MENU_COMMANDS:
+            logger.info("%s. %s", number, description)
+        choice = input("番号を選択してください: ").strip()
+        if choice == "0" or choice == "":
+            return ["__exit__"]
+        for number, _, command in MENU_COMMANDS:
+            if choice == number:
+                if command.startswith("fetch --all"):
+                    return ["fetch", "--all"]
+                if command == "fetch":
+                    keys_text = input("管理番号を空白区切りで入力（Enterで全件）: ").strip()
+                    if keys_text:
+                        return ["fetch", *keys_text.split()]
+                    return ["fetch", "--all"]
+                if command == "list":
+                    return ["list"]
+                if command == "tables":
+                    return ["tables"]
+        logger.error("番号が不正です: %s", choice)
 
 
 def run_interactive() -> int:
-    """引数なしで起動したときの対話メニュー。番号でコマンドを選ぶ。"""
+    """引数なしで起動したときの対話メニュー。"""
     while True:
-        logger.info("=== soql_collector ===")
-        for index, (_, description) in enumerate(MENU_COMMANDS, start=1):
-            logger.info("%d. %s", index, description)
-        logger.info("0. 終了")
-        choice = input("番号を選択してください: ").strip()
-        if choice in ("", "0"):
+        argv = _prompt_argv()
+        if argv == ["__exit__"]:
             return 0
-        try:
-            command = MENU_COMMANDS[int(choice) - 1][0]
-        except (ValueError, IndexError):
-            logger.error("番号が不正です: %s", choice)
-            continue
-        argv = _prompt_argv(command)
-        if argv is None:
-            continue
         code = main(argv)
         if code != 0:
             logger.error("[終了コード %d]", code)
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI の入口。終了コードは「失敗 ID が 1 件でもあれば 1」。"""
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(message)s")
     if argv is None:
@@ -164,94 +114,162 @@ def main(argv: list[str] | None = None) -> int:
         return run_interactive()
     args = build_parser().parse_args(argv)
     settings = load_settings()
-    store = WorkbookStore(settings.excel_path)
-    if args.command == "import-master":
-        path = args.path or settings.master_xlsx_path
-        if not path:
-            logger.error("管理表のパスを指定してください（CLI引数または [FILES] MASTER_XLSX_PATH）")
-            return 2
-        logger.info("%d 件取り込みました", import_master(store, path))
-        return 0
-    if args.command == "collect":
-        urls = [args.url] if args.url else [row["URL"] for row in store.read_rows("Master")]
-        if not urls:
-            logger.error("対象 URL がありません")
-            return 2
-        for url in urls:
-            collect_one(settings, store, url, args.org, args.dry_run)
-        return 0
     if args.command == "list":
-        rows = [
-            row
-            for row in store.read_rows("Reports")
-            if (not args.status or row["状態"] == args.status)
-            and (not args.org or row["組織"] == args.org)
-        ]
-        for row in rows:
-            logger.info("%s\t%s\t%s", row["レポートID"], row["状態"], row["概要"])
-        return 0
-    report_id = report_id_from_text(getattr(args, "target", ""))
-    if args.command == "show":
-        report = store.find_report(report_id)
-        if report is None:
-            logger.error("未取得: %s", report_id)
+        return _cmd_list(settings)
+    if args.command == "fetch":
+        return _cmd_fetch(settings, args)
+    if args.command == "tables":
+        return _cmd_tables(settings)
+    return 2
+
+
+def _cmd_list(settings: Settings) -> int:
+    """管理表の管理番号・概要・有効・レポート ID を表示する。"""
+    entries = read_master(settings.master_xlsx_path)
+    for entry in entries:
+        try:
+            report_id = report_id_from_url(entry.url)
+        except Exception:
+            report_id = "(URL 不正)"
+        logger.info(
+            "%s\t%s\t%s\t%s",
+            entry.key,
+            "○" if entry.enabled else "×",
+            entry.summary,
+            report_id,
+        )
+    return 0
+
+
+def _cmd_fetch(settings: Settings, args: argparse.Namespace) -> int:
+    """``fetch`` サブコマンドの本体。"""
+    if args.dry_run:
+        entries, errors = _resolve_entries(settings, args.keys, all_flag=args.all)
+        if errors:
+            for key, message in errors.items():
+                logger.error("管理番号 %s: %s", key, message)
             return 2
-        logger.info("%s", report)
-        for sheet in ("Filters", "Groupings", "Notes"):
+        if not entries:
+            logger.error("対象のエントリがありません")
+            return 2
+        for entry in entries:
+            try:
+                report_id = report_id_from_url(entry.url)
+            except Exception:
+                report_id = "(URL 不正)"
             logger.info(
-                "%s: %s",
-                sheet,
-                [row for row in store.read_rows(sheet) if row["レポートID"] == report_id],
+                "[dry-run] 管理番号=%s 概要=%s レポートID=%s 出力先=%s",
+                entry.key,
+                entry.summary,
+                report_id,
+                settings.output_dir / f"{entry.key}.json",
             )
         return 0
-    if args.command == "note":
-        store.add_note(report_id, "memo", " ".join(args.memo))
-        return 0
-    if args.command == "mark":
-        report = store.find_report(report_id)
-        if report is None:
-            logger.error("未取得: %s", report_id)
-            return 2
-        old = report["状態"]
-        report["状態"] = args.status
-        store.upsert("Reports", ("レポートID",), report)
-        store.add_note(report_id, "status_change", f"{old} -> {args.status}")
-        return 0
-    if args.command == "confirm-mapping":
-        existing = next(
-            (
-                row
-                for row in store.read_rows("FieldMappings")
-                if (row["サイト"], row["レポートタイプ"], row["列キー"])
-                == (args.site, args.report_type, args.column_key)
-            ),
-            {},
+
+    if not args.keys and not args.all:
+        logger.error("管理番号を 1 件以上指定するか、 --all を付けてください")
+        return 2
+
+    entries, errors = _resolve_entries(settings, args.keys, all_flag=args.all)
+    for key, message in errors.items():
+        logger.error("管理番号 %s: %s", key, message)
+
+    if not entries and errors:
+        return 2
+    if not entries:
+        logger.error("対象のエントリがありません")
+        return 2
+
+    outcomes = run_fetch(settings, entries)
+    failed_keys = []
+    ok_keys: list[str] = []
+    for outcome in outcomes:
+        if outcome.status == "ok":
+            ok_keys.append(outcome.entry.key)
+            logger.info(
+                "[ok] 管理番号=%s 出力先=%s 警告=%d 件",
+                outcome.entry.key,
+                outcome.output_path,
+                len(outcome.warnings),
+            )
+            for warning in outcome.warnings:
+                logger.warning("  - %s", warning)
+        elif outcome.status == "failed":
+            failed_keys.append(outcome.entry.key)
+            logger.error(
+                "[failed] 管理番号=%s: %s",
+                outcome.entry.key,
+                outcome.error,
+            )
+
+    # 取れた ID についてだけ per-ID CSV を作り直し、 対応表.csv / 項目表.csv は
+    # ``OUTPUT_DIR`` の全 JSON から作り直す（ ``run_tables`` 内で両方やる）。
+    # 失敗 ID の既存 CSV はそのまま残る（上書き・削除しない）
+    if ok_keys:
+        try:
+            run_tables(settings.output_dir, only_keys=ok_keys)
+        except Exception as exc:
+            # CSV 生成の失敗は fetch 全体の失敗にはしない（ JSON は書けたので）
+            logger.error("CSV の生成に失敗しました: %s", exc)
+
+    return 1 if failed_keys else 0
+
+
+def _cmd_tables(settings: Settings) -> int:
+    """``tables`` サブコマンドの本体。 ``OUTPUT_DIR`` が空なら終了コード 1。"""
+    if not settings.output_dir.exists() or not list(settings.output_dir.glob("*.json")):
+        logger.error(
+            "先に fetch を実行して %s に JSON を作ってください",
+            settings.output_dir,
         )
-        existing.update(
-            {
-                "サイト": args.site,
-                "レポートタイプ": args.report_type,
-                "列キー": args.column_key,
-                "フィールドAPI名": args.field_api_name,
-                "型": args.field_type,
-                "確認状態": "確認済み",
-                "確認日": now_text(),
-            }
-        )
-        store.upsert("FieldMappings", ("サイト", "レポートタイプ", "列キー"), existing)
-        return 0
-    if args.command == "build-soql":
-        draft = build_saved_report(store, report_id, args.apply)
-        if draft is None:
-            logger.error("未取得: %s", report_id)
-            return 2
-        logger.info("%s", draft.soql or "SOQL を自動組立できません")
-        return 0 if draft.soql else 2
-    if args.command == "export-csv":
-        path = args.path or settings.csv_path
-        if not path:
-            logger.error("CSV の出力先を指定してください（CLI引数または [FILES] CSV_PATH）")
-            return 2
-        export_csv(store, path)
-        return 0
-    return 2
+        return 1
+    run_tables(settings.output_dir)
+    return 0
+
+
+def _resolve_entries(
+    settings: Settings, keys: list[str], *, all_flag: bool
+) -> tuple[list, dict[str, str]]:
+    """管理表を読み、指定分のエントリ（または有効全件）を返す。
+
+    管理番号が重複している行や、管理表に無い管理番号は ``errors`` に積む
+    （他の ID は止めない）。
+    """
+    entries = read_master(settings.master_xlsx_path)
+    by_key: dict[str, list] = {}
+    order: list[str] = []
+    for entry in entries:
+        if entry.key not in by_key:
+            order.append(entry.key)
+        by_key.setdefault(entry.key, []).append(entry)
+
+    errors: dict[str, str] = {}
+
+    if all_flag:
+        selected = filter_enabled(entries)
+        duplicates = [key for key, items in by_key.items() if len(items) > 1]
+        for key in duplicates:
+            errors[key] = "管理番号が重複しています"
+        # --all のとき「×」の ID を個別指定に含めても、それは個別指定側で処理する
+        return selected, errors
+
+    selected: list = []
+    seen: set[str] = set()
+    for key in keys:
+        if key in seen:
+            errors.setdefault(key, "管理番号が重複しています")
+            continue
+        seen.add(key)
+        matches = by_key.get(key)
+        if not matches:
+            errors[key] = (
+                f"管理表に無い管理番号です（[FILES] MASTER_XLSX_PATH: {settings.master_xlsx_path}）"
+            )
+            continue
+        if len(matches) > 1:
+            errors[key] = "管理番号が重複しています"
+            continue
+        # 個別指定は「×」でも取得する
+        selected.append(matches[0])
+
+    return selected, errors
