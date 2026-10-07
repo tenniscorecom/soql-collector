@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 import pytest
-from comken.core.table import Table
 from comken.exceptions import SalesforceRequestError
 
 from src.fetch import (
@@ -27,62 +26,24 @@ DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
 
 class _ReportStub:
-    def __init__(
-        self,
-        describe: dict,
-        fields: tuple[Table, str | None],
-        *,
-        main_object: str | None = None,
-    ) -> None:
+    def __init__(self, describe: dict) -> None:
         self._describe = describe
-        self._fields = fields
-        self._main_object = main_object
 
     def describe(self, report_id: str) -> dict:
         self.last_report_id = report_id
         return self._describe
-
-    def describe_fields_with_object_status(self, metadata: dict) -> tuple[Table, str | None]:
-        return self._fields
-
-    def main_object(self, metadata: dict) -> str | None:
-        """comken ``ReportAPI.main_object`` 互換の偽物。
-
-        コンストラクタで ``main_object`` が指定されていればそれを返す。
-        ``None`` のときは ``reportType.type`` をそのまま返す（ ``$`` /
-        ``@`` 付きでも解決せず、 生文字列をそのまま返す）。
-        comken の ``CustomEntity$`` 展開ロジックは comken 側のテストで
-        検証済みのため、ここでは複製しない。
-        """
-        if self._main_object is not None:
-            return self._main_object
-        if not isinstance(metadata, dict):
-            return None
-        report_metadata = metadata.get("reportMetadata")
-        if not isinstance(report_metadata, dict):
-            return None
-        report_type = report_metadata.get("reportType")
-        if not isinstance(report_type, dict):
-            return None
-        object_name = report_type.get("type", "")
-        if isinstance(object_name, str) and object_name:
-            return object_name
-        return None
 
 
 class _FakeClient:
     def __init__(
         self,
         describe: dict,
-        fields: tuple[Table, str | None],
         object_describes: dict[str, dict] | None = None,
         errors: dict[str, BaseException] | None = None,
-        *,
-        main_object: str | None = None,
     ) -> None:
         self._object_describes = object_describes or {}
         self._errors = errors or {}
-        self.report = _ReportStub(describe, fields, main_object=main_object)
+        self.report = _ReportStub(describe)
         self.describe_object_calls: list[str] = []
 
     def describe_object(self, name: str) -> dict:
@@ -146,24 +107,33 @@ def _make_metadata(
     report_type: str = "Opportunity",
     *,
     extra: dict | None = None,
+    detail_column_labels: dict[str, str] | None = None,
 ) -> dict:
-    metadata = {
+    """レポート describe を作る。
+
+    ``detail_column_labels`` で ``detailColumns`` 各列の表示名を指定できる
+    （ ``column_key`` → ``label`` ）。 未指定なら ``detailColumns[0]`` の
+    表示名は同じキーになる（ ``column_key`` をそのまま ``label`` として扱う）。
+    """
+    detail_columns = ["Opp.Name"]
+    if extra and "detailColumns" in extra:
+        detail_columns = extra["detailColumns"]
+    metadata: dict = {
         "reportMetadata": {
             "reportType": {"type": report_type},
             "reportFormat": "TABULAR",
-            "detailColumns": ["Opp.Name"],
-        }
+            "detailColumns": detail_columns,
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {
+                column_key: {"label": (detail_column_labels or {}).get(column_key, column_key)}
+                for column_key in detail_columns
+            }
+        },
     }
     if extra:
         metadata["reportMetadata"].update(extra)
     return metadata
-
-
-def _make_fields(*rows: dict) -> tuple[Table, str | None]:
-    return (
-        Table(["列キー", "表示名", "対応フィールドAPI名", "型", "備考"], list(rows)),
-        None,
-    )
 
 
 def _main_describe(
@@ -202,21 +172,30 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
         url=f"{DOMAIN}/00O5g00000ABCDE/view",
         enabled=True,
     )
-    metadata = _make_metadata()
-    fields, _ = _make_fields(
-        {
-            "列キー": "Opp.Name",
-            "表示名": "名前",
-            "対応フィールドAPI名": "Name",
-            "型": "string",
-            "備考": "",
-        }
-    )
+    metadata = _make_metadata(detail_column_labels={"Opp.Name": "名前"})
+    # Opportunity の describe に ``名前`` → ``Name`` を入れて、 ``mapping.build_column_map``
+    # が ``"Opp.Name"`` の表示名 ``"名前"`` を実フィールド ``Name`` に対応づけられるようにする。
+    # ``AccountId`` 参照も入れて関連オブジェクト ``Account`` が解決されることを確かめる。
+    opportunity_with_name = {
+        "name": "Opportunity",
+        "fields": [
+            {
+                "name": "Name",
+                "label": "名前",
+                "type": "string",
+            },
+            {
+                "name": "AccountId",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "Account",
+            },
+        ],
+    }
     client = _FakeClient(
         describe=metadata,
-        fields=(fields, None),
         object_describes={
-            "Opportunity": _main_describe("Opportunity", fields_map={"AccountId": ["Account"]}),
+            "Opportunity": opportunity_with_name,
             "Account": _main_describe("Account"),
         },
     )
@@ -245,9 +224,7 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
     }
     assert set(payload["objects"]) == {"Opportunity", "Account"}
     # ``objects`` の各値は ``_slim_object`` を通った形（ name/label/custom/fields の 4 キー ）
-    expected_opportunity = _slim_object(
-        _main_describe("Opportunity", fields_map={"AccountId": ["Account"]})
-    )
+    expected_opportunity = _slim_object(opportunity_with_name)
     assert payload["objects"]["Opportunity"] == expected_opportunity
     assert payload["objects"]["Account"] == _slim_object(_main_describe("Account"))
     assert payload["column_map"] == [
@@ -269,7 +246,6 @@ def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={
             "Opportunity": _main_describe("Opportunity", fields_map={"AccountId": ["Account"]}),
             "Account": _main_describe("Account"),
@@ -314,7 +290,6 @@ def test_objects_dict_does_not_mutate_original_describe(tmp_path: Path) -> None:
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"Opportunity": original, "Account": _main_describe("Account")},
     )
     site_for, _ = _site_for(client)
@@ -337,7 +312,6 @@ def test_related_objects_dedup_excludes_main_polymorphic(tmp_path: Path) -> None
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={
             "Opportunity": main,
             "Account": _main_describe("Account"),
@@ -359,7 +333,6 @@ def test_related_object_failure_becomes_warning(tmp_path: Path) -> None:
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"Opportunity": main, "Account": _main_describe("Account")},
         errors={"User": SalesforceRequestError("GET", "/sobjects/User/describe", 404, "Not Found")},
     )
@@ -386,7 +359,6 @@ def test_related_max_overflow_warns(tmp_path: Path) -> None:
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={
             "Opportunity": main,
             "Account": _main_describe("Account"),
@@ -412,7 +384,7 @@ def test_related_max_overflow_warns(tmp_path: Path) -> None:
 
 def test_main_object_resolves_custom_entity_dollar_type(tmp_path: Path) -> None:
     """``reportType.type`` が ``CustomEntity$Project__c`` のとき、
-    ``client.report.main_object(metadata)`` が ``Project__c`` を返し、
+    主オブジェクト解決が候補 ``Project__c`` を採用し、
     JSON の ``主オブジェクト`` も ``Project__c`` に、 ``objects`` にも
     ``Project__c`` が入る。関連はその ``AccountId`` から ``Account`` が続く。
     """
@@ -427,12 +399,10 @@ def test_main_object_resolves_custom_entity_dollar_type(tmp_path: Path) -> None:
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=metadata,
-        fields=_make_fields(),
         object_describes={
             "Project__c": main,
             "Account": _main_describe("Account"),
         },
-        main_object="Project__c",
     )
     site_for, _ = _site_for(client)
     payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
@@ -454,7 +424,6 @@ def test_main_object_describe_failure_yields_null(tmp_path: Path) -> None:
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata("Opportunity"),
-        fields=_make_fields(),
         errors={
             "Opportunity": SalesforceRequestError(
                 "GET", "/sobjects/Opportunity/describe", 400, "Bad"
@@ -475,7 +444,6 @@ def test_auth_error_on_main_object_marks_id_failed(tmp_path: Path) -> None:
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata("Opportunity"),
-        fields=_make_fields(),
         errors={
             "Opportunity": SalesforceRequestError(
                 "GET", "/sobjects/Opportunity/describe", 401, "Unauthorized"
@@ -498,7 +466,6 @@ def test_auth_error_on_related_object_marks_id_failed(tmp_path: Path) -> None:
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"Opportunity": main},
         errors={
             "Account": SalesforceRequestError("GET", "/sobjects/Account/describe", 403, "Forbidden")
@@ -515,7 +482,7 @@ def test_auth_error_on_related_object_marks_id_failed(tmp_path: Path) -> None:
 def test_bad_url_marks_id_failed(tmp_path: Path) -> None:
     """URL が壊れている行は ``fetch`` 段で失敗として報告。"""
     entry = MasterEntry(key="1", summary="", url="https://壊れたURL", enabled=True)
-    site_for, _ = _site_for(_FakeClient(describe={}, fields=_make_fields()))
+    site_for, _ = _site_for(_FakeClient(describe={}))
     outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
     assert outcomes[0].status == "failed"
     assert "URL" in (outcomes[0].error or "")
@@ -525,10 +492,8 @@ def test_object_describe_cached_across_ids(tmp_path: Path) -> None:
     """同じ実行で複数 ID が同じオブジェクトを参照しても ``describe_object`` は 1 回だけ。"""
     main = _main_describe("Opportunity", fields_map={"AccountId": ["Account"]})
     metadata = _make_metadata()
-    fields, _ = _make_fields()
     client = _FakeClient(
         describe=metadata,
-        fields=(fields, None),
         object_describes={
             "Opportunity": main,
             "Account": _main_describe("Account"),
@@ -550,10 +515,8 @@ def test_failed_object_cached(tmp_path: Path) -> None:
     """関連オブジェクトの失敗（401/403 以外）もキャッシュされ、2 度目は再試行しない。"""
     main = _main_describe("Opportunity", fields_map={"AccountId": ["Account"]})
     metadata = _make_metadata()
-    fields, _ = _make_fields()
     client = _FakeClient(
         describe=metadata,
-        fields=(fields, None),
         object_describes={"Opportunity": main},
         errors={
             "Account": SalesforceRequestError("GET", "/sobjects/Account/describe", 500, "Boom")
@@ -582,7 +545,6 @@ def test_partial_failure_exit_code_is_one(tmp_path: Path) -> None:
     ]
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"Opportunity": _main_describe("Opportunity")},
     )
     site_for, _ = _site_for(client)
@@ -597,7 +559,7 @@ def test_dry_run_does_not_open_site(tmp_path: Path) -> None:
     entry = MasterEntry(
         key="1", summary="顧客一覧", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True
     )
-    client = _FakeClient(describe={}, fields=_make_fields())
+    client = _FakeClient(describe={})
     site_for, _site = _site_for(client)
     outcomes = run_fetch(_settings(tmp_path), [entry], dry_run=True, site_for=site_for)
     assert outcomes[0].status == "dry-run"
@@ -626,7 +588,6 @@ def test_site_for_salesforce_error_marks_id_failed(tmp_path: Path) -> None:
 
     good_client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"Opportunity": _main_describe("Opportunity")},
     )
 
@@ -694,7 +655,6 @@ def test_json_write_oserror_marks_id_failed(tmp_path: Path) -> None:
     ]
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"Opportunity": _main_describe("Opportunity")},
     )
     site_for, _ = _site_for(client)
@@ -748,7 +708,6 @@ def test_existing_json_not_corrupted_on_failure(tmp_path: Path) -> None:
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"Opportunity": main},
         errors={
             "Account": SalesforceRequestError("GET", "/sobjects/Account/describe", 500, "Boom")
@@ -810,7 +769,6 @@ def test_fetch_object_cached_calls_only_once() -> None:
     """キャッシュ: 同じ名前は 1 回しか HTTP を打たない。"""
     client = _FakeClient(
         describe={},
-        fields=_make_fields(),
         object_describes={"Account": _main_describe("Account")},
     )
     cache: dict = {}
@@ -821,6 +779,68 @@ def test_fetch_object_cached_calls_only_once() -> None:
     # 2 回目は client.describe_object が呼ばれないので calls には 1 件のみ
     assert client.describe_object_calls.count("Account") == 1
     assert warnings2 == []
+
+
+# ── 主オブジェクトの describe が ID ごとに 1 回であることの検証 ──────────────
+
+
+def test_main_object_describe_called_once_per_id(tmp_path: Path) -> None:
+    """主オブジェクトの ``describe_object`` は ID ごとに **ちょうど 1 回** しか
+    呼ばれない（ 主オブジェクト解決と列対応表の組み立てが同じ describe を
+    流用していることを確かめる）。
+    """
+    entry = MasterEntry(
+        key="1001", summary="顧客一覧", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True
+    )
+    metadata = _make_metadata(detail_column_labels={"Opp.Name": "名前"})
+    opportunity = {
+        "name": "Opportunity",
+        "fields": [{"name": "Name", "label": "名前", "type": "Text"}],
+    }
+    client = _FakeClient(
+        describe=metadata,
+        object_describes={"Opportunity": opportunity},
+    )
+    site_for, _ = _site_for(client)
+
+    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+
+    assert outcomes[0].status == "ok"
+    # 主オブジェクト ``Opportunity`` に対する ``describe_object`` 呼び出しは 1 回
+    assert client.describe_object_calls.count("Opportunity") == 1
+
+
+def test_main_object_describe_called_once_for_custom_entity_with_winning_candidate(
+    tmp_path: Path,
+) -> None:
+    """``CustomEntity$Project__c`` のとき、 候補の ``describe_object`` は 1 つ目が
+    成功した時点で打ち切られ、 2 つ目以降は呼ばれない。
+    """
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "CustomEntity$Project__c"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["Project__c.Name"],
+        }
+    }
+    project = {
+        "name": "Project__c",
+        "fields": [{"name": "Name", "label": "NAME", "type": "Text"}],
+    }
+    entry = MasterEntry(key="1001", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=metadata,
+        object_describes={"Project__c": project},
+    )
+    site_for, _ = _site_for(client)
+
+    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+
+    assert outcomes[0].status == "ok"
+    # ``Project__c`` に対する ``describe_object`` は 1 回。 他の候補は試さない
+    assert client.describe_object_calls.count("Project__c") == 1
+    # ``CustomEntity$Project__c`` という生文字列を describe しない
+    assert "CustomEntity$Project__c" not in client.describe_object_calls
 
 
 # ── _slim_report ─────────────────────────────────────────────────────────
@@ -1252,7 +1272,6 @@ def test_json_output_has_no_heavy_keys_anywhere(tmp_path: Path) -> None:
     }
     client = _FakeClient(
         describe=metadata,
-        fields=_make_fields(),
         object_describes={"Account": full_describe},
     )
     site_for, _ = _site_for(client)
@@ -1305,7 +1324,6 @@ def test_related_objects_collected_from_original_describe_not_slimmed(
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata("Opportunity"),
-        fields=_make_fields(),
         object_describes={"Opportunity": main, "Account": _main_describe("Account")},
     )
     site_for, _ = _site_for(client)
@@ -1535,7 +1553,6 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata("Opportunity"),
-        fields=_make_fields(),
         object_describes={"Opportunity": main, "Account": _main_describe("Account")},
     )
     site_for, _ = _site_for(client)

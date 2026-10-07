@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from comken.core.table import Table
 from comken.exceptions import SalesforceRequestError
 from openpyxl import Workbook
 from openpyxl.worksheet.table import Table as XlsxTable
@@ -94,15 +93,11 @@ def _patch_load_settings(monkeypatch: pytest.MonkeyPatch, settings: Any) -> None
 
 
 class _ReportStub:
-    def __init__(self, describe: dict, fields: tuple[Table, str | None]) -> None:
+    def __init__(self, describe: dict) -> None:
         self._describe = describe
-        self._fields = fields
 
     def describe(self, report_id: str) -> dict:
         return self._describe
-
-    def describe_fields_with_object_status(self, metadata: dict) -> tuple[Table, str | None]:
-        return self._fields
 
 
 class _FakeClient:
@@ -111,11 +106,10 @@ class _FakeClient:
     def __init__(
         self,
         describe: dict,
-        fields: tuple[Table, str | None],
         object_describes: dict[str, dict] | None = None,
         errors: dict[str, BaseException] | None = None,
     ) -> None:
-        self.report = _ReportStub(describe, fields)
+        self.report = _ReportStub(describe)
         self._object_describes = object_describes or {}
         self._errors = errors or {}
         self.describe_object_calls: list[str] = []
@@ -178,32 +172,26 @@ class _SiteB(_FakeSite):
 
 def _make_metadata(
     report_type: str = "Opportunity",
+    *,
+    detail_columns: list[str] | None = None,
+    detail_column_labels: dict[str, str] | None = None,
 ) -> dict:
+    """テスト用の ``client.report.describe()`` 戻り値相当を作る。"""
+    detail_columns = detail_columns or ["Opp.Name"]
+    labels = detail_column_labels or {}
     return {
         "reportMetadata": {
             "reportType": {"type": report_type},
             "reportFormat": "TABULAR",
-            "detailColumns": ["Opp.Name"],
-        }
+            "detailColumns": detail_columns,
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {
+                column_key: {"label": labels.get(column_key, column_key)}
+                for column_key in detail_columns
+            }
+        },
     }
-
-
-def _make_fields() -> tuple[Table, str | None]:
-    return (
-        Table(
-            ["列キー", "表示名", "対応フィールドAPI名", "型", "備考"],
-            [
-                {
-                    "列キー": "Opp.Name",
-                    "表示名": "名前",
-                    "対応フィールドAPI名": "Name",
-                    "型": "string",
-                    "備考": "",
-                }
-            ],
-        ),
-        None,
-    )
 
 
 # ── 引数チェック ────────────────────────────────────────────────────────
@@ -526,7 +514,6 @@ def test_objects_single_org_resolves_automatically(
 
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"Account": {"name": "Account", "fields": []}},
     )
 
@@ -619,7 +606,6 @@ def test_objects_with_org_id(
 
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"Account": {"name": "Account", "fields": []}},
     )
     monkeypatch.setattr(run_module, "run_tables", lambda *a, **kw: None)
@@ -683,7 +669,6 @@ def test_object_http_error_isolated_to_one_name(
 
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"GoodOne": {"name": "GoodOne", "fields": []}},
         errors={
             "BadOne": SalesforceRequestError("GET", "/sobjects/BadOne/describe", 404, "Not Found"),
@@ -721,7 +706,6 @@ def test_object_401_stops_remaining_names(
 
     client = _FakeClient(
         describe=_make_metadata(),
-        fields=_make_fields(),
         object_describes={"GoodOne": {"name": "GoodOne", "fields": []}},
         errors={
             "BadOne": SalesforceRequestError("GET", "/sobjects/BadOne/describe", 401, "Auth"),
@@ -807,7 +791,6 @@ def test_object_cache_shared_with_report_fetch(
     account_describe = {"name": "Account", "fields": []}
     client = _FakeClient(
         describe=_make_metadata("Opportunity"),
-        fields=_make_fields(),
         object_describes={"Opportunity": main_describe, "Account": account_describe},
     )
 

@@ -5,19 +5,22 @@
 1. 管理番号 → 管理表の行（無ければ呼び出し側の ``cli`` でエラー）
 2. URL から ``site_for(url)`` で接続先を決め、 ``with site() as client:`` で開く
 3. ``metadata = client.report.describe(report_id)`` （レポートの describe）
-4. ``主オブジェクト名 = client.report.main_object(metadata)`` 。
-   ``$`` / ``@`` を含まない値はそのまま返し、 含む値は候補を ``describe_object``
-   で順に試して通った名前を返す（全滅なら ``None`` ）。
-   ``client.describe_object(主オブジェクト名)`` が HTTP エラー
-   （``SalesforceRequestError``）や ``ValueError`` になったら、 主オブジェクトは
-   「特定できず」として警告に残し、 レポート describe だけで続ける。 401 /
-   403 は握りつぶさず、 その ID の失敗にする
+4. 主オブジェクトの決定: ``reportType.type`` が空なら特定できず。 ``$`` / ``@``
+   を含まなければその値、 含めば ``mapping.report_type_candidates()`` の候補を
+   ``_fetch_object_cached()`` で順に ``describe_object`` して、 最初に成功した
+   ものを主オブジェクトにする。 HTTP エラー（ ``SalesforceRequestError`` ）や
+   ``ValueError`` で主オブジェクトが特定できなかった／ describe が取れなかった
+   ときは、 列対応表を全列 ``(不明)`` ＋理由の備考に縮退する。 401 / 403 は
+   握りつぶさず、 その ID の失敗にする
 5. 関連オブジェクト（参照先を 1 段）: 主オブジェクトの describe の ``fields`` の
    うち、 ``referenceTo`` が空でなく ``relationshipName`` がある項目の
    ``referenceTo`` （ リスト。 ポリモーフィックなら複数 ）を集め、 重複を除き、
    主オブジェクト自身は除く。 件数は ``config.ini`` の ``[LIMITS] RELATED_MAX``
    （ 既定 40 ）で打ち切り、 超えた名前は警告に残す
-6. ``client.report.describe_fields_with_object_status(metadata)`` で列対応表を取る
+6. ``mapping.build_column_map(metadata, main_describe, reason)`` で列対応表を
+   組み立てる。 主オブジェクトの describe は **ID ごとに 1 回** だけ取得する
+   （ ``_fetch_object_cached`` のキャッシュを経由するため、 複数 ID が同じ
+   主オブジェクトを参照しても HTTP は 1 回 ）
 
 出力（ ``[FILES] OUTPUT_DIR`` の ``{管理番号}.json`` ）は SOQL 組立に必要な
 **構造だけ** を書く:
@@ -56,6 +59,7 @@ from comken.exceptions import (
 )
 from comken.toolbox.salesforce.report import report_id_from_url
 
+from src import mapping
 from src.master import MasterEntry
 from src.settings import Settings
 
@@ -382,38 +386,23 @@ def _fetch_one(
                     ),
                 )
 
-            try:
-                fields_table, object_error = client.report.describe_fields_with_object_status(
-                    metadata
-                )
-            except SalesforceRequestError as exc:
-                return FetchOutcome(
-                    entry=entry,
-                    status="failed",
-                    output_path=None,
-                    warnings=(),
-                    error=(
-                        f"列対応表の取得に失敗（HTTP {exc.status_code}）: {report_id}\n{exc.detail}"
-                    ),
-                )
-
-            if object_error:
-                warnings.append(object_error)
-            column_map = fields_table.to_rows()
-
-            main_object_name = client.report.main_object(metadata)
+            # 主オブジェクトの解決（ ``$`` / ``@`` を含むときは候補を
+            # ``_fetch_object_cached()`` で順に試す）。 ``describe_object`` が
+            # 401 / 403 を返したら ``_fetch_object_cached`` がそのまま上位へ
+            # ``SalesforceRequestError`` を送出し、 ID 全体を失敗扱いにする。
+            main_object_name, main_describe, object_reason = _choose_main(
+                client, metadata, cache, warnings
+            )
+            if object_reason:
+                warnings.append(object_reason)
+            column_map = mapping.build_column_map(metadata, main_describe, object_reason)
 
             # 主オブジェクト
-            if main_object_name:
-                describe = _fetch_object_cached(client, main_object_name, cache, warnings)
-                if describe is not None:
-                    objects[main_object_name] = describe
-                # describe が None の場合は cache 側に警告が残っているので追加しない
-
-            # 関連オブジェクト
-            if main_object_name and main_object_name in objects:
+            if main_object_name and main_describe is not None:
+                objects[main_object_name] = main_describe
+                # 関連オブジェクト（参照先を 1 段）
                 related_names = _collect_related_object_names(
-                    objects[main_object_name], exclude=main_object_name
+                    main_describe, exclude=main_object_name
                 )
                 related_names, skipped = _apply_related_limit(related_names, settings.related_max)
                 if skipped:
@@ -571,9 +560,49 @@ def _fetch_object_cached(
         return None
 
     if not isinstance(describe, dict):
-        # comken の ``describe_object`` は dict 以外なら空 dict を返すが、
         # 念のため空 dict と同じ扱いにする
         describe = {}
 
     cache[name] = {"describe": describe, "warning": None}
     return describe
+
+
+def _choose_main(
+    client: Any,
+    metadata: dict[str, Any],
+    cache: dict[str, dict[str, Any]],
+    warnings: list[str],
+) -> tuple[str | None, dict[str, Any] | None, str | None]:
+    """``metadata`` の ``reportType.type`` から主オブジェクトを決める。
+
+    ``report_type_candidates()`` で抽出した候補を先頭から
+    ``_fetch_object_cached()`` で試し、 最初に describe が取れた候補を
+    採用する。 全滅したとき・候補が無いときは ``candidate_failure_reason()``
+    の理由を返す（ ``reportType.type`` が空のときは「候補を抽出できなかった」
+    になる）。
+
+    ``_fetch_object_cached()`` の 401 / 403 はそのまま上位へ
+    ``SalesforceRequestError`` が送出され、 ID 全体が失敗扱いになる（呼び出し
+    側で ``try`` している前提）。
+
+    Returns:
+        ``(main_object_name | None, main_describe | None, reason | None)``
+        - ``main_object_name``: 採用した主オブジェクト名。 describe が取れ
+          なかったときは ``None``
+        - ``main_describe``: 主オブジェクトの describe dict。 特定・取得に失敗
+          したときは ``None``
+        - ``reason``: ``main_describe`` が ``None`` のときの理由（ ``None``
+          なら取得成功）
+    """
+    report_metadata = metadata.get("reportMetadata", {}) if isinstance(metadata, dict) else {}
+    object_name = report_metadata.get("reportType", {}).get("type", "")
+    if not isinstance(object_name, str):
+        object_name = ""
+
+    candidates = mapping.report_type_candidates(object_name)
+    for candidate in candidates:
+        describe = _fetch_object_cached(client, candidate, cache, warnings)
+        if describe is not None:
+            return candidate, describe, None
+
+    return None, None, mapping.candidate_failure_reason(object_name, candidates)
