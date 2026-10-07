@@ -21,11 +21,11 @@ AI が出した SOQL は、本番で実行する前に人が確認してくだ�
 
 | コマンド | 用途 |
 |---|---|
-| `python -m soql_collector fetch [管理番号 ...]` | 指定した管理番号の describe を取得して JSON に書く |
-| `python -m soql_collector fetch --all` | 「有効」が ○ の管理番号を全部取る |
-| `python -m soql_collector fetch [管理番号 ...] --dry-run` | 接続せず、対象だけ表示する |
-| `python -m soql_collector list` | 管理表の一覧（管理番号・概要・有効・レポート ID）を表示する |
-| `python -m soql_collector tables` | `OUTPUT_DIR` の JSON から対応表 CSV・項目表 CSV を作り直す |
+| `python main.py fetch [管理番号 ...]` | 指定した管理番号の describe を取得して JSON に書く |
+| `python main.py fetch --all` | 「有効」が ○ の管理番号を全部取る |
+| `python main.py fetch [管理番号 ...] --dry-run` | 接続せず、対象だけ表示する |
+| `python main.py list` | 管理表の一覧（管理番号・概要・有効・レポート ID）を表示する |
+| `python main.py tables` | `OUTPUT_DIR` の JSON から対応表 CSV・項目表 CSV を作り直す |
 | `python main.py` （引数なし） | 対話メニュー（ `1` 〜 `4` で `fetch` / `fetch --all` / `list` / `tables` ） |
 
 `fetch` の実行が成功した ID については、 `fetch` の最後で自動的に

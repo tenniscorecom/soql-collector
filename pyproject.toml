@@ -4,8 +4,24 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]  # E=style, F=pyflakes, W=warning, I=import order
-ignore = []
+select = ["E", "F", "W", "I", "B", "UP", "C4", "LOG", "G", "DTZ", "RUF", "TID"]
+ignore = [
+    # 日本語のコード・コメント・docstring を「紛らわしい文字」として大量に誤検知するため
+    "RUF001", "RUF002", "RUF003",
+    # __all__ は意味のまとまり順に並べているため、アルファベット順の強制は受け入れない
+    "RUF022",
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# 相対 import は禁止。ドットを数える作業を残さないため。
+# 必ず `from src.X import Y` のようにパッケージルートから書く（CONVENTIONS.md 参照）
+ban-relative-imports = "all"
+
+[tool.ruff.lint.mccabe]
+# 分岐の絡み合いの上限。
+# 10 は「いま全部通る一番きつい値」。測ったら最大が 10 だったので、
+# これ以上ややこしくなった時点で落ちる。
+max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
 # テストのフィクスチャは日本語の見出しや URL を含むので、行が 100 字を超える。改行すると
@@ -13,17 +29,7 @@ ignore = []
 "tests/**/*.py" = ["E501"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "F:/dev"]
-
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "soql-collector"
-version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = []
-
-[tool.setuptools.packages.find]
-where = ["src"]
+# `src` パッケージは `python -m pytest` をルートで実行すれば自動的に sys.path に入る。
+# `F:/dev/comken` は comken（共有ライブラリ。その中に `comken/` パッケージがある）の
+# 置き場所として PYTHONPATH を代行するために書く
+pythonpath = ["F:/dev/comken"]

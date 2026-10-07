@@ -29,8 +29,8 @@ comken の例外は comken の `docs/ERRORS.md` を参照してください。 �
 | `[failed] 管理番号 N: Salesforce への接続でエラー（HTTP ...）: ...` | 接続時の HTTP エラー（ 認証以外 ） | ネットワークの状態を確認して再実行する |
 | `[failed] 管理番号 N: Salesforce エラー: ...` | comken の `SalesforceError` | メッセージに表示された指示に従う |
 | `終了コード 2` で「`管理番号 〇〇: 管理表に無い管理番号です』`」 と表示される | 指定した管理番号が管理表に無い | 管理表の `ID` 列を見て、 指定した管理番号があるかを確認する（ 大文字小文字・全半角の表記揺れ ） |
-| `tables` を起動して `終了コード 1` で「先に fetch を実行して ... に JSON を作ってください」 と表示される | `OUTPUT_DIR` に JSON が無い | `python -m soql_collector fetch ...` を先に実行する |
-| `先に fetch してください` と表示される | `tables` を直接叩いた。 `OUTPUT_DIR` が空 | `python -m soql_collector fetch 1001` などで `{管理番号} を先に取る |
+| `tables` を起動して `終了コード 1` で「先に fetch を実行して ... に JSON を作ってください」 と表示される | `OUTPUT_DIR` に JSON が無い | `python main.py fetch ...` を先に実行する |
+| `先に fetch してください` と表示される | `tables` を直接叩いた。 `OUTPUT_DIR` が空 | `python main.py fetch 1001` などで `{管理番号} を先に取る |
 
 ---
 

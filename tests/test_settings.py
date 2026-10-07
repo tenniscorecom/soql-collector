@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from comken.exceptions import ConfigKeyNotFoundError
 
-from soql_collector.settings import load_settings
+from src.settings import load_settings
 
 
 def _write_ini(tmp_path: Path, content: str) -> None:

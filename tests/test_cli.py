@@ -9,7 +9,7 @@ import pytest
 from openpyxl import Workbook
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from soql_collector.cli import main, run_interactive
+from src.cli import main, run_interactive
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
@@ -67,7 +67,7 @@ def test_list_help(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_list_outputs_table_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(
@@ -95,7 +95,7 @@ def test_list_outputs_table_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 def test_fetch_dry_run_does_not_open_site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(
@@ -119,7 +119,7 @@ def test_fetch_dry_run_does_not_open_site(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_fetch_dry_run_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(
@@ -139,7 +139,7 @@ def test_fetch_dry_run_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_fetch_missing_key_returns_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(
@@ -159,7 +159,7 @@ def test_fetch_missing_key_returns_error(tmp_path: Path, monkeypatch: pytest.Mon
 def test_fetch_no_args_no_all_returns_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(master, [])
@@ -176,7 +176,7 @@ def test_fetch_with_fake_client_writes_json(
     """偽 ``site_for`` を差し込んで ``fetch 1001`` を JSON まで通す。"""
     from comken.core.table import Table
 
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(
@@ -228,7 +228,7 @@ def test_fetch_with_fake_client_writes_json(
             self.describe_object_calls.append(name)
             return {"name": name, "fields": []}
 
-        def __enter__(self) -> "_Client":
+        def __enter__(self) -> _Client:
             opened["count"] += 1
             return self
 
@@ -242,11 +242,11 @@ def test_fetch_with_fake_client_writes_json(
     def fake_site_for(url: str) -> _Site:
         return _Site()
 
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     monkeypatch.setattr(cli_module, "load_settings", lambda: _FakeSettings(tmp_path))
     # 直接 ``site_for`` を差し込む代わりに ``run_fetch`` を差し込む方が安全
-    from soql_collector.fetch import FetchOutcome
+    from src.fetch import FetchOutcome
 
     def fake_run_fetch(settings, entries, *, dry_run=False, site_for=None):
         return [
@@ -282,8 +282,8 @@ class _FakeSettings:
 def test_fetch_exit_code_one_when_one_id_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import soql_collector.cli as cli_module
-    from soql_collector.fetch import FetchOutcome
+    import src.cli as cli_module
+    from src.fetch import FetchOutcome
 
     master = tmp_path / "master.xlsx"
     _build_master(
@@ -322,7 +322,7 @@ def test_fetch_exit_code_one_when_one_id_fails(
 
 
 def test_run_interactive_list_then_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(master, [])
@@ -339,7 +339,7 @@ def test_run_interactive_tables_then_exit(tmp_path: Path, monkeypatch: pytest.Mo
     """対話メニューの「4. CSV を作り直す」が ``tables`` サブコマンドを
     起動する。 ``OUTPUT_DIR`` に JSON が無いので終了コード 1 が返る。
     """
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(master, [])
@@ -367,7 +367,7 @@ def test_tables_returns_one_when_no_json(tmp_path: Path, monkeypatch: pytest.Mon
     """``tables`` サブコマンド: ``OUTPUT_DIR`` に ``*.json`` が無いときは
     終了コード 1。
     """
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(master, [])
@@ -387,7 +387,7 @@ def test_tables_help(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_run_interactive_fetch_then_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(master, [])
@@ -399,7 +399,7 @@ def test_run_interactive_fetch_then_exit(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr("builtins.input", lambda *_args: next(inputs))
 
     def fake_run_fetch(settings, entries, *, dry_run=False, site_for=None):
-        from soql_collector.fetch import FetchOutcome
+        from src.fetch import FetchOutcome
 
         return [
             FetchOutcome(
@@ -418,7 +418,7 @@ def test_run_interactive_fetch_then_exit(tmp_path: Path, monkeypatch: pytest.Mon
 def test_main_with_empty_argv_runs_interactive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import soql_collector.cli as cli_module
+    import src.cli as cli_module
 
     master = tmp_path / "master.xlsx"
     _build_master(master, [])

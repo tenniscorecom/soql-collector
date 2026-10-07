@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from soql_collector.tables import (
+from src.tables import (
     CORRESPONDENCE_COLUMNS,
     FIELD_TABLE_COLUMNS,
     TableOutcome,
@@ -248,7 +248,7 @@ def test_correspondence_uses_atomic_write(tmp_path: Path) -> None:
     """CSV 書き込みが ``atomic_write`` 経由である（途中で失敗したら既存 CSV が
     壊れない）ことを、 ``atomic_write`` をパッチして例外を上げて確かめる。
     """
-    from soql_collector import tables as tables_module
+    from src import tables as tables_module
 
     output = tmp_path / "output"
     output.mkdir()

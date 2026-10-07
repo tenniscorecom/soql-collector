@@ -11,7 +11,7 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from soql_collector.master import MasterEntry, _is_enabled, filter_enabled, read_master
+from src.master import MasterEntry, _is_enabled, filter_enabled, read_master
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 

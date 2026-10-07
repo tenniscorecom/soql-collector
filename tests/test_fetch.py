@@ -9,15 +9,15 @@ import pytest
 from comken.core.table import Table
 from comken.exceptions import SalesforceRequestError
 
-from soql_collector.fetch import (
+from src.fetch import (
     _apply_related_limit,
     _collect_related_object_names,
     _fetch_object_cached,
     _main_object_name,
     run_fetch,
 )
-from soql_collector.master import MasterEntry
-from soql_collector.settings import Settings
+from src.master import MasterEntry
+from src.settings import Settings
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
@@ -57,7 +57,7 @@ class _FakeClient:
             raise self._errors[name]
         return self._object_describes.get(name, {"name": name, "fields": []})
 
-    def __enter__(self) -> "_FakeClient":
+    def __enter__(self) -> _FakeClient:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -184,7 +184,7 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
             "Account": _main_describe("Account"),
         },
     )
-    site_for, site = _site_for(client)
+    site_for, _site = _site_for(client)
     settings = _settings(tmp_path)
 
     outcomes = run_fetch(settings, [entry], site_for=site_for)
@@ -473,10 +473,10 @@ def test_dry_run_does_not_open_site(tmp_path: Path) -> None:
         key="1", summary="顧客一覧", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True
     )
     client = _FakeClient(describe={}, fields=_make_fields())
-    site_for, site = _site_for(client)
+    site_for, _site = _site_for(client)
     outcomes = run_fetch(_settings(tmp_path), [entry], dry_run=True, site_for=site_for)
     assert outcomes[0].status == "dry-run"
-    assert site.open_count == 0
+    assert _site.open_count == 0
     # 出力先にファイルが無い
     assert not list(output.iterdir())
 
@@ -574,7 +574,7 @@ def test_json_write_oserror_marks_id_failed(tmp_path: Path) -> None:
     )
     site_for, _ = _site_for(client)
 
-    from soql_collector import fetch as fetch_module
+    from src import fetch as fetch_module
 
     original_atomic = fetch_module.atomic_write
     real_atomic = original_atomic
@@ -662,8 +662,8 @@ def test_cmd_fetch_calls_tables_only_for_ok_ids(
     成功した ID の ``対応表_{管理番号}.csv`` だけ作る。失敗した ID の
     既存 CSV はそのまま残る。
     """
-    from soql_collector import cli as cli_module
-    from soql_collector.fetch import FetchOutcome
+    from src import cli as cli_module
+    from src.fetch import FetchOutcome
 
     _write_empty_master(
         tmp_path,
@@ -770,7 +770,7 @@ def test_cmd_fetch_dry_run_does_not_call_tables(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``fetch --dry-run`` は ``run_tables`` を呼ばず、 CSV も作らない。"""
-    from soql_collector import cli as cli_module
+    from src import cli as cli_module
 
     _write_empty_master(
         tmp_path,
@@ -787,7 +787,7 @@ def test_cmd_fetch_dry_run_does_not_call_tables(
 
     def fake_run_tables(output_dir, *, only_keys=None):
         called["count"] += 1
-        from soql_collector.tables import TableOutcome
+        from src.tables import TableOutcome
 
         return TableOutcome(wrote=(), skipped=())
 
@@ -817,7 +817,7 @@ def test_existing_json_not_corrupted_on_failure(tmp_path: Path) -> None:
     existing = output_dir / "1.json"
     existing.write_text('{"既存": "そのまま"}', encoding="utf-8")
 
-    from soql_collector import fetch as fetch_module
+    from src import fetch as fetch_module
 
     main = _main_describe("Opportunity", fields_map={"AccountId": ["Account"]})
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)

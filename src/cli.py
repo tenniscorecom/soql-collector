@@ -20,10 +20,10 @@ import sys
 
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from soql_collector.fetch import run_fetch
-from soql_collector.master import filter_enabled, read_master
-from soql_collector.settings import Settings, load_settings
-from soql_collector.tables import run_tables
+from src.fetch import run_fetch
+from src.master import filter_enabled, read_master
+from src.settings import Settings, load_settings
+from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ MENU_COMMANDS = (
 def build_parser() -> argparse.ArgumentParser:
     """argparse の ``ArgumentParser`` を組み立てる。"""
     parser = argparse.ArgumentParser(
-        prog="soql_collector",
+        prog="soql-collector",
         description="レポート管理表の ID ごとに Salesforce の describe を取得し JSON に保存します",
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _prompt_argv() -> list[str]:
     """対話メニューで選んだ結果の argv を組み立てる。"""
     while True:
-        logger.info("=== soql_collector ===")
+        logger.info("=== soql-collector ===")
         for number, description, _ in MENU_COMMANDS:
             logger.info("%s. %s", number, description)
         choice = input("番号を選択してください: ").strip()

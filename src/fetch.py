@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from comken.core.dates import now as comken_now
 from comken.core.files import atomic_write
@@ -39,8 +40,8 @@ from comken.exceptions import (
 )
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from soql_collector.master import MasterEntry
-from soql_collector.settings import Settings
+from src.master import MasterEntry
+from src.settings import Settings
 
 logger = logging.getLogger(__name__)
 
