@@ -51,39 +51,47 @@ def _make_correspondence_payload(
         objects[main_object] = {
             "name": main_object,
             "label": "商談",
+            "custom": False,
             "fields": [
                 {
                     "name": "AccountId",
                     "label": "取引先",
                     "type": "reference",
+                    "custom": False,
                     "referenceTo": ["Account"],
                     "relationshipName": "Account",
-                    "custom": False,
+                    "picklist": [],
+                    "picklistTotal": 0,
                 },
                 {
                     "name": "WhoId",
                     "label": "担当者",
                     "type": "reference",
-                    "referenceTo": ["Contact", "Lead"],
                     "custom": False,
+                    "referenceTo": ["Contact", "Lead"],
+                    "relationshipName": None,
+                    "picklist": [],
+                    "picklistTotal": 0,
                 },
                 {
                     "name": "Custom__c",
                     "label": "カスタム項目",
                     "type": "picklist",
                     "custom": True,
-                    "picklistValues": [
-                        {"value": "A", "active": True},
-                        {"value": "B", "active": True},
-                        {"value": "C", "active": False},
-                        {"value": "D", "active": True},
-                    ],
+                    "referenceTo": [],
+                    "relationshipName": None,
+                    "picklist": ["A", "B", "D"],  # active な値だけ
+                    "picklistTotal": 3,
                 },
                 {
                     "name": "Name",
                     "label": "商談名",
                     "type": "string",
                     "custom": False,
+                    "referenceTo": [],
+                    "relationshipName": None,
+                    "picklist": [],
+                    "picklistTotal": 0,
                 },
             ],
         }
@@ -383,20 +391,20 @@ def test_field_table_prefers_newer_timestamp(tmp_path: Path) -> None:
 
 
 def test_field_table_picklist_active_only_and_truncated(tmp_path: Path) -> None:
-    """``picklistValues`` は ``active`` が真の ``value`` だけ。30 件で切って
-    末尾に ``…`` を付ける。 ``custom=True`` は ``○``、 ``custom=False`` は空。
+    """``picklist`` （ active な ``value`` だけの配列） を ``|`` 区切りにする。
+    ``picklistTotal`` が 30 を超えるとき末尾に ``…`` を 1 個足して切る。
+    ``custom=True`` は ``○``、 ``custom=False`` は空。
     """
     output = tmp_path / "output"
     output.mkdir()
 
-    picklist_values = [{"value": f"V{i}", "active": True} for i in range(35)] + [
-        {"value": "inactive", "active": False}
-    ]
+    picklist = [f"V{i}" for i in range(31)]  # 31 値
     payload = _make_correspondence_payload("1001", main_object="Opportunity")
-    # Custom__c を 35 件の active 選択肢に差し替え
+    # Custom__c を 31 件の ``picklist`` 配列に差し替え（ ``picklistTotal`` は 31 ）
     for field in payload["objects"]["Opportunity"]["fields"]:
         if field["name"] == "Custom__c":
-            field["picklistValues"] = picklist_values
+            field["picklist"] = picklist
+            field["picklistTotal"] = 31
             break
 
     _write_json(output, payload)
@@ -406,13 +414,12 @@ def test_field_table_picklist_active_only_and_truncated(tmp_path: Path) -> None:
     _, rows = _read_csv(output / "項目表.csv")
     custom_row = next(row for row in rows if row["項目API名"] == "Custom__c")
     choices = custom_row["選択肢"].split("|")
-    # 30 件で打ち切られて末尾に ``…``
+    # 30 件で打ち切られて末尾に ``…`` （ 31 要素 ）
     assert len(choices) == 31
     assert choices[-1] == "…"
-    # inactive は入っていない（先頭の V0..V29 だけ）
+    # 先頭の V0..V29 だけ
     assert choices[0] == "V0"
-    assert choices[-2] == "V29"
-    assert "inactive" not in custom_row["選択肢"]
+    assert choices[29] == "V29"
     # カスタム項目は ``○``
     assert custom_row["カスタム"] == "○"
 
@@ -420,6 +427,70 @@ def test_field_table_picklist_active_only_and_truncated(tmp_path: Path) -> None:
     name_row = next(row for row in rows if row["項目API名"] == "Name")
     assert name_row["カスタム"] == ""
     assert name_row["選択肢"] == ""
+
+
+def test_field_table_picklist_total_at_boundary(tmp_path: Path) -> None:
+    """``picklistTotal`` の境界値: 30 ちょうどなら ``…`` は付かず、
+    31 なら ``…`` が 1 個付く（ ``picklist`` 自体が 30 個でも、
+    ``picklistTotal`` が 31 なら「 後ろにもある」 と検知する ）。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    payload = _make_correspondence_payload("1001", main_object="Opportunity")
+
+    # ``Picked__c`` を追加: ``picklist`` 30 個 / ``picklistTotal`` 30
+    payload["objects"]["Opportunity"]["fields"].append(
+        {
+            "name": "Picked__c",
+            "label": "ちょうど30",
+            "type": "picklist",
+            "custom": True,
+            "referenceTo": [],
+            "relationshipName": None,
+            "picklist": [f"V{i}" for i in range(30)],
+            "picklistTotal": 30,
+        }
+    )
+    _write_json(output, payload)
+
+    run_tables(output, only_keys=["1001"])
+
+    _, rows = _read_csv(output / "項目表.csv")
+    row = next(r for r in rows if r["項目API名"] == "Picked__c")
+    choices = row["選択肢"].split("|")
+    # ``…`` は付かない（ 30 ちょうど ）
+    assert len(choices) == 30
+    assert "…" not in row["選択肢"]
+    # 先頭と末尾
+    assert choices[0] == "V0"
+    assert choices[29] == "V29"
+
+
+def test_field_table_picklist_total_exceeds_list_size(tmp_path: Path) -> None:
+    """``picklist`` が 30 個に絞られていても ``picklistTotal`` が 31 以上なら
+    末尾に ``…`` が 1 個付く（ 「 もっと後ろがある」 を検知 ）。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    payload = _make_correspondence_payload("1001", main_object="Opportunity")
+    payload["objects"]["Opportunity"]["fields"].append(
+        {
+            "name": "BigPick__c",
+            "label": "大きい選択肢",
+            "picklist": [f"V{i}" for i in range(30)],
+            "picklistTotal": 50,
+        }
+    )
+    _write_json(output, payload)
+
+    run_tables(output, only_keys=["1001"])
+
+    _, rows = _read_csv(output / "項目表.csv")
+    row = next(r for r in rows if r["項目API名"] == "BigPick__c")
+    choices = row["選択肢"].split("|")
+    # 30 + ``…`` = 31 要素
+    assert len(choices) == 31
+    assert choices[-1] == "…"
+    # 先頭は V0
+    assert choices[0] == "V0"
 
 
 def test_field_table_polymorphic_reference_and_relationship(tmp_path: Path) -> None:

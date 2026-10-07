@@ -314,32 +314,31 @@ def _build_field_table_rows(
                     "参照先オブジェクト": reference_text,
                     "リレーション名": relationship_text,
                     "カスタム": custom_mark,
-                    "選択肢": _format_picklist(field.get("picklistValues")),
+                    "選択肢": _format_picklist(field.get("picklist"), field.get("picklistTotal")),
                 }
             )
     return rows
 
 
-def _format_picklist(picklist: object) -> str:
-    """``picklistValues`` のうち ``active`` が真の ``value`` を ``|`` 区切りにする。
+def _format_picklist(picklist: object, picklist_total: object = 0) -> str:
+    """``picklist`` （ active な ``value`` だけの配列）を ``|`` 区切りにする。
 
-    30 件を超えたら末尾に ``…`` を 1 個足して切る（業務で実際に必要になるのは
-    数件までなので、 30 で十分。多すぎると CSV が読みづらくなる）。
+    ``picklistTotal`` が ``PICKLIST_LIMIT``（既定 30）を超えるとき末尾に
+    ``…`` を 1 個足して切る（業務で実際に必要になるのは数件までなので、
+    30 で十分。多すぎると CSV が読みづらくなる）。 ``picklist`` 自体が 30 件に
+    絞られていても、 ``picklistTotal`` で「さらに後ろがある」ことを検知する。
     """
     if not isinstance(picklist, list) or not picklist:
         return ""
-    active_values: list[str] = []
-    for entry in picklist:
-        if isinstance(entry, dict) and entry.get("active"):
-            value = entry.get("value")
-            if isinstance(value, str) and value:
-                active_values.append(value)
-    if not active_values:
+    values: list[str] = [v for v in picklist if isinstance(v, str) and v]
+    if not values:
         return ""
-    if len(active_values) > PICKLIST_LIMIT:
-        active_values = active_values[:PICKLIST_LIMIT]
-        active_values.append("…")
-    return "|".join(active_values)
+    total = picklist_total if isinstance(picklist_total, int) else len(values)
+    if total > PICKLIST_LIMIT:
+        if len(values) > PICKLIST_LIMIT:
+            values = values[:PICKLIST_LIMIT]
+        values.append("…")
+    return "|".join(values)
 
 
 def _coerce_str(value: object) -> str:

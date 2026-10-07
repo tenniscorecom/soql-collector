@@ -14,6 +14,8 @@ from src.fetch import (
     _collect_related_object_names,
     _fetch_object_cached,
     _main_object_name,
+    _slim_object,
+    _slim_report,
     run_fetch,
 )
 from src.master import MasterEntry
@@ -198,12 +200,22 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
     assert payload["URL"] == f"{DOMAIN}/00O5g00000ABCDE/view"
     assert "取得日時" in payload
     assert payload["主オブジェクト"] == "Opportunity"
-    assert payload["report"] == metadata
+    # ``report`` は slim した_モジュール定数（ 値は元と同じ、 不要なキーは落ちる ）。
+    # allowlist のキーは全部残るので ``reportMetadata`` は等値になる
+    assert payload["report"]["reportMetadata"] == metadata["reportMetadata"]
+    # 3 つのサブキーは常に存在し、 何も落ちていないので空
+    assert payload["report"]["droppedKeys"] == {
+        "reportMetadata": [],
+        "reportExtendedMetadata": [],
+        "top": [],
+    }
     assert set(payload["objects"]) == {"Opportunity", "Account"}
-    assert payload["objects"]["Opportunity"] == _main_describe(
-        "Opportunity", fields_map={"AccountId": ["Account"]}
+    # ``objects`` の各値は ``_slim_object`` を通った形（ name/label/custom/fields の 4 キー ）
+    expected_opportunity = _slim_object(
+        _main_describe("Opportunity", fields_map={"AccountId": ["Account"]})
     )
-    assert payload["objects"]["Account"] == _main_describe("Account")
+    assert payload["objects"]["Opportunity"] == expected_opportunity
+    assert payload["objects"]["Account"] == _slim_object(_main_describe("Account"))
     assert payload["column_map"] == [
         {
             "列キー": "Opp.Name",
@@ -216,13 +228,55 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
     assert payload["warnings"] == []
 
 
-def test_objects_dict_preserves_describe_content(tmp_path: Path) -> None:
-    """``objects`` の中身は comken が返した dict をそのまま（加工・間引きをしない）。
-
-    JSON 経由のラウンドトリップで再構築されるので ``is`` 比較ではなく、
-    内容一致（``==``）で確かめる。
+def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
+    """``objects`` の中身は ``_slim_object`` を通した形（ name/label/custom/fields の 4 キー ）
+    で書かれている。 JSON に重そうなキーは残らない（ childRelationships / recordTypeInfos など ）。
     """
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_make_metadata(),
+        fields=_make_fields(),
+        object_describes={
+            "Opportunity": _main_describe("Opportunity", fields_map={"AccountId": ["Account"]}),
+            "Account": _main_describe("Account"),
+        },
+    )
+    site_for, _ = _site_for(client)
+    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    opp = payload["objects"]["Opportunity"]
+    # オブジェクトは 4 キーだけ
+    assert set(opp.keys()) == {"name", "label", "custom", "fields"}
+    # 各項目は 8 キーだけ
+    for field in opp["fields"]:
+        assert set(field.keys()) == {
+            "name",
+            "label",
+            "type",
+            "custom",
+            "referenceTo",
+            "relationshipName",
+            "picklist",
+            "picklistTotal",
+        }
+    # 重そうなキーは残らない
+    assert "childRelationships" not in opp
+    assert "recordTypeInfos" not in opp
+    assert "urls" not in opp
+    for field in opp["fields"]:
+        assert "picklistValues" not in field
+
+
+def test_objects_dict_does_not_mutate_original_describe(tmp_path: Path) -> None:
+    """``_slim_object`` が走っても、 ``describe_object`` の戻り値（ cache ）は
+    変わらない（ 関連オブジェクト収集が原本の ``referenceTo`` /
+    ``relationshipName`` を使うため ）。
+    """
+    import copy
+
     original = _main_describe("Opportunity", fields_map={"AccountId": ["Account"]})
+    snapshot = copy.deepcopy(original)
+
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
@@ -230,10 +284,9 @@ def test_objects_dict_preserves_describe_content(tmp_path: Path) -> None:
         object_describes={"Opportunity": original, "Account": _main_describe("Account")},
     )
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
-    assert payload["objects"]["Opportunity"] == original
-    assert payload["objects"]["Account"] == _main_describe("Account")
+    run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+
+    assert original == snapshot
 
 
 def test_related_objects_dedup_excludes_main_polymorphic(tmp_path: Path) -> None:
@@ -907,3 +960,729 @@ def test_fetch_object_cached_calls_only_once() -> None:
     # 2 回目は client.describe_object が呼ばれないので calls には 1 件のみ
     assert client.describe_object_calls.count("Account") == 1
     assert warnings2 == []
+
+
+# ── _slim_report ─────────────────────────────────────────────────────────
+
+
+def _make_report_metadata_with_extras() -> dict:
+    """``_slim_report`` の絞り込み確認用に、 許可リスト以外のキーを混ぜた dict。"""
+    return {
+        # ``reportMetadata`` の中で、 許可リストにあるキー
+        "reportMetadata": {
+            "id": "00O5g00000ABCDE",
+            "name": "顧客一覧",
+            "reportType": {"type": "Opportunity"},
+            "reportFormat": "TABULAR",
+            "scope": "organization",
+            "detailColumns": ["Opp.Name"],
+            "reportFilters": [{"column": "Opp.Amount", "operator": "greaterThan", "value": "0"}],
+            "reportBooleanFilter": "1 AND 2",
+            "standardDateFilter": {"dateFilterType": "absolute", "startDate": "2024-01-01"},
+            "standardFilters": [],
+            "crossFilters": [],
+            "groupingsDown": [],
+            "groupingsAcross": [],
+            "aggregates": [],
+            "sortBy": [],
+            "topRows": "10",
+            "historicalSnapshotDates": [],
+            "buckets": [],
+            "customSummaryFormula": [],
+            "division": "",
+            "hasDetailRows": True,
+            # 許可リストに無い余計なキー（ 落ちるはず ）
+            "useNormalizedFieldForCurrency": True,
+            "userOrTeamFilterId": "005xx",
+            "description": "管理メモ",
+        },
+        # ``reportExtendedMetadata`` で、 許可リストにある3つ
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {"Opp.Name": {"label": "商談名"}},
+            "groupingColumnInfo": {},
+            "aggregateColumnInfo": {},
+            # 落ちるはずの余計なキー
+            "reportTypeExtraInfo": {"heavy": "blob"},
+            "joinedReportMetadata": {},
+        },
+        # トップレベルの余計なキー（ 全部 ``droppedKeys.top`` に行く ）
+        "reportTypeMetadata": {"columns": ["very", "heavy", "data"] * 100},
+        "attributes": {"type": "Report", "url": "/services/data/v60.0/analytics/reports/00O..."},
+        "hasNestedReports": False,
+        "folderId": "00l5g00000XXXXX",
+        "ownerId": "0055g00000XXXXX",
+    }
+
+
+def test_slim_report_keeps_only_allowed_keys_and_drops_rest_in_order() -> None:
+    """``_slim_report`` は許可リストのキーだけ残し、 落としたキーを
+    ``droppedKeys`` の該当サブキーに**出現順で**入れる。"""
+    original = _make_report_metadata_with_extras()
+    result = _slim_report(original)
+
+    # ``reportMetadata`` は許可リストにあるキーだけ
+    expected_keys = {
+        "id",
+        "name",
+        "reportType",
+        "reportFormat",
+        "scope",
+        "detailColumns",
+        "reportFilters",
+        "reportBooleanFilter",
+        "standardDateFilter",
+        "standardFilters",
+        "crossFilters",
+        "groupingsDown",
+        "groupingsAcross",
+        "aggregates",
+        "sortBy",
+        "topRows",
+        "historicalSnapshotDates",
+        "buckets",
+        "customSummaryFormula",
+        "division",
+        "hasDetailRows",
+    }
+    assert set(result["reportMetadata"].keys()) == expected_keys
+
+    # 残したキーの値は元と**等しい**
+    for key in expected_keys:
+        assert result["reportMetadata"][key] == original["reportMetadata"][key], key
+
+    # ``reportExtendedMetadata`` は 3 つのキーだけ
+    assert set(result["reportExtendedMetadata"].keys()) == {
+        "detailColumnInfo",
+        "groupingColumnInfo",
+        "aggregateColumnInfo",
+    }
+    assert result["reportExtendedMetadata"]["detailColumnInfo"] == {"Opp.Name": {"label": "商談名"}}
+
+    # ``droppedKeys`` は 3 つのサブキーが常に存在し、 落ちたキー名が出現順で入る
+    assert result["droppedKeys"] == {
+        "reportMetadata": ["useNormalizedFieldForCurrency", "userOrTeamFilterId", "description"],
+        "reportExtendedMetadata": ["reportTypeExtraInfo", "joinedReportMetadata"],
+        "top": ["reportTypeMetadata", "attributes", "hasNestedReports", "folderId", "ownerId"],
+    }
+
+
+def test_slim_report_excludes_heavy_keys_from_output() -> None:
+    """``reportTypeMetadata`` や ``attributes`` が出力に無いことを
+    厳密に確かめる（ 出力 dict のトップレベルキーが限定されている ）。"""
+    result = _slim_report(_make_report_metadata_with_extras())
+
+    # 出力トップレベルは ``reportMetadata`` / ``reportExtendedMetadata`` /
+    # ``droppedKeys`` の 3 つだけ
+    assert set(result.keys()) == {
+        "reportMetadata",
+        "reportExtendedMetadata",
+        "droppedKeys",
+    }
+
+    # ``reportMetadata`` の中に ``reportTypeMetadata`` が紛れていない
+    assert "reportTypeMetadata" not in result["reportMetadata"]
+    assert "attributes" not in result["reportMetadata"]
+
+
+def test_slim_report_handles_missing_or_bad_input() -> None:
+    """``reportMetadata`` が無い／ dict でない／``None`` ／文字列でも例外を上げない。"""
+    # ``reportMetadata`` / ``reportExtendedMetadata`` が無い
+    result = _slim_report({"hasNestedReports": False})
+    assert set(result.keys()) == {"droppedKeys"}
+    assert result["droppedKeys"] == {
+        "reportMetadata": [],
+        "reportExtendedMetadata": [],
+        "top": ["hasNestedReports"],
+    }
+
+    # ``reportMetadata`` が dict でない: 該当キーは結果に出ない
+    result = _slim_report({"reportMetadata": "not a dict", "reportExtendedMetadata": None})
+    assert "reportMetadata" not in result
+    assert "reportExtendedMetadata" not in result
+    # ``reportMetadata`` / ``reportExtendedMetadata`` は特別扱いなので ``top`` にも入らない
+    assert result["droppedKeys"] == {
+        "reportMetadata": [],
+        "reportExtendedMetadata": [],
+        "top": [],
+    }
+
+    # 全体が dict でない
+    result = _slim_report(None)
+    assert result == {
+        "droppedKeys": {"reportMetadata": [], "reportExtendedMetadata": [], "top": []}
+    }
+
+    result = _slim_report("string")
+    assert result == {
+        "droppedKeys": {"reportMetadata": [], "reportExtendedMetadata": [], "top": []}
+    }
+
+
+def test_slim_report_does_not_mutate_input_dict() -> None:
+    """``_slim_report`` を呼んでも入力の dict は変わらない（ 別 dict にコピー ）。"""
+    import copy
+
+    original = _make_report_metadata_with_extras()
+    snapshot = copy.deepcopy(original)
+
+    _slim_report(original)
+
+    # 入力 dict は ``==`` で比較できるほど変わらない
+    assert original == snapshot
+
+
+def test_slim_report_dropped_keys_subkeys_always_present() -> None:
+    """何も落ちていないときも ``droppedKeys`` の 3 サブキーは空リストとして存在する。"""
+    metadata = {
+        "reportMetadata": {
+            "id": "00O5g00000ABCDE",
+            "name": "顧客一覧",
+            "reportType": {"type": "Opportunity"},
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {},
+            "groupingColumnInfo": {},
+            "aggregateColumnInfo": {},
+        },
+    }
+    result = _slim_report(metadata)
+    assert result["droppedKeys"] == {
+        "reportMetadata": [],
+        "reportExtendedMetadata": [],
+        "top": [],
+    }
+
+
+# ── _slim_object ──────────────────────────────────────────────────────────
+
+
+def _make_full_describe() -> dict:
+    """``_slim_object`` の絞り込み確認用に、 落とすべきキーを全部盛りにした describe。"""
+    return {
+        "name": "Opportunity",
+        "label": "商談",
+        "custom": False,
+        # 落ちるはずのキー（ これらが JSON に残らないことを確認する ）
+        "childRelationships": [{"childSObject": "Account", "field": "OpportunityId"}],
+        "recordTypeInfos": [{"recordTypeId": "012000000000001"}],
+        "urls": {"rowTemplate": "/services/data/v60.0/..."},
+        "supportedScopes": [{"label": "すべて"}],
+        "layoutable": True,
+        "searchable": True,
+        "queryable": True,
+        "fields": [
+            # 8 キー全部あり、 active な picklistValues
+            {
+                "name": "StageName",
+                "label": "フェーズ",
+                "type": "picklist",
+                "custom": False,
+                "referenceTo": [],
+                "relationshipName": None,
+                "picklistValues": [
+                    {"value": "Prospecting", "active": True},
+                    {"value": "Qualification", "active": True},
+                    {"value": "ClosedLost", "active": False},
+                    {"value": "ClosedWon", "active": True},
+                ],
+                # 落ちるはずの余計なキー
+                "inlineHelpText": "進捗",
+                "length": 40,
+            },
+            # ``custom`` / ``referenceTo`` / ``relationshipName`` が無い
+            {
+                "name": "Name",
+                "label": "商談名",
+                "type": "string",
+                "picklistValues": [],
+            },
+            # ``picklistValues`` が無い（ active 絞りは要らない ）
+            {
+                "name": "Amount",
+                "label": "金額",
+                "type": "currency",
+                "custom": False,
+                "referenceTo": [],
+                "relationshipName": None,
+            },
+        ],
+    }
+
+
+def test_slim_object_only_required_top_level_keys() -> None:
+    """``_slim_object`` は ``name`` / ``label`` / ``custom`` / ``fields`` の 4 キーだけ残す。"""
+    result = _slim_object(_make_full_describe())
+    assert set(result.keys()) == {"name", "label", "custom", "fields"}
+    assert result["name"] == "Opportunity"
+    assert result["label"] == "商談"
+    assert result["custom"] is False
+
+
+def test_slim_object_drops_heavy_keys() -> None:
+    """``_slim_object`` は重いキー（ ``childRelationships`` / ``recordTypeInfos`` /
+    ``urls`` / ``supportedScopes`` / ``layoutable`` など）を出力に残さない。"""
+    result = _slim_object(_make_full_describe())
+    for forbidden in (
+        "childRelationships",
+        "recordTypeInfos",
+        "urls",
+        "supportedScopes",
+        "layoutable",
+        "searchable",
+        "queryable",
+    ):
+        assert forbidden not in result, forbidden
+
+
+def test_slim_field_has_eight_keys_in_order() -> None:
+    """各項目は ``name`` / ``label`` / ``type`` / ``custom`` / ``referenceTo`` /
+    ``relationshipName`` / ``picklist`` / ``picklistTotal`` の 8 キーが**この順**で
+    出る。 ``inlineHelpText`` など余計なキーは残らない。
+    """
+    result = _slim_object(_make_full_describe())
+
+    # ``fields`` の各項目が 8 キーだけ、 この順で
+    expected_order = [
+        "name",
+        "label",
+        "type",
+        "custom",
+        "referenceTo",
+        "relationshipName",
+        "picklist",
+        "picklistTotal",
+    ]
+    for field in result["fields"]:
+        assert list(field.keys()) == expected_order
+
+    # ``StageName`` に ``inlineHelpText`` などの余計なキーが残らない
+    stage = next(f for f in result["fields"] if f["name"] == "StageName")
+    assert "inlineHelpText" not in stage
+    assert "length" not in stage
+
+
+def test_slim_object_picklist_active_only_capped_at_thirty() -> None:
+    """``picklist`` は active な ``value`` だけを最大 30 件、 ``picklistTotal``
+    は active な選択肢の総数。"""
+    # active が 35 件、 inactive が 5 件（ active な V0..V34 がそのまま並ぶ ）
+    picklist_values = [{"value": f"V{i}", "active": True} for i in range(35)] + [
+        {"value": f"OFF{i}", "active": False} for i in range(5)
+    ]
+    describe = {
+        "name": "Custom__c",
+        "label": "カスタム",
+        "custom": True,
+        "fields": [
+            {
+                "name": "Custom__c",
+                "label": "カスタム",
+                "type": "picklist",
+                "picklistValues": picklist_values,
+            }
+        ],
+    }
+    result = _slim_object(describe)
+    field = result["fields"][0]
+
+    # ``picklist`` は先頭 30 件、 末尾が "V29"
+    assert len(field["picklist"]) == 30
+    assert field["picklist"][0] == "V0"
+    assert field["picklist"][29] == "V29"
+    # inactive は含まれない
+    for value in field["picklist"]:
+        assert not value.startswith("OFF")
+
+    # ``picklistTotal`` は active な選択肢の総数
+    assert field["picklistTotal"] == 35
+
+
+def test_slim_object_missing_keys_use_defaults() -> None:
+    """``custom`` 無しは ``false`` 、 ``referenceTo`` 無しは ``[]`` 、
+    ``relationshipName`` 無しは ``None`` 。"""
+    describe = {
+        "name": "Account",
+        "label": "取引先",
+        "fields": [
+            {
+                "name": "Name",
+                "label": "取引先名",
+                "type": "string",
+            }
+        ],
+    }
+    result = _slim_object(describe)
+    field = result["fields"][0]
+    assert field["custom"] is False
+    assert field["referenceTo"] == []
+    assert field["relationshipName"] is None
+    assert field["picklist"] == []
+    assert field["picklistTotal"] == 0
+
+
+def test_slim_object_skips_non_dict_field_entries() -> None:
+    """``fields`` の中に dict でない項目（ 文字列や ``None`` ）が混じっても飛ばす。"""
+    describe = {
+        "name": "X",
+        "label": "X",
+        "fields": [
+            {"name": "A", "label": "A", "type": "string"},
+            "not a dict",
+            None,
+            {"name": "B", "label": "B", "type": "string"},
+        ],
+    }
+    result = _slim_object(describe)
+    assert [f["name"] for f in result["fields"]] == ["A", "B"]
+
+
+def test_slim_object_does_not_mutate_input() -> None:
+    """``_slim_object`` を呼んでも入力 dict は変わらない（ 別 dict にコピー ）。"""
+    import copy
+
+    original = _make_full_describe()
+    snapshot = copy.deepcopy(original)
+
+    _slim_object(original)
+
+    assert original == snapshot
+
+
+def test_slim_object_handles_non_dict_input() -> None:
+    """``describe`` が dict でない（ ``None`` や文字列）でも例外を上げない。"""
+    assert _slim_object(None) == {}
+    assert _slim_object("string") == {}
+    assert _slim_object([]) == {}
+
+
+# ── JSON 出力に重いキーが一切残らないこと ──────────────────────────────────
+
+
+def test_json_output_has_no_heavy_keys_anywhere(tmp_path: Path) -> None:
+    """書き出した JSON のどこにも ``reportTypeMetadata`` / ``childRelationships`` /
+    ``recordTypeInfos`` / ``picklistValues`` が **キーとして** 出現しない
+    （ ``json.dumps`` した文字列に ``"重いキー":`` の形が出ない）。
+    なぜ: 機微な情報や、 巨大な原本が JSON の dict の中に漏れていないことを保証する。
+    """
+    # 元 describe に「 重い」 キーを全部盛りにした ``Account`` を作る
+    full_describe = {
+        "name": "Account",
+        "label": "取引先",
+        "custom": False,
+        "childRelationships": [{"childSObject": "Contact", "field": "AccountId"}],
+        "recordTypeInfos": [{"recordTypeId": "012000000000001"}],
+        "urls": {"rowTemplate": "/services/data/v60.0/sobjects/Account/{ID}"},
+        "supportedScopes": [{"label": "すべて"}],
+        "fields": [
+            {
+                "name": "Type",
+                "label": "種別",
+                "type": "picklist",
+                "picklistValues": [{"value": "Customer", "active": True}],
+            }
+        ],
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    # レポート describe にも ``reportTypeMetadata`` を入れる
+    metadata = {
+        "reportMetadata": {"reportType": {"type": "Account"}, "reportFormat": "TABULAR"},
+        "reportExtendedMetadata": {},
+        "reportTypeMetadata": {"columns": ["very", "heavy", "data"] * 50},
+        "attributes": {"type": "Report"},
+    }
+    client = _FakeClient(
+        describe=metadata,
+        fields=_make_fields(),
+        object_describes={"Account": full_describe},
+    )
+    site_for, _ = _site_for(client)
+
+    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
+    raw_text = payload_path.read_text(encoding="utf-8")
+
+    # ``"重いキー":`` という**キー形**が出現しない（ ``droppedKeys`` の中で
+    # 「 キー名そのもの」 が文字列として現れるのは仕様 ）
+    for forbidden in (
+        "reportTypeMetadata",
+        "childRelationships",
+        "recordTypeInfos",
+        "picklistValues",
+    ):
+        assert f'"{forbidden}":' not in raw_text, f"{forbidden!r} が JSON のキーとして残っています"
+
+
+# ── 関連オブジェクトの集め方が原本の fields を使うこと ──────────────────────
+
+
+def test_related_objects_collected_from_original_describe_not_slimmed(
+    tmp_path: Path,
+) -> None:
+    """関連オブジェクトの収集は slim 前の原本の ``referenceTo`` /
+    ``relationshipName`` を使う（ slim 後の ``fields`` からだと、 例えば
+    ``referenceTo`` が無い項目は拾えなくなる）。
+    なぜ: JSON 出力で ``objects`` の関連先が欠けないように。
+    """
+    # ``describe_object`` の戻り値は ``referenceTo`` / ``relationshipName`` が
+    # **必ず** 入っているが、 これを `_slim_object` した結果は ``picklist``
+    # など絞り込み後の形になる。 slim 後の ``fields`` から集めれば
+    # ``referenceTo`` / ``relationshipName`` が空リスト / None になり、
+    # 関連オブジェクトが取れなくなるはず。 このテストでは原本から集める実装を
+    # 確かめる。
+    main = {
+        "name": "Opportunity",
+        "label": "商談",
+        "custom": False,
+        "fields": [
+            {
+                "name": "AccountId",
+                "label": "取引先",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "Account",
+            }
+        ],
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_make_metadata("Opportunity"),
+        fields=_make_fields(),
+        object_describes={"Opportunity": main, "Account": _main_describe("Account")},
+    )
+    site_for, _ = _site_for(client)
+
+    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    # ``Account`` が出てきている（ slim 後の fields から集めていれば出ない）
+    assert "Account" in payload["objects"]
+
+
+# ── 6 つの改ざんが検出できることの直接テスト ──────────────────────────────────
+
+
+def test_slim_report_detects_allowlist_violation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``REPORT_METADATA_KEYS`` を広げると（ または完全に無視すると ）、
+    ``reportMetadata`` の絞り込みが甘くなり、 本来落ちるキーが残ってしまう
+    ことを検出できる。
+    """
+    import src.fetch as fetch_module
+
+    # 全てのキーを許可する ``REPORT_METADATA_KEYS`` に差し替える
+    permissive = (
+        *fetch_module.REPORT_METADATA_KEYS,
+        "useNormalizedFieldForCurrency",
+        "userOrTeamFilterId",
+        "description",
+    )
+    monkeypatch.setattr(fetch_module, "REPORT_METADATA_KEYS", permissive)
+
+    metadata = _make_report_metadata_with_extras()
+    result = _slim_report(metadata)
+
+    # 本来 ``droppedKeys.reportMetadata`` に行くはずのキーが ``reportMetadata``
+    # に**残ってしまっている**（ 改ざんを検出できる ）
+    assert "useNormalizedFieldForCurrency" in result["reportMetadata"]
+    assert "userOrTeamFilterId" in result["reportMetadata"]
+    assert "description" in result["reportMetadata"]
+    # ``droppedKeys.reportMetadata`` には入らない
+    assert "useNormalizedFieldForCurrency" not in result["droppedKeys"]["reportMetadata"]
+
+
+def test_slim_report_detects_dropped_keys_being_emptied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``droppedKeys`` を常に空にすると、 落ちたキーが ``droppedKeys`` に入らない。"""
+    from src import fetch as fetch_module
+
+    def bad_slim_report(metadata):
+        # 許可リストの通り残し、 ただし ``droppedKeys`` は常に空
+        result = {
+            "reportMetadata": {
+                k: v
+                for k, v in metadata["reportMetadata"].items()
+                if k in fetch_module.REPORT_METADATA_KEYS
+            },
+            "reportExtendedMetadata": {
+                k: v
+                for k, v in metadata["reportExtendedMetadata"].items()
+                if k in fetch_module.REPORT_EXTENDED_METADATA_KEYS
+            },
+            "droppedKeys": {"reportMetadata": [], "reportExtendedMetadata": [], "top": []},
+        }
+        return result
+
+    monkeypatch.setattr(fetch_module, "_slim_report", bad_slim_report)
+
+    metadata = _make_report_metadata_with_extras()
+    result = fetch_module._slim_report(metadata)
+    # 落ちたキーが ``droppedKeys`` に**入っていない**（ 改ざんが検出できる ）
+    assert result["droppedKeys"]["top"] == []
+    # 本来は ``top`` に名前が入るはず
+    assert "reportTypeMetadata" not in result["droppedKeys"]["top"]
+
+
+def test_slim_object_detects_picklist_total_being_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``picklistTotal`` を常に 0 にする改ざんを検出できる。"""
+    from src import fetch as fetch_module
+
+    real_slim_field = fetch_module._slim_field
+
+    def bad_slim_field(field):
+        slimmed = real_slim_field(field)
+        slimmed["picklistTotal"] = 0  # 改ざん
+        return slimmed
+
+    monkeypatch.setattr(fetch_module, "_slim_field", bad_slim_field)
+
+    picklist_values = [{"value": f"V{i}", "active": True} for i in range(35)]
+    describe = {
+        "name": "C",
+        "label": "C",
+        "fields": [
+            {"name": "X", "label": "X", "type": "picklist", "picklistValues": picklist_values}
+        ],
+    }
+    result = fetch_module._slim_object(describe)
+    field = result["fields"][0]
+
+    # ``picklistTotal`` が 0 になっている（ 本来は 35 ）
+    assert field["picklistTotal"] == 0
+    # 本来の ``picklistTotal`` との差で改ざんが分かる
+    assert field["picklistTotal"] != 35
+
+
+def test_slim_object_detects_active_filter_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``active`` の絞りを外し、 ``value`` 全部を ``picklist`` に入れる改ざんを検出できる。"""
+    from src import fetch as fetch_module
+
+    def bad_extract_picklist(picklist_values):
+        if not isinstance(picklist_values, list):
+            return [], 0
+        values = [
+            entry.get("value")
+            for entry in picklist_values
+            if isinstance(entry, dict) and isinstance(entry.get("value"), str)
+        ]
+        return values[:30], len(values)
+
+    monkeypatch.setattr(fetch_module, "_extract_picklist", bad_extract_picklist)
+
+    picklist_values = [
+        {"value": "On", "active": True},
+        {"value": "Off", "active": False},
+        {"value": "Pending", "active": False},
+    ]
+    describe = {
+        "name": "C",
+        "label": "C",
+        "fields": [
+            {"name": "X", "label": "X", "type": "picklist", "picklistValues": picklist_values}
+        ],
+    }
+    result = fetch_module._slim_object(describe)
+    field = result["fields"][0]
+
+    # inactive な "Off" / "Pending" が ``picklist`` に入っている（ 改ざんが分かる ）
+    assert "Off" in field["picklist"]
+    assert "Pending" in field["picklist"]
+
+
+def test_slim_object_detects_input_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_slim_object`` が元の dict を書き換える改ざんを検出できる。"""
+    import copy as _copy
+
+    from src import fetch as fetch_module
+
+    def mutating_slim_object(describe):
+        if not isinstance(describe, dict):
+            return {}
+        # 悪い例: 元 dict を破壊してから返す
+        describe["fields"] = [{"name": "Replaced", "label": "Replaced", "type": "string"}]
+        return {
+            "name": describe.get("name", ""),
+            "label": describe.get("label", ""),
+            "custom": describe.get("custom", False),
+            "fields": describe["fields"],
+        }
+
+    monkeypatch.setattr(fetch_module, "_slim_object", mutating_slim_object)
+
+    original = {"name": "Opportunity", "label": "商談", "fields": []}
+    original_snapshot = _copy.deepcopy(original)
+    fetch_module._slim_object(original)
+
+    # 元 dict が壊されている（ ``fields`` が書き換わっている ）
+    assert original != original_snapshot
+    assert original["fields"] == [{"name": "Replaced", "label": "Replaced", "type": "string"}]
+
+
+def test_fetch_detects_related_collection_from_slimmed_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """関連オブジェクトの収集が slim 後の ``fields`` で行われる改ざんを検出できる。
+    slim 後は ``referenceTo`` が空になるため、 関連が 1 つも取れなくなる。
+
+    検出方法: ``_slim_object`` を ``_collect_related_object_names`` が呼ばれる
+    **前**に実行する「 悪い実装 」 に差し替える。 本物の実装は原本の
+    ``referenceTo`` / ``relationshipName`` を使うので ``Account`` が取れる。
+    """
+    from src import fetch as fetch_module
+
+    real_slim_object = fetch_module._slim_object
+    real_collect = fetch_module._collect_related_object_names
+    call_log: list[str] = []
+
+    def bad_slim_object(describe):
+        # 悪い例: 呼ぶと同時に元 dict を slim 後の形に**書き換える**
+        # （ ``referenceTo`` を [] に、 ``relationshipName`` を None にする）
+        if isinstance(describe, dict) and isinstance(describe.get("fields"), list):
+            for field in describe["fields"]:
+                if isinstance(field, dict):
+                    field["referenceTo"] = []
+                    field["relationshipName"] = None
+        return real_slim_object(describe)
+
+    def order_collect(describe, *, exclude):
+        # 悪い例: ``_slim_object`` を先に呼んでから収集する
+        call_log.append("collect")
+        bad_slim_object(describe)
+        return real_collect(describe, exclude=exclude)
+
+    monkeypatch.setattr(fetch_module, "_slim_object", bad_slim_object)
+    monkeypatch.setattr(fetch_module, "_collect_related_object_names", order_collect)
+
+    main = {
+        "name": "Opportunity",
+        "label": "商談",
+        "custom": False,
+        "fields": [
+            {
+                "name": "AccountId",
+                "label": "取引先",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "Account",
+            }
+        ],
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_make_metadata("Opportunity"),
+        fields=_make_fields(),
+        object_describes={"Opportunity": main, "Account": _main_describe("Account")},
+    )
+    site_for, _ = _site_for(client)
+
+    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    # slim 後の ``fields`` から集めていると ``Account`` が**取れない**
+    # （ 本物の実装では ``Account`` が必ず取れる ）
+    assert "Account" not in payload["objects"]
+    assert call_log  # 収集ロジックは呼ばれた
