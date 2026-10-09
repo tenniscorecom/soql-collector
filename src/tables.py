@@ -59,6 +59,7 @@ CORRESPONDENCE_COLUMNS: tuple[str, ...] = (
 # 項目表の列名
 FIELD_TABLE_COLUMNS: tuple[str, ...] = (
     "オブジェクト",
+    "段",
     "オブジェクト表示名",
     "項目API名",
     "項目表示名",
@@ -311,11 +312,40 @@ def _build_field_table_rows(
     **``取得日時`` が新しい方** の describe を使う （レポート側・個別側を
     区別しない）。並びは「``objects`` のキー名の昇順 → describe の
     ``fields`` の並び順」のまま。
+
+    ``段`` 列: 主オブジェクトは ``0`` 。 関連オブジェクトは JSON の
+    ``関連オブジェクト`` リストに入った段の数字 （ 1 / 2 / … ）。 ``objects/*.json``
+    だけの個別オブジェクトは空。
     """
-    merged: dict[str, tuple[str, dict]] = {}
+    # ``obj_name -> 段`` のマッピング。 レポート JSON 側で ``関連オブジェクト`` から作る。
+    # 同じ名前が複数回出てきたら ``段`` が小さい方を優先 （ 浅い方から到達した形 ） 。
+    depth_by_name: dict[str, int] = {}
 
     # レポート JSON の ``objects`` 側
+    merged: dict[str, tuple[str, dict]] = {}
     for _, payload in payloads:
+        # 段マップ: 関連オブジェクトを集める
+        main_object_raw = payload.get("主オブジェクト")
+        main_object = main_object_raw if isinstance(main_object_raw, str) else ""
+        if main_object:
+            # 主オブジェクトは段 0 （ まだ登録されていなければ登録 ）
+            if main_object not in depth_by_name:
+                depth_by_name[main_object] = 0
+
+        related = payload.get("関連オブジェクト")
+        if isinstance(related, list):
+            for entry in related:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("名前")
+                depth = entry.get("段")
+                if not isinstance(name, str) or not name:
+                    continue
+                if not isinstance(depth, int):
+                    continue
+                if name not in depth_by_name or depth_by_name[name] > depth:
+                    depth_by_name[name] = depth
+
         objects = payload.get("objects")
         if not isinstance(objects, dict):
             continue
@@ -331,6 +361,7 @@ def _build_field_table_rows(
                 merged[obj_name] = (timestamp_str, describe)
 
     # ``OUTPUT_DIR/objects/*.json`` 側（ ``object`` キーを持つ）
+    # 段マップは更新しない （ 個別オブジェクトは段が無い ）
     for _, payload in object_payloads:
         describe = payload.get("object")
         name = payload.get("オブジェクト")
@@ -352,6 +383,8 @@ def _build_field_table_rows(
         fields = describe.get("fields") if isinstance(describe, dict) else None
         if not isinstance(fields, list):
             continue
+        depth = depth_by_name.get(obj_name)
+        depth_str = "" if depth is None else str(depth)
         for field in fields:
             if not isinstance(field, dict):
                 continue
@@ -368,6 +401,7 @@ def _build_field_table_rows(
             rows.append(
                 {
                     "オブジェクト": obj_name,
+                    "段": depth_str,
                     "オブジェクト表示名": obj_label_str,
                     "項目API名": _coerce_str(field.get("name")),
                     "項目表示名": _coerce_str(field.get("label")),

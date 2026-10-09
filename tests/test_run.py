@@ -76,6 +76,7 @@ def _make_settings(
         master_xlsx_path=master,
         output_dir=tmp_path / "output",
         related_max=40,
+        related_depth=1,
         credential_prefix="",
         objects_names=names,
         objects_org_id=org_id,

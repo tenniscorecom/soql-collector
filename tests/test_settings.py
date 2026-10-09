@@ -19,10 +19,48 @@ def test_load_settings_with_master(tmp_path: Path) -> None:
     assert settings.master_xlsx_path == master_path
     assert settings.output_dir == tmp_path / "output"
     assert settings.related_max == 40
+    # ``RELATED_DEPTH`` が無いときは既定の 3
+    assert settings.related_depth == 3
     assert settings.credential_prefix == ""
     # ``[OBJECTS]`` セクションが無いときは両方とも既定値
     assert settings.objects_names == ()
     assert settings.objects_org_id is None
+
+
+def test_load_settings_related_depth_explicit(tmp_path: Path) -> None:
+    """``[LIMITS] RELATED_DEPTH`` が書かれていればその値。"""
+    master_path = tmp_path / "master.xlsx"
+    _write_ini(
+        tmp_path,
+        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[LIMITS]\nRELATED_DEPTH = 5\n",
+    )
+
+    settings = load_settings(tmp_path)
+
+    assert settings.related_depth == 5
+
+
+def test_load_settings_related_depth_invalid_raises(tmp_path: Path) -> None:
+    """``RELATED_DEPTH`` が数字以外 / 1 未満なら ``ConfigKeyNotFoundError``。"""
+    import pytest
+
+    master_path = tmp_path / "master.xlsx"
+
+    # 数字以外
+    _write_ini(
+        tmp_path,
+        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[LIMITS]\nRELATED_DEPTH = abc\n",
+    )
+    with pytest.raises(ConfigKeyNotFoundError):
+        load_settings(tmp_path)
+
+    # 1 未満
+    _write_ini(
+        tmp_path,
+        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[LIMITS]\nRELATED_DEPTH = 0\n",
+    )
+    with pytest.raises(ConfigKeyNotFoundError):
+        load_settings(tmp_path)
 
 
 def test_load_settings_relative_paths_resolved(tmp_path: Path) -> None:
@@ -31,7 +69,7 @@ def test_load_settings_relative_paths_resolved(tmp_path: Path) -> None:
         "[FILES]\n"
         "MASTER_XLSX_PATH = ./input/master.xlsx\n"
         "OUTPUT_DIR = ./output\n"
-        "[LIMITS]\nRELATED_MAX = 12\n"
+        "[LIMITS]\nRELATED_MAX = 12\nRELATED_DEPTH = 2\n"
         "[SF]\nCREDENTIAL_PREFIX = dev\n",
     )
 
@@ -40,6 +78,7 @@ def test_load_settings_relative_paths_resolved(tmp_path: Path) -> None:
     assert settings.master_xlsx_path == tmp_path / "input" / "master.xlsx"
     assert settings.output_dir == tmp_path / "output"
     assert settings.related_max == 12
+    assert settings.related_depth == 2
     assert settings.credential_prefix == "dev"
 
 

@@ -110,6 +110,16 @@ REPORT_EXTENDED_METADATA_KEYS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
+class RelatedNode:
+    """幅優先で掘った関連オブジェクト 1 件。"""
+
+    name: str
+    depth: int  # 0 = 主オブジェクト、1 から ``RELATED_DEPTH`` まで
+    path: tuple[str, ...]  # 辿ってきた ``オブジェクト.項目`` のリスト （ depth 0 は空 ）
+    describe: dict[str, Any] | None  # 取れなかったオブジェクトは ``None``
+
+
+@dataclass(frozen=True)
 class FetchOutcome:
     """1 ID の取得結果。"""
 
@@ -398,23 +408,27 @@ def _fetch_one(
             column_map = mapping.build_column_map(metadata, main_describe, object_reason)
 
             # 主オブジェクト
+            related_nodes: list[RelatedNode] = []
             if main_object_name and main_describe is not None:
                 objects[main_object_name] = main_describe
-                # 関連オブジェクト（参照先を 1 段）
-                related_names = _collect_related_object_names(
-                    main_describe, exclude=main_object_name
+                # 関連オブジェクトを参照先から幅優先で掘る （ ``RELATED_DEPTH`` 段まで ）
+                related_nodes, skipped_names = _collect_related_objects(
+                    main_describe,
+                    fetcher=lambda name: _fetch_object_cached(client, name, cache, warnings),
+                    related_depth=settings.related_depth,
+                    related_max=settings.related_max,
                 )
-                related_names, skipped = _apply_related_limit(related_names, settings.related_max)
-                if skipped:
+                if skipped_names:
+                    collected_count = len(related_nodes)
+                    total = collected_count + len(skipped_names)
                     warnings.append(
-                        f"関連オブジェクトが {len(related_names) + len(skipped)} 件あり"
+                        f"関連オブジェクトが {total} 件あり"
                         f"上限 {settings.related_max} を超えたため、"
-                        f"次の {len(skipped)} 件は取得しません: {', '.join(skipped)}"
+                        f"次の {len(skipped_names)} 件は取得しません: {', '.join(skipped_names)}"
                     )
-                for related_name in related_names:
-                    describe = _fetch_object_cached(client, related_name, cache, warnings)
-                    if describe is not None:
-                        objects[related_name] = describe
+                for node in related_nodes:
+                    if node.describe is not None:
+                        objects[node.name] = node.describe
     except SalesforceRequestError as exc:
         # 接続失敗・認証失敗・致命 HTTP
         return FetchOutcome(
@@ -441,7 +455,7 @@ def _fetch_one(
         )
 
     # JSON に書く直前に slim する。 ``metadata`` 自体と ``objects`` は
-    # ``_collect_related_object_names`` （関連オブジェクト名の収集）で
+    # ``_collect_related_objects`` （関連オブジェクトの収集）で
     # 原本の ``fields[].referenceTo`` / ``relationshipName`` を使うので、
     # ここでは別 dict にコピーして絞る（原本の dict は壊さない）。
     payload = {
@@ -453,6 +467,9 @@ def _fetch_one(
         "主オブジェクト": main_object,
         "report": _slim_report(metadata),
         "objects": {name: _slim_object(describe) for name, describe in objects.items()},
+        "関連オブジェクト": [
+            {"名前": node.name, "段": node.depth, "経路": list(node.path)} for node in related_nodes
+        ],
         "column_map": column_map,
         "warnings": warnings,
     }
@@ -512,6 +529,182 @@ def _collect_related_object_names(describe: dict[str, Any], *, exclude: str | No
             seen.add(name)
             result.append(name)
     return result
+
+
+def _collect_related_field_paths(
+    describe: dict[str, Any],
+) -> list[tuple[str, str]]:
+    """``describe`` の ``fields`` から、 関連オブジェクトを掘るのに使う
+    ``(項目名, 参照先オブジェクト名)`` の組を集める。
+
+    - ``relationshipName`` が空でなく ``referenceTo`` が空でない項目だけ
+    - ポリモーフィックなら ``referenceTo`` 全エントリ分
+    - 出現順を保つ（重複は先勝ち）
+    """
+    fields = describe.get("fields") if isinstance(describe, dict) else None
+    if not isinstance(fields, list):
+        return []
+    result: list[tuple[str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        relationship_name = field.get("relationshipName")
+        if not relationship_name:
+            continue
+        field_name = field.get("name")
+        if not isinstance(field_name, str) or not field_name:
+            continue
+        reference_to = field.get("referenceTo")
+        if not isinstance(reference_to, list) or not reference_to:
+            continue
+        for ref_name in reference_to:
+            if not isinstance(ref_name, str) or not ref_name:
+                continue
+            pair = (field_name, ref_name)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            result.append(pair)
+    return result
+
+
+def _collect_related_objects(
+    main_describe: dict[str, Any],
+    fetcher: Callable[[str], dict[str, Any] | None],
+    *,
+    related_depth: int,
+    related_max: int,
+) -> tuple[list[RelatedNode], list[str]]:
+    """主オブジェクトから幅優先で関連オブジェクトを掘る。
+
+    Args:
+        main_describe: 主オブジェクトの describe（slim 前）。
+        fetcher: オブジェクト名を取り、 ``describe`` を返す関数。
+            取れなかった／失敗したときは ``None`` を返す（ 警告文は呼び出し側で積む ）。
+            同じ名前の 2 度目の呼び出しはキャッシュが効いて ``None`` か ``describe`` が
+            そのまま返る （ HTTP を 2 回打たない ） 前提。
+        related_depth: 何段目まで掘るか。 ``1`` なら今と同じ（1 段だけ）。
+        related_max: 全体で取る関連オブジェクト数の上限。
+            全段の合計が ``related_max`` に達したら打ち切る。
+
+    Returns:
+        ``(nodes, skipped)``。
+        ``nodes``: 深さごとに並んだ ``RelatedNode`` のリスト。出現順を保つ。
+            主オブジェクト自身は含まない。 describe は ``fetcher`` で埋めた状態
+            （ 取れなかったものは ``None`` ）。
+        ``skipped``: ``related_max`` のせいで掘れなかった候補の
+            オブジェクト名のリスト。 警告用。
+    """
+    # 0 段目: 主オブジェクトを根とする
+    main_name_raw = main_describe.get("name") if isinstance(main_describe, dict) else None
+    main_name = main_name_raw if isinstance(main_name_raw, str) and main_name_raw else None
+
+    # 訪問済み（ 主オブジェクト自身は最初から除く ）
+    visited: set[str] = set()
+    if main_name:
+        visited.add(main_name)
+
+    nodes: list[RelatedNode] = []
+    skipped: list[str] = []
+
+    if main_name is None or related_depth < 1:
+        return nodes, skipped
+
+    # 1 段目: 主オブジェクトの参照を掘る
+    first_paths = _collect_related_field_paths(main_describe)
+    first_level: list[RelatedNode] = []
+    seen_at_level: set[str] = set()
+    for field_name, ref_name in first_paths:
+        if ref_name in visited or ref_name in seen_at_level:
+            continue
+        visited.add(ref_name)
+        seen_at_level.add(ref_name)
+        first_level.append(
+            RelatedNode(
+                name=ref_name,
+                depth=1,
+                path=(f"{main_name}.{field_name}",),
+                describe=None,
+            )
+        )
+
+    accepted_first = _take_within_limit(first_level, related_max - len(nodes), skipped)
+
+    # 残った accepted を describe で埋める
+    _fill_describes(accepted_first, fetcher)
+    nodes.extend(accepted_first)
+
+    # 2 段目以降: 掘った describe が None でないノードだけ展開
+    current_level = accepted_first
+    current_depth = 1
+    while current_depth < related_depth and current_level:
+        current_depth += 1
+        next_level: list[RelatedNode] = []
+        seen_at_next: set[str] = set()
+        for parent in current_level:
+            if parent.describe is None:
+                # describe 取れていないノードは枝分かれ元には使わない
+                continue
+            for field_name, ref_name in _collect_related_field_paths(parent.describe):
+                if ref_name in visited or ref_name in seen_at_next:
+                    continue
+                visited.add(ref_name)
+                seen_at_next.add(ref_name)
+                next_level.append(
+                    RelatedNode(
+                        name=ref_name,
+                        depth=current_depth,
+                        path=(*parent.path, f"{parent.name}.{field_name}"),
+                        describe=None,
+                    )
+                )
+        if not next_level:
+            break
+        accepted = _take_within_limit(next_level, related_max - len(nodes), skipped)
+        if not accepted:
+            break
+        _fill_describes(accepted, fetcher)
+        nodes.extend(accepted)
+        current_level = accepted
+
+    return nodes, skipped
+
+
+def _take_within_limit(
+    nodes: list[RelatedNode],
+    limit: int,
+    skipped_names: list[str],
+) -> list[RelatedNode]:
+    """``nodes`` の先頭から ``limit`` 件を返し、 超えた分の名前を ``skipped_names`` に積む。"""
+    if limit < 0 or limit >= len(nodes):
+        return list(nodes)
+    skipped_names.extend(node.name for node in nodes[limit:])
+    return nodes[:limit]
+
+
+def _fill_describes(
+    nodes: list[RelatedNode],
+    fetcher: Callable[[str], dict[str, Any] | None],
+) -> None:
+    """``nodes`` の ``describe`` を ``fetcher`` で埋めた「 別のリスト」 を返す。
+
+    ``RelatedNode`` は frozen なので、 ``nodes`` を書き換える代わりに
+    新たな ``list[RelatedNode]`` を作って返す。
+    """
+    result: list[RelatedNode] = []
+    for node in nodes:
+        describe = fetcher(node.name)
+        result.append(
+            RelatedNode(
+                name=node.name,
+                depth=node.depth,
+                path=node.path,
+                describe=describe,
+            )
+        )
+    nodes.clear()
+    nodes.extend(result)
 
 
 def _apply_related_limit(names: list[str], limit: int) -> tuple[list[str], list[str]]:

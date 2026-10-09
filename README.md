@@ -2,6 +2,9 @@
 
 Salesforce のレポート describe（レポート本体 + 主オブジェクト + 関連オブジェクト）を
 **管理番号ごと**にとって JSON に保存し、 SOQL を組み立てるための小さな CSV
+（**対応表**・**項目表**）を作るツールです。 関連オブジェクトは、
+config.ini の `RELATED_DEPTH` 段数まで幅優先で掘ります（既定 3）。 1 段だけ
+（ 今までの挙動 ） にしたいときは `RELATED_DEPTH = 1` にしてください。
 （**対応表**・**項目表**）を作るツールです。
 
 どのレポートを取るかは管理表の「有効」列が `○` のものすべて。 個別に取りたい
@@ -16,9 +19,9 @@ AI が出した SOQL は、本番で実行する前に人が確認してくだ�
 
 1. Python 3.11 以上を用意する
 2. `config.ini.example` を `config.ini` にコピーし、 `[FILES] MASTER_XLSX_PATH`
-   / `OUTPUT_DIR`、 `[LIMITS] RELATED_MAX`、 `[SF] CREDENTIAL_PREFIX`、
-   `[OBJECTS] NAMES` / `[OBJECTS] ORG_ID` を必要に応じて書き換える
-   （詳細は [docs/使い方.md](docs/使い方.md)）
+   / `OUTPUT_DIR`、 `[LIMITS] RELATED_MAX` / `[LIMITS] RELATED_DEPTH`、
+   `[SF] CREDENTIAL_PREFIX`、 `[OBJECTS] NAMES` / `[OBJECTS] ORG_ID` を
+   必要に応じて書き換える （詳細は [docs/使い方.md](docs/使い方.md)）
 3. comken の親（既定 `F:\dev`）を `PYTHONPATH` に含める。 `実行.bat` を
    使うと PYTHONPATH の設定を代行してくれる
 

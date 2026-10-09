@@ -534,10 +534,62 @@ def test_field_table_columns_and_sort(tmp_path: Path) -> None:
     run_tables(output)
 
     columns, rows = _read_csv(output / "項目表.csv")
+    # ``段`` 列が先頭近くに入る （ ``オブジェクト`` の次 ）
     assert columns == list(FIELD_TABLE_COLUMNS)
+    assert columns[1] == "段"
     objects = [row["オブジェクト"] for row in rows]
     # Account → Opportunity の順
     assert objects == ["Account", "Opportunity"]
+
+
+def test_field_table_depth_column_from_related(tmp_path: Path) -> None:
+    """``関連オブジェクト`` の段と経路から ``段`` 列を埋める。 主=0、 関連=段の数字、
+    ``objects/*.json`` だけの個別オブジェクトは空。
+    """
+    output = tmp_path / "output"
+    output.mkdir()
+
+    # レポート JSON: 主=Task(0), 関連=Account(1), 関連=User(2)
+    payload = _make_correspondence_payload("1001", main_object="Task")
+    payload["objects"]["Account"] = {
+        "name": "Account",
+        "label": "取引先",
+        "custom": False,
+        "fields": [{"name": "Name", "label": "取引先名", "type": "string"}],
+    }
+    payload["objects"]["User"] = {
+        "name": "User",
+        "label": "ユーザ",
+        "custom": False,
+        "fields": [{"name": "Alias", "label": "別名", "type": "string"}],
+    }
+    payload["関連オブジェクト"] = [
+        {"名前": "Account", "段": 1, "経路": ["Task.WhatId"]},
+        {"名前": "User", "段": 2, "経路": ["Task.WhatId", "Account.OwnerId"]},
+    ]
+    _write_json(output, payload)
+
+    # 個別オブジェクト: Standalone は段が空
+    _write_object_json(
+        output,
+        "Standalone",
+        _make_object_payload("Standalone", label="単独"),
+    )
+
+    run_tables(output)
+
+    _, rows = _read_csv(output / "項目表.csv")
+    by_obj: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        by_obj.setdefault(row["オブジェクト"], []).append(row)
+
+    # 主オブジェクト
+    assert all(r["段"] == "0" for r in by_obj["Task"])
+    # 関連 (段)
+    assert all(r["段"] == "1" for r in by_obj["Account"])
+    assert all(r["段"] == "2" for r in by_obj["User"])
+    # 個別オブジェクトは段が空
+    assert all(r["段"] == "" for r in by_obj["Standalone"])
 
 
 # ── ファイル単位の挙動 ─────────────────────────────────────────────────────

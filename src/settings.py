@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_DIR = "./output"
 DEFAULT_RELATED_MAX = 40
+# ``[LIMITS] RELATED_DEPTH`` の既定値。 1 = 今までの挙動 （ 参照先 1 段だけ ）。
+# 関連オブジェクトの合計件数は ``RELATED_MAX`` で別個に打ち切る
+DEFAULT_RELATED_DEPTH = 3
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ class Settings:
     master_xlsx_path: Path
     output_dir: Path
     related_max: int
+    related_depth: int
     credential_prefix: str
     objects_names: tuple[str, ...]
     objects_org_id: str | None
@@ -73,6 +77,23 @@ def load_settings(project_root: Path | None = None) -> Settings:
         raise ConfigKeyNotFoundError(
             "LIMITS", "RELATED_MAX", _options(parser, "LIMITS"), ini_path
         ) from exc
+    depth_value = _optional(
+        parser,
+        "LIMITS",
+        "RELATED_DEPTH",
+        ini_path,
+        default=str(DEFAULT_RELATED_DEPTH),
+    ).strip()
+    try:
+        related_depth = int(depth_value)
+    except ValueError as exc:
+        raise ConfigKeyNotFoundError(
+            "LIMITS", "RELATED_DEPTH", _options(parser, "LIMITS"), ini_path
+        ) from exc
+    if related_depth < 1:
+        raise ConfigKeyNotFoundError(
+            "LIMITS", "RELATED_DEPTH", _options(parser, "LIMITS"), ini_path
+        )
     credential_prefix = _optional(parser, "SF", "CREDENTIAL_PREFIX", ini_path, default="").strip()
     objects_names = _parse_object_names(_optional(parser, "OBJECTS", "NAMES", ini_path, default=""))
     objects_org_id = _parse_object_org_id(
@@ -82,6 +103,7 @@ def load_settings(project_root: Path | None = None) -> Settings:
         master_xlsx_path=_resolve(base_dir, master_value),
         output_dir=_resolve(base_dir, output_value),
         related_max=related_max,
+        related_depth=related_depth,
         credential_prefix=credential_prefix,
         objects_names=objects_names,
         objects_org_id=objects_org_id,

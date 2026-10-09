@@ -85,11 +85,12 @@ def _site_for(client: _FakeClient):
     return resolver, site
 
 
-def _settings(tmp_path: Path, related_max: int = 40) -> Settings:
+def _settings(tmp_path: Path, related_max: int = 40, related_depth: int = 1) -> Settings:
     return Settings(
         master_xlsx_path=tmp_path / "master.xlsx",
         output_dir=tmp_path / "output",
         related_max=related_max,
+        related_depth=related_depth,
         credential_prefix="",
         objects_names=(),
         objects_org_id=None,
@@ -160,6 +161,23 @@ def _main_describe(
                 )
     built.extend(fields)
     return {"name": name, "fields": built}
+
+
+def _describe_with_refs(name: str, refs: dict[str, str]) -> dict:
+    """``.`` 以外の参照項目の describe を作る。 ``refs`` は ``項目名 -> 参照先オブジェクト`` の単一参照。
+
+    戻り値の ``relationshipName`` は ``<項目名>`` （ 単純化のため _ をつけない ）。
+    """
+    fields = [
+        {
+            "name": field_name,
+            "type": "reference",
+            "referenceTo": [ref_name],
+            "relationshipName": field_name,
+        }
+        for field_name, ref_name in refs.items()
+    ]
+    return {"name": name, "fields": fields}
 
 
 # ── JSON 出力 ───────────────────────────────────────────────────────────
@@ -380,6 +398,215 @@ def test_related_max_overflow_warns(tmp_path: Path) -> None:
     assert "2" in warning
     assert "3 件" in warning
     assert "Lead" in warning and "User" in warning and "Campaign" in warning
+
+
+# ── RELATED_DEPTH と 幅優先 ────────────────────────────────────────────
+
+
+def _chain_fixtures() -> dict[str, dict]:
+    """段ごとに参照先があるフェイク: Task → Account → User → Group。"""
+    return {
+        "Task": _describe_with_refs("Task", {"WhatId": "Account"}),
+        "Account": _describe_with_refs("Account", {"OwnerId": "User"}),
+        "User": _describe_with_refs("User", {"GroupId": "Group"}),
+        "Group": _main_describe("Group"),
+    }
+
+
+def _run_task_chain(tmp_path: Path, *, related_depth: int) -> dict:
+    """チェーン状のフェイクで ``run_fetch`` を走らせ、 ``payload`` を返す。"""
+    objects = _chain_fixtures()
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    describe = {"reportMetadata": {"reportType": {"type": "Task"}, "reportFormat": "TABULAR"}}
+    client = _FakeClient(
+        describe=describe,
+        object_describes=objects,
+    )
+    site_for, _ = _site_for(client)
+    payload_path = run_fetch(
+        _settings(tmp_path, related_depth=related_depth), [entry], site_for=site_for
+    )[0].output_path
+    return json.loads(payload_path.read_text(encoding="utf-8"))
+
+
+def test_related_depth_1_only_first_level(tmp_path: Path) -> None:
+    """``RELATED_DEPTH=1`` は 1 段目だけ取る （ 今と同じ挙動 ）。"""
+    payload = _run_task_chain(tmp_path, related_depth=1)
+    # 1 段目: Account のみ
+    assert list(payload["objects"]) == ["Task", "Account"]
+    assert [r["名前"] for r in payload["関連オブジェクト"]] == ["Account"]
+    assert all(r["段"] == 1 for r in payload["関連オブジェクト"])
+    # 経路は ``Task.WhatId``
+    assert payload["関連オブジェクト"][0]["経路"] == ["Task.WhatId"]
+
+
+def test_related_depth_2_includes_second_level(tmp_path: Path) -> None:
+    """``RELATED_DEPTH=2`` は 1 → 2 段目まで取る。 ``User`` まで取れる。"""
+    payload = _run_task_chain(tmp_path, related_depth=2)
+    assert list(payload["objects"]) == ["Task", "Account", "User"]
+    by_name = {r["名前"]: r for r in payload["関連オブジェクト"]}
+    assert by_name["Account"]["段"] == 1
+    assert by_name["Account"]["経路"] == ["Task.WhatId"]
+    assert by_name["User"]["段"] == 2
+    # 経路は 2 つ （ Task→Account の WhatId と、 Account→User の OwnerId ）
+    assert by_name["User"]["経路"] == ["Task.WhatId", "Account.OwnerId"]
+
+
+def test_related_depth_3_includes_third_level(tmp_path: Path) -> None:
+    """``RELATED_DEPTH=3`` は ``Group`` まで取る。"""
+    payload = _run_task_chain(tmp_path, related_depth=3)
+    assert list(payload["objects"]) == ["Task", "Account", "User", "Group"]
+    by_name = {r["名前"]: r for r in payload["関連オブジェクト"]}
+    assert by_name["Group"]["段"] == 3
+    assert by_name["Group"]["経路"] == [
+        "Task.WhatId",
+        "Account.OwnerId",
+        "User.GroupId",
+    ]
+
+
+def test_related_depth_dedup_across_paths(tmp_path: Path) -> None:
+    """同じオブジェクトを複数の経路で参照しても describe は 1 回だけ。
+
+    1 段目に ``X → Y`` と ``X → Z → Y`` で同じ ``Y`` に到達する形を作る。
+    """
+    objects = {
+        "X": _describe_with_refs("X", {"AId": "Y", "BId": "Z"}),
+        "Y": _main_describe("Y"),
+        "Z": _describe_with_refs("Z", {"CId": "Y"}),
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    describe = {"reportMetadata": {"reportType": {"type": "X"}, "reportFormat": "TABULAR"}}
+    client = _FakeClient(describe=describe, object_describes=objects)
+    site_for, _ = _site_for(client)
+    payload_path = run_fetch(_settings(tmp_path, related_depth=3), [entry], site_for=site_for)[
+        0
+    ].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    # ``Y`` は 1 回しか describe されていない
+    assert client.describe_object_calls.count("Y") == 1
+    # JSON にも 1 回だけ
+    assert list(payload["objects"]).count("Y") == 1
+    # ``関連オブジェクト`` でも 1 回だけ、 経路は最初に見つけた方
+    y_entries = [r for r in payload["関連オブジェクト"] if r["名前"] == "Y"]
+    assert len(y_entries) == 1
+    assert y_entries[0]["段"] == 1
+    assert y_entries[0]["経路"] == ["X.AId"]
+
+
+def test_related_depth_stops_at_cycle(tmp_path: Path) -> None:
+    """循環参照（ A→B→A ） で止まる。 同じオブジェクトを取り直さない。"""
+    objects = {
+        "A": _describe_with_refs("A", {"BId": "B"}),
+        "B": _describe_with_refs("B", {"AId": "A", "CId": "C"}),
+        "C": _main_describe("C"),
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    describe = {"reportMetadata": {"reportType": {"type": "A"}, "reportFormat": "TABULAR"}}
+    client = _FakeClient(describe=describe, object_describes=objects)
+    site_for, _ = _site_for(client)
+    payload_path = run_fetch(_settings(tmp_path, related_depth=5), [entry], site_for=site_for)[
+        0
+    ].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    # オブジェクトは 3 つとも取れる （ 各段で重複はなし ） 。
+    assert set(payload["objects"]) == {"A", "B", "C"}
+    # ``A`` の describe は 1 回のみ （ 2 段目で再訪しない ）
+    assert client.describe_object_calls.count("A") == 1
+    # ``B`` は関連として 1 件だけ
+    b_entries = [r for r in payload["関連オブジェクト"] if r["名前"] == "B"]
+    assert len(b_entries) == 1
+    # ``C`` は 2 段目として取れる （ さらに 3 段目で ``A`` を掘ろうとはしない ）
+    c_entries = [r for r in payload["関連オブジェクト"] if r["名前"] == "C"]
+    assert len(c_entries) == 1
+    assert c_entries[0]["段"] == 2
+
+
+def test_related_depth_max_limits_total_across_levels(tmp_path: Path) -> None:
+    """``RELATED_MAX`` の合計件数で打ち切り、 近い段が優先される。"""
+    # 1 段目: Account / Contact （ 2 件 ） 、 2 段目: User / Group （ 2 件 ） → 計 4 件
+    objects = {
+        "Task": _describe_with_refs(
+            "Task",
+            {"WhatId": "Account", "WhoId": "Contact"},
+        ),
+        "Account": _describe_with_refs("Account", {"OwnerId": "User"}),
+        "Contact": _describe_with_refs("Contact", {"OwnerId": "Group"}),
+        "User": _main_describe("User"),
+        "Group": _main_describe("Group"),
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    describe = {"reportMetadata": {"reportType": {"type": "Task"}, "reportFormat": "TABULAR"}}
+    client = _FakeClient(describe=describe, object_describes=objects)
+    site_for, _ = _site_for(client)
+    payload_path = run_fetch(
+        _settings(tmp_path, related_depth=3, related_max=3),
+        [entry],
+        site_for=site_for,
+    )[0].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    # 近い段から 3 件: Account / Contact / User （ Group は取らない ）
+    assert list(payload["objects"]) == ["Task", "Account", "Contact", "User"]
+    warning = next(w for w in payload["warnings"] if "上限" in w)
+    # 全体件数（4）とスキップ件数（1）、 取らなかった名前が出る
+    assert "4 件" in warning
+    assert "Group" in warning
+
+
+def test_related_depth_breaks_under_depth1_only_impl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """深さテストは 「 常に 1 段で止める 」 改ざんで落ちる （ 検知用 ）。"""
+    from src import fetch as fetch_module
+
+    # 「 悪い実装 」: 1 段目だけ集めるバージョンに差し替え
+    def shallow(
+        main_describe,
+        fetcher,
+        *,
+        related_depth,
+        related_max,
+    ):
+        from src.fetch import RelatedNode, _take_within_limit
+
+        main_name = main_describe.get("name") if isinstance(main_describe, dict) else None
+        visited = {main_name} if isinstance(main_name, str) and main_name else set()
+        nodes: list[RelatedNode] = []
+        if not isinstance(main_name, str) or not main_name:
+            return nodes, []
+        paths = fetch_module._collect_related_field_paths(main_describe)
+        first_level: list[RelatedNode] = []
+        seen: set[str] = set()
+        for field_name, ref_name in paths:
+            if ref_name in visited or ref_name in seen:
+                continue
+            visited.add(ref_name)
+            seen.add(ref_name)
+            first_level.append(
+                RelatedNode(
+                    name=ref_name,
+                    depth=1,
+                    path=(f"{main_name}.{field_name}",),
+                    describe=None,
+                )
+            )
+        skipped: list[str] = []
+        accepted = _take_within_limit(first_level, related_max - len(nodes), skipped)
+        fetch_module._fill_describes(accepted, fetcher)
+        nodes.extend(accepted)
+        return nodes, skipped
+
+    monkeypatch.setattr(fetch_module, "_collect_related_objects", shallow)
+
+    # depth=3 でも「 悪い実装 」 では ``User`` / ``Group`` が取れないはず
+    payload = _run_task_chain(tmp_path, related_depth=3)
+    # 浅いので Account までしか取れない
+    assert list(payload["objects"]) == ["Task", "Account"]
+    assert "User" not in payload["objects"]
+    assert "Group" not in payload["objects"]
 
 
 def test_main_object_resolves_custom_entity_dollar_type(tmp_path: Path) -> None:
@@ -1507,14 +1734,15 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
     """関連オブジェクトの収集が slim 後の ``fields`` で行われる改ざんを検出できる。
     slim 後は ``referenceTo`` が空になるため、 関連が 1 つも取れなくなる。
 
-    検出方法: ``_slim_object`` を ``_collect_related_object_names`` が呼ばれる
-    **前**に実行する「 悪い実装 」 に差し替える。 本物の実装は原本の
-    ``referenceTo`` / ``relationshipName`` を使うので ``Account`` が取れる。
+    検出方法: 関連オブジェクト収集が slim 後に走る「 悪い実装 」 に
+    ``_collect_related_field_paths`` を差し替える （ ``_slim_object`` を先に
+    呼んで元 dict を破壊してから原本を読む ）。 本物の実装は slim の前に走る
+    ので ``Account`` が取れる。
     """
     from src import fetch as fetch_module
 
     real_slim_object = fetch_module._slim_object
-    real_collect = fetch_module._collect_related_object_names
+    real_collect = fetch_module._collect_related_field_paths
     call_log: list[str] = []
 
     def bad_slim_object(describe):
@@ -1527,14 +1755,14 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
                     field["relationshipName"] = None
         return real_slim_object(describe)
 
-    def order_collect(describe, *, exclude):
+    def order_collect(describe):
         # 悪い例: ``_slim_object`` を先に呼んでから収集する
         call_log.append("collect")
         bad_slim_object(describe)
-        return real_collect(describe, exclude=exclude)
+        return real_collect(describe)
 
     monkeypatch.setattr(fetch_module, "_slim_object", bad_slim_object)
-    monkeypatch.setattr(fetch_module, "_collect_related_object_names", order_collect)
+    monkeypatch.setattr(fetch_module, "_collect_related_field_paths", order_collect)
 
     main = {
         "name": "Opportunity",
