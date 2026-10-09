@@ -253,9 +253,13 @@ def test_correspondence_writes_csv_with_utf8_bom_and_crlf(tmp_path: Path) -> Non
 
 
 def test_correspondence_uses_atomic_write(tmp_path: Path) -> None:
-    """CSV 書き込みが ``atomic_write`` 経由である（途中で失敗したら既存 CSV が
-    壊れない）ことを、 ``atomic_write`` をパッチして例外を上げて確かめる。
+    """CSV 書き込みが ``comken.core.files.atomic_write`` 経由である
+    （途中で失敗したら既存 CSV が壊れない）ことを、 ``atomic_write`` を
+    パッチして例外を上げて確かめる。 ``comken.toolbox.csv.file`` から
+    ``atomic_write`` を import しているので、 そちらをパッチする。
     """
+    import comken.toolbox.csv.file as csv_file_mod
+
     from src import tables as tables_module
 
     output = tmp_path / "output"
@@ -266,25 +270,28 @@ def test_correspondence_uses_atomic_write(tmp_path: Path) -> None:
     existing = output / "対応表_1001.csv"
     existing.write_text("既存\nそのまま\n", encoding="utf-8")
 
-    real_atomic = tables_module.atomic_write
+    real_atomic = csv_file_mod.atomic_write
     called = {"count": 0}
 
     def broken_atomic_write(path):
         called["count"] += 1
         raise OSError("爆発")
 
-    tables_module.atomic_write = broken_atomic_write  # type: ignore[assignment]
+    csv_file_mod.atomic_write = broken_atomic_write  # type: ignore[assignment]
     try:
         run_tables(output, only_keys=["1001"])
     except OSError:
         pass
     finally:
-        tables_module.atomic_write = real_atomic  # type: ignore[assignment]
+        csv_file_mod.atomic_write = real_atomic  # type: ignore[assignment]
 
-    # ``atomic_write`` が必ず通っている
+    # ``atomic_write`` が必ず通っている （ ``CSV._write`` の中で呼ばれる ）
     assert called["count"] >= 1
     # 既存 CSV は残っている（上書きされていない）
     assert existing.read_text(encoding="utf-8") == "既存\nそのまま\n"
+    # 念のため ``tables`` モジュール側にも属性がない （ ``atomic_write`` を
+    # 自分で import していないことの確認 ）
+    assert not hasattr(tables_module, "atomic_write")
 
 
 # ── 対応表（全体） ─────────────────────────────────────────────────────────
@@ -543,8 +550,8 @@ def test_field_table_columns_and_sort(tmp_path: Path) -> None:
 
 
 def test_field_table_depth_column_from_related(tmp_path: Path) -> None:
-    """``関連オブジェクト`` の段と経路から ``段`` 列を埋める。 主=0、 関連=段の数字、
-    ``objects/*.json`` だけの個別オブジェクトは空。
+    """``関連オブジェクト`` の ``段`` 列から ``項目表.csv`` の ``段`` 列を埋める。
+    主=0、 関連=段の数字、 どの JSON にも出ない個別オブジェクトは空。
     """
     output = tmp_path / "output"
     output.mkdir()
@@ -564,17 +571,16 @@ def test_field_table_depth_column_from_related(tmp_path: Path) -> None:
         "fields": [{"name": "Alias", "label": "別名", "type": "string"}],
     }
     payload["関連オブジェクト"] = [
-        {"名前": "Account", "段": 1, "経路": ["Task.WhatId"]},
-        {"名前": "User", "段": 2, "経路": ["Task.WhatId", "Account.OwnerId"]},
+        {"親": "Task", "参照項目": "WhatId", "リレーション名": "WhatId", "子": "Account", "段": 1},
+        {
+            "親": "Account",
+            "参照項目": "OwnerId",
+            "リレーション名": "OwnerId",
+            "子": "User",
+            "段": 2,
+        },
     ]
     _write_json(output, payload)
-
-    # 個別オブジェクト: Standalone は段が空
-    _write_object_json(
-        output,
-        "Standalone",
-        _make_object_payload("Standalone", label="単独"),
-    )
 
     run_tables(output)
 
@@ -588,8 +594,6 @@ def test_field_table_depth_column_from_related(tmp_path: Path) -> None:
     # 関連 (段)
     assert all(r["段"] == "1" for r in by_obj["Account"])
     assert all(r["段"] == "2" for r in by_obj["User"])
-    # 個別オブジェクトは段が空
-    assert all(r["段"] == "" for r in by_obj["Standalone"])
 
 
 # ── ファイル単位の挙動 ─────────────────────────────────────────────────────
@@ -602,21 +606,25 @@ def test_no_json_in_output_dir_writes_empty_csvs(tmp_path: Path) -> None:
 
     outcome = run_tables(output)
 
-    # CSV 3 つは作られるが見出しだけ
+    # CSV 4 つは作られるが見出しだけ
     correspondence_path = output / "対応表.csv"
     field_path = output / "項目表.csv"
+    related_path = output / "関連表.csv"
     assert correspondence_path.exists()
     assert field_path.exists()
+    assert related_path.exists()
 
     _, corr_rows = _read_csv(correspondence_path)
     _, field_rows = _read_csv(field_path)
+    _, related_rows = _read_csv(related_path)
     assert corr_rows == []
     assert field_rows == []
+    assert related_rows == []
 
     # per-ID CSV は無い
     assert list(output.glob("対応表_*.csv")) == []
 
-    assert outcome.wrote == (correspondence_path, field_path)
+    assert outcome.wrote == (correspondence_path, field_path, related_path)
     assert outcome.skipped == ()
 
 
@@ -704,143 +712,128 @@ def test_tables_logs_counts_and_skipped_only(
             )
 
 
-# ── objects/*.json ──────────────────────────────────────────────────────
+# ── 関連表 ──────────────────────────────────────────────────────────────
 
 
-def _write_object_json(output_dir: Path, name: str, payload: dict) -> Path:
-    """``OUTPUT_DIR/objects/{Name}.json`` を書く（ テスト用 ）。"""
-    objects_dir = output_dir / "objects"
-    objects_dir.mkdir(parents=True, exist_ok=True)
-    path = objects_dir / f"{name}.json"
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+def test_related_table_one_row_per_edge(tmp_path: Path) -> None:
+    """``関連オブジェクト`` の各エントリが 1 行ずつ ``関連表.csv`` に乗る。
 
+    列は ``管理番号, 親オブジェクト, 参照項目API名, リレーション名, 子オブジェクト, 段`` の順。
+    """
+    output = tmp_path / "output"
+    output.mkdir()
 
-def _make_object_payload(
-    name: str,
-    *,
-    label: str = "オブジェクト",
-    fields: list[dict] | None = None,
-    timestamp: str = "2024-01-01T00:00:00",
-) -> dict:
-    """``objects/{Name}.json`` 用の payload を作る。"""
-    fields = fields if fields is not None else [{"name": "Name", "label": "名前", "type": "string"}]
-    return {
-        "取得日時": timestamp,
-        "オブジェクト": name,
-        "object": {"name": name, "label": label, "custom": False, "fields": fields},
+    payload = _make_correspondence_payload("1001", main_object="Task")
+    payload["objects"]["Account"] = {
+        "name": "Account",
+        "label": "取引先",
+        "custom": False,
+        "fields": [{"name": "Name", "label": "取引先名", "type": "string"}],
     }
-
-
-def test_field_table_includes_objects_subdirectory(tmp_path: Path) -> None:
-    """``objects/*.json`` のオブジェクトが項目表に集約される。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    _write_object_json(
-        output,
-        "Account",
-        _make_object_payload(
-            "Account",
-            label="取引先",
-            fields=[
-                {"name": "Name", "label": "取引先名", "type": "string"},
-                {"name": "Industry", "label": "業種", "type": "picklist"},
-            ],
-        ),
-    )
-
-    run_tables(output)
-
-    _, rows = _read_csv(output / "項目表.csv")
-    account_rows = [r for r in rows if r["オブジェクト"] == "Account"]
-    assert len(account_rows) == 2
-    field_names = {r["項目API名"] for r in account_rows}
-    assert field_names == {"Name", "Industry"}
-
-
-def test_field_table_prefers_newer_timestamp_across_report_and_object(
-    tmp_path: Path,
-) -> None:
-    """同じオブジェクトがレポート JSON と ``objects/*.json`` の両方にあれば、
-    ``取得日時`` が新しい方の describe が使われる。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-
-    # レポート JSON 側 （ 古 ）
-    payload_report = _make_correspondence_payload(
-        "1001", main_object="Opportunity", timestamp="2024-01-01T00:00:00"
-    )
-    payload_report["objects"]["Opportunity"]["label"] = "古いラベル"
-    payload_report["objects"]["Opportunity"]["fields"] = [
-        {"name": "OldOnly", "label": "古い項目", "type": "string"},
+    payload["objects"]["User"] = {
+        "name": "User",
+        "label": "ユーザ",
+        "custom": False,
+        "fields": [{"name": "Alias", "label": "別名", "type": "string"}],
+    }
+    payload["関連オブジェクト"] = [
+        {
+            "親": "Task",
+            "参照項目": "WhatId",
+            "リレーション名": "WhatId",
+            "子": "Account",
+            "段": 1,
+        },
+        {
+            "親": "Account",
+            "参照項目": "OwnerId",
+            "リレーション名": "OwnerId",
+            "子": "User",
+            "段": 2,
+        },
     ]
-    _write_json(output, payload_report)
+    _write_json(output, payload)
 
-    # objects/ 側（ 新 ）
-    _write_object_json(
-        output,
+    run_tables(output)
+
+    columns, rows = _read_csv(output / "関連表.csv")
+    assert columns == [
+        "管理番号",
+        "親オブジェクト",
+        "参照項目API名",
+        "リレーション名",
+        "子オブジェクト",
+        "段",
+    ]
+    assert rows == [
+        {
+            "管理番号": "1001",
+            "親オブジェクト": "Task",
+            "参照項目API名": "WhatId",
+            "リレーション名": "WhatId",
+            "子オブジェクト": "Account",
+            "段": "1",
+        },
+        {
+            "管理番号": "1001",
+            "親オブジェクト": "Account",
+            "参照項目API名": "OwnerId",
+            "リレーション名": "OwnerId",
+            "子オブジェクト": "User",
+            "段": "2",
+        },
+    ]
+
+
+def test_related_table_orders_by_management_key(tmp_path: Path) -> None:
+    """``関連表.csv`` は「 管理番号 → 段 → 親の出現順 」 で並ぶ。"""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    def make(key: str, main: str, related_entries: list[dict]) -> dict:
+        payload = _make_correspondence_payload(key, main_object=main)
+        payload["関連オブジェクト"] = related_entries
+        return payload
+
+    # 1001 を先に書く （ 番号順でファイル名昇順 ） → 出力は管理番号昇順
+    payload_1001 = make(
+        "1001",
+        "Task",
+        [
+            {
+                "親": "Task",
+                "参照項目": "WhatId",
+                "リレーション名": "WhatId",
+                "子": "Account",
+                "段": 1,
+            },
+            {
+                "親": "Account",
+                "参照項目": "OwnerId",
+                "リレーション名": "OwnerId",
+                "子": "User",
+                "段": 2,
+            },
+        ],
+    )
+    payload_1003 = make(
+        "1003",
         "Opportunity",
-        _make_object_payload(
-            "Opportunity",
-            label="新しいラベル",
-            fields=[{"name": "NewOnly", "label": "新しい項目", "type": "string"}],
-            timestamp="2024-12-01T00:00:00",
-        ),
+        [
+            {
+                "親": "Opportunity",
+                "参照項目": "AccountId",
+                "リレーション名": "Account",
+                "子": "Account",
+                "段": 1,
+            },
+        ],
     )
+    _write_json(output, payload_1001)
+    _write_json(output, payload_1003)
 
     run_tables(output)
 
-    _, rows = _read_csv(output / "項目表.csv")
-    opp_rows = [r for r in rows if r["オブジェクト"] == "Opportunity"]
-    labels = {r["オブジェクト表示名"] for r in opp_rows}
-    assert labels == {"新しいラベル"}
-    field_names = {r["項目API名"] for r in opp_rows}
-    assert field_names == {"NewOnly"}
-
-
-def test_objects_subdirectory_not_read_as_report_json(tmp_path: Path) -> None:
-    """``objects/`` 配下の JSON はレポート JSON として読まれない
-    （ 対応表には行が出ない ）。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-
-    # レポート JSON 側（ `管理番号` 付き ）
-    _write_json(output, _make_correspondence_payload("1001", main_object="Opportunity"))
-
-    # objects/ 側（ `オブジェクト` 付き ）
-    _write_object_json(
-        output,
-        "Account",
-        _make_object_payload(
-            "Account",
-            fields=[{"name": "Name", "label": "名前", "type": "string"}],
-        ),
-    )
-
-    run_tables(output)
-
-    # 対応表はレポート側 のみ
-    _, corr_rows = _read_csv(output / "対応表.csv")
-    keys = {r["管理番号"] for r in corr_rows}
-    assert keys == {"1001"}
-    # Account は項目表には出る （ objects/ は正しく拾われる ）
-    _, field_rows = _read_csv(output / "項目表.csv")
-    objects_in_field = {r["オブジェクト"] for r in field_rows}
-    assert "Account" in objects_in_field
-    assert "Opportunity" in objects_in_field
-
-
-def test_objects_subdirectory_handles_missing_folder(tmp_path: Path) -> None:
-    """``OUTPUT_DIR/objects/`` が無いときは普通に動く。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    _write_json(output, _make_correspondence_payload("1001", main_object="Opportunity"))
-
-    outcome = run_tables(output)
-
-    # エラーにならず、 既存の挙動と同じく ``対応表.csv`` / ``項目表.csv`` を作る
-    assert (output / "対応表.csv").exists()
-    assert (output / "項目表.csv").exists()
-    assert outcome.skipped == ()
+    _, rows = _read_csv(output / "関連表.csv")
+    keys = [row["管理番号"] for row in rows]
+    assert keys == ["1001", "1001", "1003"]

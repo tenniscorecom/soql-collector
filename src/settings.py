@@ -1,9 +1,11 @@
 """config.ini から設定を読む。
 
 必要なキーは ``[FILES] MASTER_XLSX_PATH`` （必須）と ``[FILES] OUTPUT_DIR`` 、
-``[LIMITS] RELATED_MAX`` 、``[SF] CREDENTIAL_PREFIX`` 、
-``[OBJECTS] NAMES`` （任意）・ ``[OBJECTS] ORG_ID`` （任意）。
+``[LIMITS] RELATED_MAX`` 、``[SF] CREDENTIAL_PREFIX`` 。
 ``MASTER_XLSX_PATH`` が欠けていると ``run`` が動けないので、その時点でエラーを上げる。
+
+``[OBJECTS]`` セクションは **読み取らない** （個別オブジェクトの取得は
+やめた）。 旧 config.ini に ``[OBJECTS]`` が残っていてもエラーにせず、 無視する。
 """
 
 from __future__ import annotations
@@ -34,8 +36,6 @@ class Settings:
     related_max: int
     related_depth: int
     credential_prefix: str
-    objects_names: tuple[str, ...]
-    objects_org_id: str | None
 
 
 def load_settings(project_root: Path | None = None) -> Settings:
@@ -95,18 +95,12 @@ def load_settings(project_root: Path | None = None) -> Settings:
             "LIMITS", "RELATED_DEPTH", _options(parser, "LIMITS"), ini_path
         )
     credential_prefix = _optional(parser, "SF", "CREDENTIAL_PREFIX", ini_path, default="").strip()
-    objects_names = _parse_object_names(_optional(parser, "OBJECTS", "NAMES", ini_path, default=""))
-    objects_org_id = _parse_object_org_id(
-        _optional(parser, "OBJECTS", "ORG_ID", ini_path, default="")
-    )
     return Settings(
         master_xlsx_path=_resolve(base_dir, master_value),
         output_dir=_resolve(base_dir, output_value),
         related_max=related_max,
         related_depth=related_depth,
         credential_prefix=credential_prefix,
-        objects_names=objects_names,
-        objects_org_id=objects_org_id,
     )
 
 
@@ -146,32 +140,3 @@ def _resolve(base_dir: Path, value: str) -> Path:
     """config.ini からの相対なら base_dir と連結し、絶対ならそのまま返す。"""
     path = Path(value)
     return path if path.is_absolute() else (base_dir / path).resolve()
-
-
-def _parse_object_names(raw: str) -> tuple[str, ...]:
-    """``[OBJECTS] NAMES`` の値を ``tuple[str, ...]`` に直す。
-
-    区切りはカンマ ``,`` と読点 ``、`` の両方を受け、 前後の空白を除き、
-    空要素は無視し、 重複は 1 つにまとめる （順序は最初に出た順）。
-    """
-    if not raw:
-        return ()
-    tokens = [token.strip() for token in raw.replace("、", ",").split(",")]
-    seen: set[str] = set()
-    result: list[str] = []
-    for token in tokens:
-        if not token:
-            continue
-        if token in seen:
-            continue
-        seen.add(token)
-        result.append(token)
-    return tuple(result)
-
-
-def _parse_object_org_id(raw: str) -> str | None:
-    """``[OBJECTS] ORG_ID`` の値を整える。前後の空白を除き、空なら ``None`` 。"""
-    if not raw:
-        return None
-    stripped = raw.strip()
-    return stripped or None

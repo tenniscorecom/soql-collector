@@ -1,43 +1,36 @@
 """OUTPUT_DIR の ``{管理番号}.json`` を読み、SOQL 組み立て支援の CSV を作る。
 
 AI にチャットで SOQL を組み立ててもらうための小さな表を、``fetch`` が書いた
-JSON と ``OUTPUT_DIR/objects/{オブジェクト名}.json`` から組み立てる。
-**入力は OUTPUT_DIR の JSON だけ**で、Salesforce には接続しない。
-出力も同じ ``OUTPUT_DIR``。
+``OUTPUT_DIR/{管理番号}.json`` から組み立てる。 **入力は OUTPUT_DIR の JSON
+だけ** で、 Salesforce には接続しない。 出力も同じ ``OUTPUT_DIR``。
 
 書き出す CSV:
 
-- ``対応表_{管理番号}.csv`` … 1 ID 分のレポート1列（ID ごと）
-- ``対応表.csv`` … ``OUTPUT_DIR`` の全 JSON を連結（管理番号昇順）
-- ``項目表.csv`` … 全 JSON と ``OUTPUT_DIR/objects/*.json`` を集めた
-  「オブジェクト×項目」1 枚。 同じ名前がどちらにもあれば ``取得日時`` が
-  新しい方が勝つ
+- ``対応表_{管理番号}.csv`` … 1 ID 分のレポート1列（ ID ごと ）
+- ``対応表.csv`` … ``OUTPUT_DIR`` の全 JSON を連結（ 管理番号昇順 ）
+- ``項目表.csv`` … 全 JSON を集めた「 オブジェクト×項目 」 1 枚。 同じ
+  オブジェクトが複数の JSON にあれば ``取得日時`` が新しい方が勝つ
+- ``関連表.csv`` … 各 JSON の ``関連オブジェクト`` から「 親→子の参照 」 を
+  1 行ずつ並べたもの（ 管理番号 → 段 → 親の出現順 ）
 
-すべて UTF-8 BOM つき + CRLF。一時ファイル経由で書く（``atomic_write``）。
-comken の ``CSV`` クラスで書き出す（``comken.toolbox.csv.CSV``）。
+すべて UTF-8 BOM つき + CRLF。 comken の ``CSV`` クラス（ ``comken.toolbox.csv``
+）で書き出す。 新規ファイルは BOM 付き + CRLF になることは確認済み。
 """
 
 from __future__ import annotations
 
-import csv
 import json
 import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from comken.core.files import atomic_write
+from comken.toolbox.csv import CSV
 
 logger = logging.getLogger(__name__)
 
-# CSV の文字コード（UTF-8 BOM つきで Excel でも開ける）
-CSV_ENCODING = "utf-8-sig"
-
 # 1 つの CSV ファイルあたりの選択肢の最大値数。超えたら末尾に ``…`` を付ける
 PICKLIST_LIMIT = 30
-
-# ``[OBJECTS] NAMES`` 由来のオブジェクト JSON を入れるサブフォルダ
-OBJECT_SUBDIR = "objects"
 
 
 # 対応表の列名
@@ -70,6 +63,16 @@ FIELD_TABLE_COLUMNS: tuple[str, ...] = (
     "選択肢",
 )
 
+# 関連表の列名
+RELATED_TABLE_COLUMNS: tuple[str, ...] = (
+    "管理番号",
+    "親オブジェクト",
+    "参照項目API名",
+    "リレーション名",
+    "子オブジェクト",
+    "段",
+)
+
 
 @dataclass(frozen=True)
 class TableOutcome:
@@ -84,14 +87,14 @@ def run_tables(
     *,
     only_keys: Iterable[str] | None = None,
 ) -> TableOutcome:
-    """OUTPUT_DIR の ``*.json`` を読み、CSV を作る。
+    """OUTPUT_DIR の ``*.json`` を読み、 CSV を作る。
 
     Args:
         output_dir: JSON が入っているフォルダ。
         only_keys: per-ID CSV ``対応表_{管理番号}.csv`` を作る対象の管理番号。
-            ``None`` なら ``OUTPUT_DIR`` の全 JSON を対象にする。``fetch`` 直後に
-            呼ぶときは、取れた ID（``status="ok"`` の ``FetchOutcome.entry.key``）
-            を指定して渡し、**失敗した ID の CSV は作らず既存も消さない**。
+            ``None`` なら ``OUTPUT_DIR`` の全 JSON を対象にする。 ``fetch`` 直後に
+            呼ぶときは、 取れた ID（ ``status="ok"`` の ``FetchOutcome.entry.key`` ）
+            を指定して渡し、 **失敗した ID の CSV は作らず既存も消さない** 。
 
     Returns:
         ``TableOutcome``: 書いたファイル一覧と、読み込めずに飛ばした JSON 一覧。
@@ -101,8 +104,6 @@ def run_tables(
             ``tables`` サブコマンドの側で「先に fetch してください」と扱う。
     """
     payloads, skipped = _read_all_jsons(output_dir)
-    object_payloads, object_skipped = _read_object_jsons(output_dir)
-    skipped = tuple(skipped) + tuple(object_skipped)
 
     # per-ID CSV は ``only_keys`` で絞った payloads だけ対象にする
     if only_keys is not None:
@@ -119,8 +120,8 @@ def run_tables(
         _write_csv(path, CORRESPONDENCE_COLUMNS, rows)
         wrote.append(path)
 
-    # 全体の対応表・項目表は ``OUTPUT_DIR`` の **全 JSON** から作り直す
-    # （今回の実行で取った分だけでなく、前に取った分も含む）
+    # 全体の対応表・項目表・関連表は ``OUTPUT_DIR`` の **全 JSON** から作り直す
+    # （今回の実行で取った分だけでなく、 前に取った分も含む）
     sorted_payloads = sorted(payloads, key=lambda item: item[0])
     all_correspondence_rows: list[dict[str, str]] = []
     for _, payload in sorted_payloads:
@@ -129,10 +130,15 @@ def run_tables(
     _write_csv(correspondence_path, CORRESPONDENCE_COLUMNS, all_correspondence_rows)
     wrote.append(correspondence_path)
 
-    field_rows = _build_field_table_rows(sorted_payloads, object_payloads)
+    field_rows = _build_field_table_rows(sorted_payloads)
     field_path = output_dir / "項目表.csv"
     _write_csv(field_path, FIELD_TABLE_COLUMNS, field_rows)
     wrote.append(field_path)
+
+    related_rows = _build_related_table_rows(sorted_payloads)
+    related_path = output_dir / "関連表.csv"
+    _write_csv(related_path, RELATED_TABLE_COLUMNS, related_rows)
+    wrote.append(related_path)
 
     for path in wrote:
         logger.info(
@@ -175,39 +181,6 @@ def _read_all_jsons(output_dir: Path) -> tuple[list[tuple[str, dict]], list[Path
             skipped.append(path)
             continue
         payloads.append((key, data))
-    return payloads, skipped
-
-
-def _read_object_jsons(output_dir: Path) -> tuple[list[tuple[str, dict]], list[Path]]:
-    """``OUTPUT_DIR/objects/*.json`` を全部読み、 ``(オブジェクト名, payload)`` と
-    読み込めなかったファイル一覧を返す。
-
-    存在しないときは空タプルを返す（エラーにしない）。 壊れた JSON・
-    トップレベルが dict でないもの・ ``オブジェクト`` が無いものは
-    そのファイルだけ飛ばして警告ログを出す（他の名前は止めない）。
-    """
-    payloads: list[tuple[str, dict]] = []
-    skipped: list[Path] = []
-    objects_dir = output_dir / OBJECT_SUBDIR
-    if not objects_dir.exists():
-        return payloads, skipped
-    for path in sorted(objects_dir.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("JSON を読み込めないので飛ばします: %s (%s)", path, exc)
-            skipped.append(path)
-            continue
-        if not isinstance(data, dict):
-            logger.warning("JSON のトップレベルが dict ではないので飛ばします: %s", path)
-            skipped.append(path)
-            continue
-        name = data.get("オブジェクト")
-        if not isinstance(name, str) or not name:
-            logger.warning("JSON に オブジェクト が無いので飛ばします: %s", path)
-            skipped.append(path)
-            continue
-        payloads.append((name, data))
     return payloads, skipped
 
 
@@ -303,19 +276,15 @@ def _build_field_lookup(describe: object) -> dict[str, dict[str, str]]:
 
 def _build_field_table_rows(
     payloads: Sequence[tuple[str, dict]],
-    object_payloads: Sequence[tuple[str, dict]] = (),
 ) -> list[dict[str, str]]:
-    """全 JSON から項目表の行を作る（``オブジェクト × 項目`` のフラット表）。
+    """全 JSON から項目表の行を作る（ ``オブジェクト × 項目`` のフラット表 ）。
 
-    ``OUTPUT_DIR/objects/*.json`` もここで一緒に集約する。 同じオブジェクトが
-    レポートの ``objects`` と ``objects/*.json`` の両方にあれば
-    **``取得日時`` が新しい方** の describe を使う （レポート側・個別側を
-    区別しない）。並びは「``objects`` のキー名の昇順 → describe の
+    同じオブジェクトが複数の JSON にあれば ** ``取得日時`` が新しい方** の
+    describe を使う。 並びは「 ``objects`` のキー名の昇順 → describe の
     ``fields`` の並び順」のまま。
 
     ``段`` 列: 主オブジェクトは ``0`` 。 関連オブジェクトは JSON の
-    ``関連オブジェクト`` リストに入った段の数字 （ 1 / 2 / … ）。 ``objects/*.json``
-    だけの個別オブジェクトは空。
+    ``関連オブジェクト`` の ``段`` 列の数字（ 1 / 2 / … ）。
     """
     # ``obj_name -> 段`` のマッピング。 レポート JSON 側で ``関連オブジェクト`` から作る。
     # 同じ名前が複数回出てきたら ``段`` が小さい方を優先 （ 浅い方から到達した形 ） 。
@@ -324,7 +293,7 @@ def _build_field_table_rows(
     # レポート JSON の ``objects`` 側
     merged: dict[str, tuple[str, dict]] = {}
     for _, payload in payloads:
-        # 段マップ: 関連オブジェクトを集める
+        # 段マップ: 関連オブジェクトの参照先に段を付ける
         main_object_raw = payload.get("主オブジェクト")
         main_object = main_object_raw if isinstance(main_object_raw, str) else ""
         if main_object:
@@ -337,14 +306,14 @@ def _build_field_table_rows(
             for entry in related:
                 if not isinstance(entry, dict):
                     continue
-                name = entry.get("名前")
+                child = entry.get("子")
                 depth = entry.get("段")
-                if not isinstance(name, str) or not name:
+                if not isinstance(child, str) or not child:
                     continue
                 if not isinstance(depth, int):
                     continue
-                if name not in depth_by_name or depth_by_name[name] > depth:
-                    depth_by_name[name] = depth
+                if child not in depth_by_name or depth_by_name[child] > depth:
+                    depth_by_name[child] = depth
 
         objects = payload.get("objects")
         if not isinstance(objects, dict):
@@ -359,21 +328,6 @@ def _build_field_table_rows(
             existing = merged.get(obj_name)
             if existing is None or timestamp_str > existing[0]:
                 merged[obj_name] = (timestamp_str, describe)
-
-    # ``OUTPUT_DIR/objects/*.json`` 側（ ``object`` キーを持つ）
-    # 段マップは更新しない （ 個別オブジェクトは段が無い ）
-    for _, payload in object_payloads:
-        describe = payload.get("object")
-        name = payload.get("オブジェクト")
-        if not isinstance(name, str) or not name:
-            continue
-        if not isinstance(describe, dict):
-            continue
-        timestamp = payload.get("取得日時")
-        timestamp_str = timestamp if isinstance(timestamp, str) else ""
-        existing = merged.get(name)
-        if existing is None or timestamp_str > existing[0]:
-            merged[name] = (timestamp_str, describe)
 
     rows: list[dict[str, str]] = []
     for obj_name in sorted(merged.keys()):
@@ -415,6 +369,37 @@ def _build_field_table_rows(
     return rows
 
 
+def _build_related_table_rows(
+    payloads: Sequence[tuple[str, dict]],
+) -> list[dict[str, str]]:
+    """全 JSON の ``関連オブジェクト`` から、 関連表（ 親→子 ） の行を作る。
+
+    並びは **管理番号 → 段 → 親の出現順** に従う （ JSON 内で ``関連オブジェクト``
+    が「 浅い段 → 同じ段内では親の出現順 → 同じ親内では項目の出現順 」 と
+    並んでいるので、 管理番号でソートするだけでよい ）。
+    """
+    rows: list[dict[str, str]] = []
+    for key, payload in payloads:
+        related = payload.get("関連オブジェクト")
+        if not isinstance(related, list):
+            continue
+        for entry in related:
+            if not isinstance(entry, dict):
+                continue
+            depth = entry.get("段")
+            rows.append(
+                {
+                    "管理番号": key,
+                    "親オブジェクト": _coerce_str(entry.get("親")),
+                    "参照項目API名": _coerce_str(entry.get("参照項目")),
+                    "リレーション名": _coerce_str(entry.get("リレーション名")),
+                    "子オブジェクト": _coerce_str(entry.get("子")),
+                    "段": "" if not isinstance(depth, int) else str(depth),
+                }
+            )
+    return rows
+
+
 def _format_picklist(picklist: object, picklist_total: object = 0) -> str:
     """``picklist`` （ active な ``value`` だけの配列）を ``|`` 区切りにする。
 
@@ -444,28 +429,33 @@ def _coerce_str(value: object) -> str:
 
 
 def _write_csv(path: Path, columns: Sequence[str], rows: list[dict[str, str]]) -> None:
-    """UTF-8 BOM + CRLF で CSV を ``atomic_write`` 経由で書く。
+    """comken の ``CSV`` クラスで UTF-8 BOM + CRLF の CSV を書く。
 
-    comken の ``CSV`` クラスの ``_write`` と同じく、 ``atomic_write`` の
-    一時ファイルへ ``encoding="utf-8-sig"`` + ``newline=""`` で開き、
-    ``csv.DictWriter`` のデフォルト（ ``\r\n``）で書く。新規ファイルなので
-    文字コードを明示して BOM 付きで固定する（Excel で開ける形式）。
+    ``CSV`` クラスの既定では新規ファイルは **UTF-8 BOM 付き** で書かれ、
+    ``csv.DictWriter`` のデフォルト動作で **CRLF** 改行になる。 ``columns=``
+    を渡すと ``rows`` が空でも列が決まる（ 「 全行なし 」 の状態でも
+    見出しだけの CSV ファイルができる）。 ``atomic_write`` （ ``comken.core.files`` ）
+    は ``CSV._write`` の中で使われるので、 途中で失敗したら ``.part`` 一時
+    ファイルが片付けられ、 既存の同名ファイルは無傷で残る。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with (
-        atomic_write(path) as temporary_path,
-        temporary_path.open("w", encoding=CSV_ENCODING, newline="") as file,
-    ):
-        writer = csv.DictWriter(file, fieldnames=list(columns), extrasaction="raise")
-        writer.writeheader()
-        writer.writerows(rows)
+    with CSV(path, columns=list(columns)) as csv:
+        csv.replace(rows)
 
 
 def _count_data_rows(path: Path) -> int:
-    """CSV のデータ行数を返す（見出しを含まない）。ログ用に軽量に数える。"""
+    """CSV のデータ行数を返す（見出しを含まない）。ログ用に軽量に数える。
+
+    comken の ``CSV`` クラスは読み込みでも使えるが、 ログのためだけに読み出し
+    クラスをインスタンス化するのは重いため、 ここでは ``utf-8-sig`` コーデック
+    ＋ ``csv.reader`` で軽量に数える。 文字コードはこのプロジェクトの CSV が
+    必ず UTF-8 BOM 付きで書かれることを前提にする。
+    """
+    import csv as _csv
+
     count = 0
-    with path.open("r", encoding=CSV_ENCODING, newline="") as file:
-        reader = csv.reader(file)
+    with path.open("r", encoding="utf-8-sig", newline="") as file:
+        reader = _csv.reader(file)
         for _ in reader:
             count += 1
     return max(count - 1, 0)

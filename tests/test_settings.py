@@ -22,9 +22,6 @@ def test_load_settings_with_master(tmp_path: Path) -> None:
     # ``RELATED_DEPTH`` が無いときは既定の 3
     assert settings.related_depth == 3
     assert settings.credential_prefix == ""
-    # ``[OBJECTS]`` セクションが無いときは両方とも既定値
-    assert settings.objects_names == ()
-    assert settings.objects_org_id is None
 
 
 def test_load_settings_related_depth_explicit(tmp_path: Path) -> None:
@@ -95,97 +92,25 @@ def test_load_settings_missing_config_file_raises(tmp_path: Path) -> None:
         load_settings(tmp_path)
 
 
-# ── [OBJECTS] セクション ─────────────────────────────────────────────────
+# ── [OBJECTS] セクションは無視する ──────────────────────────────────────
 
 
-def test_load_settings_objects_names_comma(tmp_path: Path) -> None:
+def test_load_settings_ignores_objects_section(tmp_path: Path) -> None:
+    """``[OBJECTS]`` セクションが config.ini に残っていても無視する
+    （個別オブジェクトの取得は廃止）。
+    """
     master_path = tmp_path / "master.xlsx"
     _write_ini(
         tmp_path,
         f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n"
-        "[OBJECTS]\nNAMES = Account, Contact, Custom__c\n",
+        "[OBJECTS]\nNAMES = Account, Contact\nORG_ID = 1001\n",
     )
 
+    # エラーにならず読み込める。 古い ``[OBJECTS]`` の値も ``Settings`` には
+    # 載らない （個別オブジェクト関連のフィールド自体がないため ） 。
     settings = load_settings(tmp_path)
 
-    assert settings.objects_names == ("Account", "Contact", "Custom__c")
-    assert settings.objects_org_id is None
-
-
-def test_load_settings_objects_names_jp_comma(tmp_path: Path) -> None:
-    """読点 ``、`` 区切りも受け付ける。"""
-    master_path = tmp_path / "master.xlsx"
-    _write_ini(
-        tmp_path,
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[OBJECTS]\nNAMES = Account、Contact\n",
-    )
-
-    settings = load_settings(tmp_path)
-
-    assert settings.objects_names == ("Account", "Contact")
-
-
-def test_load_settings_objects_names_trims_whitespace(tmp_path: Path) -> None:
-    """前後の空白は除く。"""
-    master_path = tmp_path / "master.xlsx"
-    _write_ini(
-        tmp_path,
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[OBJECTS]\nNAMES =  Account ,   Contact\n",
-    )
-
-    settings = load_settings(tmp_path)
-
-    assert settings.objects_names == ("Account", "Contact")
-
-
-def test_load_settings_objects_names_dedup(tmp_path: Path) -> None:
-    """重複は 1 つにまとめる。"""
-    master_path = tmp_path / "master.xlsx"
-    _write_ini(
-        tmp_path,
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n"
-        "[OBJECTS]\nNAMES = Account, Contact, Account, Contact\n",
-    )
-
-    settings = load_settings(tmp_path)
-
-    assert settings.objects_names == ("Account", "Contact")
-
-
-def test_load_settings_objects_names_empty_ignored(tmp_path: Path) -> None:
-    """空要素は無視。"""
-    master_path = tmp_path / "master.xlsx"
-    _write_ini(
-        tmp_path,
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[OBJECTS]\nNAMES = Account, , Contact,\n",
-    )
-
-    settings = load_settings(tmp_path)
-
-    assert settings.objects_names == ("Account", "Contact")
-
-
-def test_load_settings_objects_org_id_present(tmp_path: Path) -> None:
-    """``ORG_ID`` が書かれているときは ``str`` で持つ。"""
-    master_path = tmp_path / "master.xlsx"
-    _write_ini(
-        tmp_path,
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[OBJECTS]\nNAMES = Account\nORG_ID = 1001\n",
-    )
-
-    settings = load_settings(tmp_path)
-
-    assert settings.objects_org_id == "1001"
-
-
-def test_load_settings_objects_org_id_missing(tmp_path: Path) -> None:
-    """``ORG_ID`` が無いときは ``None`` 。"""
-    master_path = tmp_path / "master.xlsx"
-    _write_ini(
-        tmp_path,
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[OBJECTS]\nNAMES = Account\n",
-    )
-
-    settings = load_settings(tmp_path)
-
-    assert settings.objects_org_id is None
+    assert settings.master_xlsx_path == master_path
+    # 関連フィールドが存在しないことを確認
+    assert not hasattr(settings, "objects_names")
+    assert not hasattr(settings, "objects_org_id")

@@ -9,8 +9,6 @@ import pytest
 from comken.exceptions import SalesforceRequestError
 
 from src.fetch import (
-    _apply_related_limit,
-    _collect_related_object_names,
     _fetch_object_cached,
     _slim_object,
     _slim_report,
@@ -92,8 +90,6 @@ def _settings(tmp_path: Path, related_max: int = 40, related_depth: int = 1) -> 
         related_max=related_max,
         related_depth=related_depth,
         credential_prefix="",
-        objects_names=(),
-        objects_org_id=None,
     )
 
 
@@ -434,39 +430,56 @@ def test_related_depth_1_only_first_level(tmp_path: Path) -> None:
     payload = _run_task_chain(tmp_path, related_depth=1)
     # 1 段目: Account のみ
     assert list(payload["objects"]) == ["Task", "Account"]
-    assert [r["名前"] for r in payload["関連オブジェクト"]] == ["Account"]
-    assert all(r["段"] == 1 for r in payload["関連オブジェクト"])
-    # 経路は ``Task.WhatId``
-    assert payload["関連オブジェクト"][0]["経路"] == ["Task.WhatId"]
+    assert payload["関連オブジェクト"] == [
+        {
+            "親": "Task",
+            "参照項目": "WhatId",
+            "リレーション名": "WhatId",
+            "子": "Account",
+            "段": 1,
+        }
+    ]
 
 
 def test_related_depth_2_includes_second_level(tmp_path: Path) -> None:
     """``RELATED_DEPTH=2`` は 1 → 2 段目まで取る。 ``User`` まで取れる。"""
     payload = _run_task_chain(tmp_path, related_depth=2)
     assert list(payload["objects"]) == ["Task", "Account", "User"]
-    by_name = {r["名前"]: r for r in payload["関連オブジェクト"]}
-    assert by_name["Account"]["段"] == 1
-    assert by_name["Account"]["経路"] == ["Task.WhatId"]
-    assert by_name["User"]["段"] == 2
-    # 経路は 2 つ （ Task→Account の WhatId と、 Account→User の OwnerId ）
-    assert by_name["User"]["経路"] == ["Task.WhatId", "Account.OwnerId"]
+    assert payload["関連オブジェクト"] == [
+        {
+            "親": "Task",
+            "参照項目": "WhatId",
+            "リレーション名": "WhatId",
+            "子": "Account",
+            "段": 1,
+        },
+        {
+            "親": "Account",
+            "参照項目": "OwnerId",
+            "リレーション名": "OwnerId",
+            "子": "User",
+            "段": 2,
+        },
+    ]
 
 
 def test_related_depth_3_includes_third_level(tmp_path: Path) -> None:
     """``RELATED_DEPTH=3`` は ``Group`` まで取る。"""
     payload = _run_task_chain(tmp_path, related_depth=3)
     assert list(payload["objects"]) == ["Task", "Account", "User", "Group"]
-    by_name = {r["名前"]: r for r in payload["関連オブジェクト"]}
-    assert by_name["Group"]["段"] == 3
-    assert by_name["Group"]["経路"] == [
-        "Task.WhatId",
-        "Account.OwnerId",
-        "User.GroupId",
-    ]
+    assert payload["関連オブジェクト"][-1] == {
+        "親": "User",
+        "参照項目": "GroupId",
+        "リレーション名": "GroupId",
+        "子": "Group",
+        "段": 3,
+    }
 
 
 def test_related_depth_dedup_across_paths(tmp_path: Path) -> None:
-    """同じオブジェクトを複数の経路で参照しても describe は 1 回だけ。
+    """同じオブジェクトを複数の経路で参照しても describe は 1 回だけ、
+    ただし ``関連オブジェクト`` には **取れたオブジェクト同士の参照を全部**
+    載せるので、 ``Y`` への参照は 2 本 （ ``X`` からと ``Z`` から ） 出る。
 
     1 段目に ``X → Y`` と ``X → Z → Y`` で同じ ``Y`` に到達する形を作る。
     """
@@ -488,11 +501,14 @@ def test_related_depth_dedup_across_paths(tmp_path: Path) -> None:
     assert client.describe_object_calls.count("Y") == 1
     # JSON にも 1 回だけ
     assert list(payload["objects"]).count("Y") == 1
-    # ``関連オブジェクト`` でも 1 回だけ、 経路は最初に見つけた方
-    y_entries = [r for r in payload["関連オブジェクト"] if r["名前"] == "Y"]
-    assert len(y_entries) == 1
-    assert y_entries[0]["段"] == 1
-    assert y_entries[0]["経路"] == ["X.AId"]
+    # ``関連オブジェクト`` には ``Y`` への参照が 2 本
+    # （ X.AId→Y と Z.CId→Y ） 載る
+    y_entries = [r for r in payload["関連オブジェクト"] if r["子"] == "Y"]
+    assert len(y_entries) == 2
+    y_pairs = sorted((r["親"], r["参照項目"]) for r in y_entries)
+    assert y_pairs == [("X", "AId"), ("Z", "CId")]
+    # 両方の段は 1 （ X / Z どちらも 1 段目で取れている ）
+    assert all(r["段"] == 1 for r in y_entries)
 
 
 def test_related_depth_stops_at_cycle(tmp_path: Path) -> None:
@@ -516,10 +532,10 @@ def test_related_depth_stops_at_cycle(tmp_path: Path) -> None:
     # ``A`` の describe は 1 回のみ （ 2 段目で再訪しない ）
     assert client.describe_object_calls.count("A") == 1
     # ``B`` は関連として 1 件だけ
-    b_entries = [r for r in payload["関連オブジェクト"] if r["名前"] == "B"]
+    b_entries = [r for r in payload["関連オブジェクト"] if r["子"] == "B"]
     assert len(b_entries) == 1
     # ``C`` は 2 段目として取れる （ さらに 3 段目で ``A`` を掘ろうとはしない ）
-    c_entries = [r for r in payload["関連オブジェクト"] if r["名前"] == "C"]
+    c_entries = [r for r in payload["関連オブジェクト"] if r["子"] == "C"]
     assert len(c_entries) == 1
     assert c_entries[0]["段"] == 2
 
@@ -550,63 +566,424 @@ def test_related_depth_max_limits_total_across_levels(tmp_path: Path) -> None:
 
     # 近い段から 3 件: Account / Contact / User （ Group は取らない ）
     assert list(payload["objects"]) == ["Task", "Account", "Contact", "User"]
+    # 関連オブジェクトの行数も 3 本 （ Group への行は出ない ）
+    assert len(payload["関連オブジェクト"]) == 3
+    children = [r["子"] for r in payload["関連オブジェクト"]]
+    assert children == ["Account", "Contact", "User"]
     warning = next(w for w in payload["warnings"] if "上限" in w)
     # 全体件数（4）とスキップ件数（1）、 取らなかった名前が出る
     assert "4 件" in warning
     assert "Group" in warning
 
 
-def test_related_depth_breaks_under_depth1_only_impl(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """深さテストは 「 常に 1 段で止める 」 改ざんで落ちる （ 検知用 ）。"""
-    from src import fetch as fetch_module
+# ── 関連オブジェクト: 親→子の行の組み立て ────────────────────────────────
 
-    # 「 悪い実装 」: 1 段目だけ集めるバージョンに差し替え
-    def shallow(
-        main_describe,
-        fetcher,
-        *,
-        related_depth,
-        related_max,
-    ):
-        from src.fetch import RelatedNode, _take_within_limit
 
-        main_name = main_describe.get("name") if isinstance(main_describe, dict) else None
-        visited = {main_name} if isinstance(main_name, str) and main_name else set()
-        nodes: list[RelatedNode] = []
-        if not isinstance(main_name, str) or not main_name:
-            return nodes, []
-        paths = fetch_module._collect_related_field_paths(main_describe)
-        first_level: list[RelatedNode] = []
-        seen: set[str] = set()
-        for field_name, ref_name in paths:
-            if ref_name in visited or ref_name in seen:
-                continue
-            visited.add(ref_name)
-            seen.add(ref_name)
-            first_level.append(
-                RelatedNode(
-                    name=ref_name,
-                    depth=1,
-                    path=(f"{main_name}.{field_name}",),
-                    describe=None,
-                )
-            )
-        skipped: list[str] = []
-        accepted = _take_within_limit(first_level, related_max - len(nodes), skipped)
-        fetch_module._fill_describes(accepted, fetcher)
-        nodes.extend(accepted)
-        return nodes, skipped
-
-    monkeypatch.setattr(fetch_module, "_collect_related_objects", shallow)
-
-    # depth=3 でも「 悪い実装 」 では ``User`` / ``Group`` が取れないはず
+def test_related_objects_n_chain_has_one_row_per_edge(tmp_path: Path) -> None:
+    """Task→Account→User の 3 段チェーンで、 ``関連オブジェクト`` には親→子の
+    参照 3 本が並ぶ （ JSON のリスト順は 浅い段 → 親の出現順 ）。
+    """
     payload = _run_task_chain(tmp_path, related_depth=3)
-    # 浅いので Account までしか取れない
-    assert list(payload["objects"]) == ["Task", "Account"]
-    assert "User" not in payload["objects"]
-    assert "Group" not in payload["objects"]
+    assert payload["関連オブジェクト"] == [
+        {
+            "親": "Task",
+            "参照項目": "WhatId",
+            "リレーション名": "WhatId",
+            "子": "Account",
+            "段": 1,
+        },
+        {
+            "親": "Account",
+            "参照項目": "OwnerId",
+            "リレーション名": "OwnerId",
+            "子": "User",
+            "段": 2,
+        },
+        {
+            "親": "User",
+            "参照項目": "GroupId",
+            "リレーション名": "GroupId",
+            "子": "Group",
+            "段": 3,
+        },
+    ]
+
+
+def test_related_objects_multiple_parents_to_same_child_yields_separate_rows(
+    tmp_path: Path,
+) -> None:
+    """同じ子へ複数の親から行く場合は、 親ごとに 1 行ずつ別行にする。
+
+    主 = Task （ 1 段目 ）。 Task の WhatId と WhoId の **2 つのフィールドが
+    両方 ``User`` を指す**ようにすると、 「 Task→User 」 が 2 本出る。
+    同じ段内で同じ親から複数のフィールドで同じ子を指している。
+    """
+    main = {
+        "name": "Task",
+        "fields": [
+            {
+                "name": "WhatId",
+                "type": "reference",
+                "referenceTo": ["User"],
+                "relationshipName": "What",
+            },
+            {
+                "name": "WhoId",
+                "type": "reference",
+                "referenceTo": ["User"],
+                "relationshipName": "Who",
+            },
+        ],
+    }
+    objects = {
+        "Task": main,
+        "User": _main_describe("User"),
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    describe = {"reportMetadata": {"reportType": {"type": "Task"}, "reportFormat": "TABULAR"}}
+    client = _FakeClient(describe=describe, object_describes=objects)
+    site_for, _ = _site_for(client)
+    payload_path = run_fetch(
+        _settings(tmp_path, related_depth=1, related_max=10), [entry], site_for=site_for
+    )[0].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    # 子 = User の行が全部出てくる
+    user_rows = [r for r in payload["関連オブジェクト"] if r["子"] == "User"]
+    assert user_rows == [
+        {
+            "親": "Task",
+            "参照項目": "WhatId",
+            "リレーション名": "What",
+            "子": "User",
+            "段": 1,
+        },
+        {
+            "親": "Task",
+            "参照項目": "WhoId",
+            "リレーション名": "Who",
+            "子": "User",
+            "段": 1,
+        },
+    ]
+
+
+def test_related_objects_polymorphic_reference_yields_separate_rows(
+    tmp_path: Path,
+) -> None:
+    """ポリモーフィックな参照は ``referenceTo`` のエントリごとに 1 行ずつ。
+
+    主 = Task。 Task.OwnerId は Who ロールで Contact / Lead / User への
+    ポリモーフィック参照 （ relationshipName = ``OwnerId`` ）、 すべて 1 段目
+    に解決対象として並ぶ。 ここでは分かりやすくするため、 各子は
+    ``referenceTo`` の最初の対象だけを ``relationshipName`` 付きで持つ形に
+    する （ Contact / Lead / User それぞれに対応 ）。
+    """
+    main = {
+        "name": "Task",
+        "fields": [
+            {
+                "name": "WhoId",
+                "type": "reference",
+                "referenceTo": ["Contact", "Lead"],
+                "relationshipName": "Who",
+            }
+        ],
+    }
+    objects = {
+        "Task": main,
+        "Contact": _main_describe("Contact"),
+        "Lead": _main_describe("Lead"),
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    describe = {"reportMetadata": {"reportType": {"type": "Task"}, "reportFormat": "TABULAR"}}
+    client = _FakeClient(describe=describe, object_describes=objects)
+    site_for, _ = _site_for(client)
+    payload_path = run_fetch(
+        _settings(tmp_path, related_depth=1, related_max=10), [entry], site_for=site_for
+    )[0].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    assert payload["関連オブジェクト"] == [
+        {
+            "親": "Task",
+            "参照項目": "WhoId",
+            "リレーション名": "Who",
+            "子": "Contact",
+            "段": 1,
+        },
+        {
+            "親": "Task",
+            "参照項目": "WhoId",
+            "リレーション名": "Who",
+            "子": "Lead",
+            "段": 1,
+        },
+    ]
+
+
+def test_related_table_omits_child_dropped_by_limit(tmp_path: Path) -> None:
+    """``RELATED_MAX`` で打ち切られた子は ``関連オブジェクト`` の行にも出ない。
+
+    上限に達したあとに参照された子は describe を取らないので ``objects`` に
+    入らず、 ``関連オブジェクト`` にも行が出ない。 警告文には名前が残る。
+    """
+    objects = {
+        "Task": _describe_with_refs(
+            "Task",
+            {"WhatId": "Account", "WhoId": "Contact"},
+        ),
+        "Account": _main_describe("Account"),
+        # Contact は ``RELATED_MAX=1`` のため skipped （ HTTP も打たれない ）
+        "Contact": _main_describe("Contact"),
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    describe = {"reportMetadata": {"reportType": {"type": "Task"}, "reportFormat": "TABULAR"}}
+    client = _FakeClient(describe=describe, object_describes=objects)
+    site_for, _ = _site_for(client)
+    # RELATED_MAX=1 で Account だけ採用、 Contact は skipped。
+    payload_path = run_fetch(
+        _settings(tmp_path, related_depth=3, related_max=1),
+        [entry],
+        site_for=site_for,
+    )[0].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    # 関連オブジェクトは Account の 1 本だけ
+    assert payload["関連オブジェクト"] == [
+        {
+            "親": "Task",
+            "参照項目": "WhatId",
+            "リレーション名": "WhatId",
+            "子": "Account",
+            "段": 1,
+        }
+    ]
+    # Contact は ``objects`` にも入らない
+    assert "Contact" not in payload["objects"]
+    # 警告に Contact が残る
+    warning = next(w for w in payload["warnings"] if "上限" in w)
+    assert "Contact" in warning
+    # HTTP は 「 Task の主オブジェクト + 上限内の Account 」 の 2 件のみ
+    assert client.describe_object_calls == ["Task", "Account"]
+
+
+# ── 主＋関連オブジェクト同士の参照（ 主への参照・自己参照 ） ───────────────
+
+
+def test_collect_related_objects_includes_main_and_self_references_in_relations() -> None:
+    """再現例: 主=Task、 Account.OwnerId→User、 Account.ParentId→Account
+    （自己参照）、 Account.TaskId→Task （主への参照）、 User.ManagerId→User
+    （自己参照）。 ``nodes`` には主(Task)を含まないが、 ``relations`` には
+    主への参照（段 0 ） と自己参照も全部載る。 行の段は **子の段** （ 主=0 ）。
+    """
+    from src.fetch import RelationRecord, _collect_related_objects
+
+    D: dict[str, dict] = {
+        "Task": _describe_with_refs("Task", {"WhatId": "Account", "OwnerId": "User"}),
+        "Account": {
+            "name": "Account",
+            "fields": [
+                {
+                    "name": "OwnerId",
+                    "type": "reference",
+                    "referenceTo": ["User"],
+                    "relationshipName": "Owner",
+                },
+                {
+                    "name": "ParentId",
+                    "type": "reference",
+                    "referenceTo": ["Account"],
+                    "relationshipName": "Parent",
+                },
+                {
+                    "name": "TaskId",
+                    "type": "reference",
+                    "referenceTo": ["Task"],
+                    "relationshipName": "T",
+                },
+            ],
+        },
+        "User": _describe_with_refs("User", {"ManagerId": "User"}),
+    }
+
+    nodes, relations, skipped = _collect_related_objects(
+        D["Task"],
+        lambda n: D.get(n),
+        related_depth=3,
+        related_max=40,
+    )
+
+    # ``nodes`` は主を含まない。 段は浅い順 （ Account と User は 1 段目 ）
+    assert [(node.name, node.depth) for node in nodes] == [("Account", 1), ("User", 1)]
+    # ``relations`` は 6 行: 主→子、 Account→子、 User→子
+    assert relations == [
+        RelationRecord(
+            parent="Task",
+            field="WhatId",
+            relationship_name="WhatId",
+            child="Account",
+            depth=1,
+        ),
+        RelationRecord(
+            parent="Task",
+            field="OwnerId",
+            relationship_name="OwnerId",
+            child="User",
+            depth=1,
+        ),
+        RelationRecord(
+            parent="Account",
+            field="OwnerId",
+            relationship_name="Owner",
+            child="User",
+            depth=1,
+        ),
+        RelationRecord(
+            parent="Account",
+            field="ParentId",
+            relationship_name="Parent",
+            child="Account",
+            depth=1,
+        ),
+        RelationRecord(
+            parent="Account",
+            field="TaskId",
+            relationship_name="T",
+            child="Task",
+            depth=0,
+        ),
+        RelationRecord(
+            parent="User",
+            field="ManagerId",
+            relationship_name="ManagerId",
+            child="User",
+            depth=1,
+        ),
+    ]
+    assert skipped == []
+
+
+def test_collect_related_objects_skipped_child_excluded_from_relations() -> None:
+    """``related_max=1`` で Account だけ取れて User は ``skipped`` 。
+    User を含む行は出ない（ User は取れていないため、 親にも子にもならない ）。
+    Account 側の ``User`` への行も User が取れていないので出ない。
+    """
+    from src.fetch import _collect_related_objects
+
+    D: dict[str, dict] = {
+        "Task": _describe_with_refs("Task", {"WhatId": "Account", "OwnerId": "User"}),
+        "Account": _describe_with_refs("Account", {"OwnerId": "User"}),
+        "User": _describe_with_refs("User", {"ManagerId": "User"}),
+    }
+
+    nodes, relations, skipped = _collect_related_objects(
+        D["Task"],
+        lambda n: D.get(n),
+        related_depth=3,
+        related_max=1,
+    )
+
+    # ``nodes`` は Account だけ
+    assert [node.name for node in nodes] == ["Account"]
+    # User を含む行は出ない
+    assert all(r.child != "User" for r in relations)
+    # Account は出ている （ Task→Account 1 行だけ ）
+    account_rows = [r for r in relations if r.child == "Account"]
+    assert len(account_rows) == 1
+    assert account_rows[0].parent == "Task"
+    assert account_rows[0].field == "WhatId"
+    # User は skipped
+    assert "User" in skipped
+
+
+def test_run_fetch_emits_main_and_self_references_in_related_objects(
+    tmp_path: Path,
+) -> None:
+    """``run_fetch`` の JSON 出力 ``関連オブジェクト`` に、 主＋関連オブジェクト
+    同士の参照が全部載ることを end-to-end で確かめる。 上の再現例と
+    同じフェイクを使う。
+    """
+    main = {
+        "name": "Task",
+        "fields": [
+            {
+                "name": "WhatId",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "What",
+            },
+            {
+                "name": "OwnerId",
+                "type": "reference",
+                "referenceTo": ["User"],
+                "relationshipName": "Owner",
+            },
+        ],
+    }
+    objects = {
+        "Task": main,
+        "Account": {
+            "name": "Account",
+            "fields": [
+                {
+                    "name": "OwnerId",
+                    "type": "reference",
+                    "referenceTo": ["User"],
+                    "relationshipName": "Owner",
+                },
+                {
+                    "name": "ParentId",
+                    "type": "reference",
+                    "referenceTo": ["Account"],
+                    "relationshipName": "Parent",
+                },
+                {
+                    "name": "TaskId",
+                    "type": "reference",
+                    "referenceTo": ["Task"],
+                    "relationshipName": "T",
+                },
+            ],
+        },
+        "User": {
+            "name": "User",
+            "fields": [
+                {
+                    "name": "ManagerId",
+                    "type": "reference",
+                    "referenceTo": ["User"],
+                    "relationshipName": "Manager",
+                }
+            ],
+        },
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    describe = {"reportMetadata": {"reportType": {"type": "Task"}, "reportFormat": "TABULAR"}}
+    client = _FakeClient(describe=describe, object_describes=objects)
+    site_for, _ = _site_for(client)
+    payload_path = run_fetch(
+        _settings(tmp_path, related_depth=3, related_max=40), [entry], site_for=site_for
+    )[0].output_path
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    # ``objects`` には主 + 取れた関連だけ。 順序: Task → Account → User
+    assert list(payload["objects"]) == ["Task", "Account", "User"]
+    # ``関連オブジェクト`` 6 行、 並び固定
+    assert payload["関連オブジェクト"] == [
+        {"親": "Task", "参照項目": "WhatId", "リレーション名": "What", "子": "Account", "段": 1},
+        {"親": "Task", "参照項目": "OwnerId", "リレーション名": "Owner", "子": "User", "段": 1},
+        {"親": "Account", "参照項目": "OwnerId", "リレーション名": "Owner", "子": "User", "段": 1},
+        {
+            "親": "Account",
+            "参照項目": "ParentId",
+            "リレーション名": "Parent",
+            "子": "Account",
+            "段": 1,
+        },
+        {"親": "Account", "参照項目": "TaskId", "リレーション名": "T", "子": "Task", "段": 0},
+        {"親": "User", "参照項目": "ManagerId", "リレーション名": "Manager", "子": "User", "段": 1},
+    ]
 
 
 def test_main_object_resolves_custom_entity_dollar_type(tmp_path: Path) -> None:
@@ -965,31 +1342,6 @@ def test_existing_json_not_corrupted_on_failure(tmp_path: Path) -> None:
 
 
 # ── ヘルパー関数 ─────────────────────────────────────────────────────────
-
-
-def test_collect_related_object_names_excludes_main_and_dedups() -> None:
-    describe = _main_describe(
-        "Opportunity",
-        fields_map={
-            "AccountId": ["Account"],
-            "OwnerId": ["User"],
-            "AccountId2": ["Account"],
-            "WhatId": ["Account", "Opportunity"],  # 主オブジェクト自身を含む
-        },
-    )
-    result = _collect_related_object_names(describe, exclude="Opportunity")
-    # 出現順: Account, User, Opportunity（ただし exclude で Opportunity は除く）
-    assert result == ["Account", "User"]
-
-
-def test_apply_related_limit() -> None:
-    names = ["a", "b", "c", "d"]
-    kept, skipped = _apply_related_limit(names, 2)
-    assert kept == ["a", "b"]
-    assert skipped == ["c", "d"]
-    kept, skipped = _apply_related_limit(names, 10)
-    assert kept == names
-    assert skipped == []
 
 
 def test_fetch_object_cached_calls_only_once() -> None:
@@ -1735,14 +2087,14 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
     slim 後は ``referenceTo`` が空になるため、 関連が 1 つも取れなくなる。
 
     検出方法: 関連オブジェクト収集が slim 後に走る「 悪い実装 」 に
-    ``_collect_related_field_paths`` を差し替える （ ``_slim_object`` を先に
-    呼んで元 dict を破壊してから原本を読む ）。 本物の実装は slim の前に走る
-    ので ``Account`` が取れる。
+    ``_related_ref_pairs`` を差し替える （ ``_slim_object`` を先に呼んで元
+    dict を破壊してから原本を読む ）。 本物の実装は slim の前に走るので
+    ``Account`` が取れる。
     """
     from src import fetch as fetch_module
 
     real_slim_object = fetch_module._slim_object
-    real_collect = fetch_module._collect_related_field_paths
+    real_collect = fetch_module._related_ref_pairs
     call_log: list[str] = []
 
     def bad_slim_object(describe):
@@ -1762,7 +2114,7 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
         return real_collect(describe)
 
     monkeypatch.setattr(fetch_module, "_slim_object", bad_slim_object)
-    monkeypatch.setattr(fetch_module, "_collect_related_field_paths", order_collect)
+    monkeypatch.setattr(fetch_module, "_related_ref_pairs", order_collect)
 
     main = {
         "name": "Opportunity",
