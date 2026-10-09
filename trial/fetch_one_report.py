@@ -11,8 +11,9 @@
 使い方:
     python -m trial.fetch_one_report <レポートのURL> [管理番号]
 
-``管理番号`` を省略すると ``sample``。 出力は ``output/single/{管理番号}.json``
-と ``output/single/対応表_{管理番号}.csv`` (取れたとき)。
+``管理番号`` を省略すると ``sample``。 出力は ``output/single/`` 配下に
+``対応表_{管理番号}.csv`` / ``列名の対応_{管理番号}.txt`` を含む 8 種類の CSV
+（ 取れたとき ） 。
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
 
-# ``run_fetch`` の ``site_for`` と同じ型（テストで差し替えるため）
+# ``run_fetch`` の ``site_for`` と同じ型（ テスト用差し替え ）
 SiteFor = Callable[[str], type]
 
 
@@ -44,7 +45,7 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
     Returns:
         0 … 成功
         1 … 失敗
-        2 … 引数エラー (argparse が ``SystemExit(2)`` を投げる)
+        2 … 引数エラー ( argparse が ``SystemExit(2)`` を投げる )
     """
     parser = argparse.ArgumentParser(
         prog="python -m trial.fetch_one_report",
@@ -55,7 +56,7 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
         "key",
         nargs="?",
         default="sample",
-        help="管理番号（既定: sample）",
+        help="管理番号（ 既定: sample ）",
     )
     args = parser.parse_args(argv)
 
@@ -69,19 +70,21 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
 
     ok_keys: list[str] = []
     failed_count = 0
+    records = []
     for outcome in outcomes:
         if outcome.status == "ok":
             ok_keys.append(outcome.entry.key)
-            print(f"[ok] 管理番号={outcome.entry.key} 出力先={outcome.output_path}")
+            records.append(outcome.record)
+            print(f"[ok] 管理番号={outcome.entry.key} 警告={len(outcome.warnings)} 件")
             for warning in outcome.warnings:
                 print(f"  - 警告: {warning}")
         else:
             failed_count += 1
             print(f"[failed] 管理番号={outcome.entry.key}: {outcome.error}")
 
-    if ok_keys:
+    if records:
         try:
-            run_tables(settings.output_dir, only_keys=ok_keys)
+            run_tables(settings.output_dir, records, only_keys=ok_keys)
         except Exception as exc:
             logger.error("CSV の生成に失敗しました: %s", exc)
 

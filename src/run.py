@@ -2,7 +2,8 @@
 
 ``実行.bat`` または ``python main.py`` から呼ばれると、 ``argv`` を
 ``sys.argv[1:]`` として受け取り、 管理表の「有効」列が ``○`` の行すべての
-describe を取って JSON に書く。
+describe を取って ``ReportRecord`` に詰める。 その record の一覧を
+``run_tables`` に渡して CSV を組み立てる。 JSON は書かない。
 
 終了コード:
 
@@ -23,14 +24,14 @@ from typing import Any
 from comken.runtime import is_dry_run
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src.fetch import run_fetch
+from src.fetch import FetchOutcome, run_fetch
 from src.master import MasterEntry, filter_enabled, read_master
 from src.settings import Settings, load_settings
 from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
 
-# ``run_fetch`` の ``site_for`` と同じ型（テストで差し替えるため）
+# ``run_fetch`` の ``site_for`` と同じ型（ テストで差し替えるため ）
 SiteFor = Callable[[str], type]
 
 
@@ -39,8 +40,8 @@ def run(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> in
 
     Args:
         argv: コマンドライン引数。 ``None`` なら ``sys.argv[1:]`` を使う。
-            1 件でも指定されたら何もしないでエラー終了（終了コード 2）。
-        site_for: URL → Salesforce サイトクラスの関数。テスト用差し替え。
+            1 件でも指定されたら何もしないでエラー終了（ 終了コード 2 ）。
+        site_for: URL → Salesforce サイトクラスの関数。 テスト用差し替え。
 
     Returns:
         0 … 全件成功
@@ -66,22 +67,21 @@ def run(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> in
 
     # レポートの取得 （ 同じ実行内で ``describe_object`` を 1 回にまとめる ）
     object_cache: dict[str, dict[str, Any]] = {}
-    ok_keys: list[str] = []
-    failed_keys: list[str] = []
-
+    outcomes: list[FetchOutcome] = []
     for outcome in run_fetch(settings, entries, site_for=site_for, object_cache=object_cache):
-        _log_outcome(outcome)
-        if outcome.status == "ok":
-            ok_keys.append(outcome.entry.key)
-        elif outcome.status == "failed":
-            failed_keys.append(outcome.entry.key)
+        _log_outcome(outcome, settings)
+        outcomes.append(outcome)
 
-    # CSV は取れた ID に関わらず作り直す。 取れた ID があるときは per-ID CSV を
-    # そのぶんだけ作る。
+    ok_keys = [o.entry.key for o in outcomes if o.status == "ok"]
+    failed_keys = [o.entry.key for o in outcomes if o.status == "failed"]
+
+    # 取れた record だけから CSV を組み立てる。 失敗した ID の CSV は作らず
+    # 既存も消さない。
+    records = [o.record for o in outcomes if o.record is not None]
     try:
-        run_tables(settings.output_dir, only_keys=ok_keys)
+        run_tables(settings.output_dir, records, only_keys=ok_keys)
     except Exception as exc:
-        # CSV の失敗は全体の失敗にはしない（ JSON は書けたので）
+        # CSV の失敗は全体の失敗にはしない （ record は取れているので ）
         logger.error("CSV の生成に失敗しました: %s", exc)
 
     return 1 if failed_keys else 0
@@ -90,13 +90,13 @@ def run(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> in
 # ── ログ ────────────────────────────────────────────────────────────────
 
 
-def _log_outcome(outcome: Any) -> None:
+def _log_outcome(outcome: FetchOutcome, settings: Settings) -> None:
     """``FetchOutcome`` を ``[ok]`` / ``[failed]`` でログに出す。"""
     if outcome.status == "ok":
         logger.info(
-            "[ok] 管理番号=%s 出力先=%s 警告=%d 件",
+            "[ok] 管理番号=%s 概要=%s 警告=%d 件",
             outcome.entry.key,
-            outcome.output_path,
+            outcome.entry.summary,
             len(outcome.warnings),
         )
         for warning in outcome.warnings:
@@ -107,6 +107,9 @@ def _log_outcome(outcome: Any) -> None:
             outcome.entry.key,
             outcome.error,
         )
+    elif outcome.status == "dry-run":
+        # dry-run は ``_log_dry_run`` 側でまとめて出す
+        return
 
 
 def _log_dry_run(settings: Settings, entries: list[MasterEntry]) -> None:
@@ -121,5 +124,5 @@ def _log_dry_run(settings: Settings, entries: list[MasterEntry]) -> None:
             entry.key,
             entry.summary,
             report_id,
-            settings.output_dir / f"{entry.key}.json",
+            settings.output_dir,
         )

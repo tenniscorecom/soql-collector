@@ -1,60 +1,43 @@
-"""ID ごとに describe を取って、 ID ごとの JSON に書く。
+"""ID ごとに describe を取って、 結果を ``ReportRecord`` （ メモリ上の記録 ）
+として返す。
 
-流れ（IDごと）:
+流れ （ IDごと ） :
 
-1. 管理番号 → 管理表の行（無ければ呼び出し側の ``cli`` でエラー）
+1. 管理番号 → 管理表の行 （ 無ければ呼び出し側の ``cli`` でエラー ）
 2. URL から ``site_for(url)`` で接続先を決め、 ``with site() as client:`` で開く
-3. ``metadata = client.report.describe(report_id)`` （レポートの describe）
+3. ``metadata = client.report.describe(report_id)`` （ レポートの describe ）
 4. 主オブジェクトの決定: ``reportType.type`` が空なら特定できず。 ``$`` / ``@``
    を含まなければその値、 含めば ``mapping.report_type_candidates()`` の候補を
    ``_fetch_object_cached()`` で順に ``describe_object`` して、 最初に成功した
-   ものを主オブジェクトにする。 HTTP エラー（ ``SalesforceRequestError`` ）や
+   ものを主オブジェクトにする。 HTTP エラー （ ``SalesforceRequestError`` ） や
    ``ValueError`` で主オブジェクトが特定できなかった／ describe が取れなかった
    ときは、 列対応表を全列 ``(不明)`` ＋理由の備考に縮退する。 401 / 403 は
    握りつぶさず、 その ID の失敗にする
-5. 関連オブジェクト（参照先を ``RELATED_DEPTH`` 段まで）: 主オブジェクトの
+5. 関連オブジェクト （ 参照先を ``RELATED_DEPTH`` 段まで ） : 主オブジェクトの
    describe の ``fields`` を起点に幅優先で参照を辿り、 ``relationshipName``
    が空でなく ``referenceTo`` が空でない項目を **1 段ずつ** 掘る。 同じ名前は
    浅い段から先に登録される。 件数は ``[LIMITS] RELATED_MAX`` （ 既定 40 ）
    で全段の合計を打ち切り、 超えた名前は ``warnings`` に残す
-6. ``mapping.build_column_map(metadata, main_describe, reason)`` で列対応表を
-   組み立てる。 主オブジェクトの describe は **ID ごとに 1 回** だけ取得する
+6. ``mapping.build_column_map(metadata, main_describe, reason, ...)`` で列対応表
+   を組み立てる。 主オブジェクトの describe は **ID ごとに 1 回** だけ取得する
    （ ``_fetch_object_cached`` のキャッシュを経由するため、 複数 ID が同じ
    主オブジェクトを参照しても HTTP は 1 回 ）
 
-出力（ ``[FILES] OUTPUT_DIR`` の ``{管理番号}.json`` ）は SOQL 組立に必要な
-**構造だけ** を書く:
-
-- レポートの ``reportMetadata`` は ``REPORT_METADATA_KEYS`` にあるキーだけを
-  **そのまま** 残す（ SELECT / WHERE / 日付条件 / サブクエリ / GROUP BY /
-  集計 / ORDER BY / 件数 / 独自グループ / 独自計算式に必要なもの ）
-- レポートの ``reportExtendedMetadata`` は ``detailColumnInfo`` /
-  ``groupingColumnInfo`` / ``aggregateColumnInfo`` の 3 キーだけ残す
-- オブジェクトは ``name`` / ``label`` / ``custom`` / ``fields`` だけ
-- 項目は ``name`` / ``label`` / ``type`` / ``custom`` / ``referenceTo`` /
-  ``relationshipName`` / ``picklist`` / ``picklistTotal`` の 8 キーだけ
-- ``関連オブジェクト`` は主＋関連の **取れた** オブジェクト同士の親→子の
-  参照を **1 行 1 本** で書いたリスト（ ``{親, 参照項目, リレーション名, 子, 段}`` ）。
-  段数の上限で打ち切られた子はここに出ない。 ポリモーフィック参照は
-  ``referenceTo`` のエントリごとに 1 行ずつ
-
-``describe`` の **原本** は JSON に残さない。 落としたキーの名前は
-``report.droppedKeys`` に**出現順で**入れる（ 最初の実行で、 必要なものを
-落としていないか確かめる用 ）。 一時ファイル経由で書き込む
-（ ``comken.core.files.atomic_write`` ）。
+**出力は CSV だけ**。 ``ReportRecord`` （ frozen dataclass ） に詰めて
+``FetchOutcome.record`` で返す。 ``run_tables`` がこの record を受け取って
+CSV を組み立てる。 許可リストでレポート describe から落としたキー名は
+``_fetch_one`` の ``warnings`` に
+「 レポート定義の中で使わなかったキー: ... 」 の形でも 1 行入れる
+（ SOQL 組立に必要なものを落としていないか、 最初の本番実行で確かめるため ） 。
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from comken.core.dates import now as comken_now
-from comken.core.files import atomic_write
 from comken.exceptions import (
     ComkenError,
     SalesforceError,
@@ -143,12 +126,37 @@ class RelationRecord:
 
 
 @dataclass(frozen=True)
+class ReportRecord:
+    """1 ID の取得結果をメモリに保持する記録。 ``frozen`` で再代入しない。
+
+    ``fetch`` が ``run`` に渡して、 ``run`` が ``run_tables`` に渡す。
+    ``tables`` はこの record から CSV を組み立てる。 JSON ファイルは作らない。
+    """
+
+    key: str  # 管理番号
+    summary: str  # 概要
+    report_id: str  # レポート ID
+    url: str  # レポート URL
+    main_object: str | None  # 主オブジェクト名（ 取得失敗なら ``None`` ）
+    #: レポート describe を ``_slim_report`` で絞った dict。 CSV 生成や
+    #: 警告表 で読む。 落としたキー名はここに含めず ``_collect_dropped_keys``
+    #: で別途取り出す。
+    report: dict[str, Any]
+    #: 主＋関連のオブジェクト describe を ``_slim_object`` で絞った dict。
+    #: キー = オブジェクト名、 値 = ``{name, label, custom, fields}``
+    objects: dict[str, dict[str, Any]]
+    relations: tuple[RelationRecord, ...]  # 主＋関連オブジェクト同士の参照
+    column_map: list[dict[str, str]]  # 列対応表
+    warnings: tuple[str, ...]  # 警告メッセージ
+
+
+@dataclass(frozen=True)
 class FetchOutcome:
     """1 ID の取得結果。"""
 
     entry: MasterEntry
     status: str  # "ok" / "failed" / "dry-run"
-    output_path: Path | None
+    record: ReportRecord | None  # status="ok" のときだけ入る
     warnings: tuple[str, ...]
     error: str | None
 
@@ -161,12 +169,15 @@ def run_fetch(
     site_for: SiteFor | None = None,
     object_cache: dict[str, dict[str, Any]] | None = None,
 ) -> list[FetchOutcome]:
-    """``entries`` の各エントリについて、describe を取り JSON に書く。
+    """``entries`` の各エントリについて、 describe を取り ``ReportRecord`` を返す。
+
+    **JSON を書かない**。 結果は ``outcomes[i].record`` で取り出して、
+    そのまま ``run_tables`` に渡す。
 
     Args:
         settings: config.ini から読んだ設定。
-        entries: 処理対象の管理表エントリ（既に ``--all`` 絞り込み済み）。
-        dry_run: True なら接続せず、対象だけ表示用 ``FetchOutcome`` を返す。
+        entries: 処理対象の管理表エントリ（ 既に ``--all`` 絞り込み済み ）。
+        dry_run: True なら接続せず、 対象だけ表示用 ``FetchOutcome`` を返す。
         site_for: URL → Salesforce サイトクラスの関数。テスト用差し替え。
         object_cache: ``describe_object`` の結果共有辞書。``None`` なら内部で作る。
             同じ実行内で個別オブジェクトの取得 (``run_objects``) と共有するための
@@ -192,7 +203,7 @@ def run_fetch(
                 FetchOutcome(
                     entry=entry,
                     status="dry-run",
-                    output_path=settings.output_dir / f"{entry.key}.json",
+                    record=None,
                     warnings=(),
                     error=None,
                 )
@@ -202,25 +213,17 @@ def run_fetch(
     return outcomes
 
 
-# ── JSON 用の slim ──────────────────────────────────────────────────────────
-# JSON には describe の **原本** ではなく、 SOQL を組むのに必要な **構造だけ**
-# （ レポートの ``reportMetadata`` / ``reportExtendedMetadata`` と、 オブジェクト
-# の ``name`` / ``label`` / ``custom`` / ``fields`` ）を書く。 原本は JSON に
-# 残さない。 下の 2 つの slim 関数は、 ``describe_object`` が返した dict（ と
-# ``client.report.describe`` が返した dict ）を**書き換えずに**、 別の dict に
-# コピーして絞る。 関連オブジェクト収集は ``_collect_related_objects``
-# （ slim 前の ``fields[].referenceTo`` / ``relationshipName`` を使う） に
-# 任せて、 slim は JSON に書く直前にだけ行う。
-# は slim 前の ``fields[].referenceTo`` / ``relationshipName`` を使うので、
-# slim は JSON 書く直前にだけ行う。
+# ── record 用の slim ────────────────────────────────────────────────────────
+# JSON はもう書かないが、 ``record`` に詰めるデータも SOQL 組立に必要な
+# **構造だけ** にする。 レポート describe は ``_slim_report`` で
+# ``REPORT_METADATA_KEYS`` の許可リストに絞り、 オブジェクト describe は
+# ``_slim_object`` で ``name`` / ``label`` / ``custom`` / ``fields`` だけ、
+# 項目は 8 キーだけに絞る。 許可リストで落としたキー名は別関数
+# ``_collect_dropped_keys()`` で取り出し、 warnings に 1 行入れる。
 #
-# レポート describe の絞り込みは **allowlist 方式** （ 「残すキーを選ぶ」 ）。
-# 落とされたキーの名前は ``droppedKeys`` に**出現順で**入れる。 目的: 最初の
-# 実行で本物の返り値を見て 「必要なものを落としていないか」 を確かめられる。
-# ``droppedKeys`` のサブキーは 3 つ（ ``reportMetadata`` /
-# ``reportExtendedMetadata`` / ``top`` ）常に存在する（ 1 つも落ちていない
-# ときも空のリストとして ）。 一方入力に存在しないキーは「落とされた」のでは
-# なく「元から無い」ので ``droppedKeys`` には入らない。
+# 関連オブジェクト収集は ``_collect_related_objects`` （ slim 前の
+# ``fields[].referenceTo`` / ``relationshipName`` を使う ） に任せて、
+# slim は ``_fetch_one`` の最後、 record に詰める直前だけ行う。
 
 
 def _slim_report(metadata: object) -> dict[str, Any]:
@@ -233,19 +236,14 @@ def _slim_report(metadata: object) -> dict[str, Any]:
     - それ以外のトップレベルキー（ ``reportTypeMetadata`` — そのレポートタイプで
       使える全列の一覧で巨大、 ``attributes``、 グラフ・表示・フォルダ・説明など
       の管理用キー）はすべて落とす
-    - 落としたキーの名前は ``droppedKeys`` に**出現順で**入れる
     - 入力が dict でない／ ``reportMetadata`` と ``reportExtendedMetadata`` が
-      無い／ dict でない場合は、 例外を上げず省略する（ そのキーは droppedKeys
-      には入らない ）
+      無い／ dict でない場合は、 例外を上げず省略する
     - 入力の dict は書き換えない（ 別 dict にコピー ）
+    - 戻り値には **落としたキー名は含めない** （ 別関数
+      ``_collect_dropped_keys()`` で取り出し、 warnings に変換する ）
     """
-    dropped: dict[str, list[str]] = {
-        "reportMetadata": [],
-        "reportExtendedMetadata": [],
-        "top": [],
-    }
     if not isinstance(metadata, dict):
-        return {"droppedKeys": dropped}
+        return {}
 
     result: dict[str, Any] = {}
 
@@ -255,8 +253,6 @@ def _slim_report(metadata: object) -> dict[str, Any]:
         for key, value in report_metadata_raw.items():
             if key in REPORT_METADATA_KEYS:
                 slimmed_metadata[key] = value
-            else:
-                dropped["reportMetadata"].append(key)
         result["reportMetadata"] = slimmed_metadata
 
     report_extended_raw = metadata.get("reportExtendedMetadata")
@@ -265,22 +261,44 @@ def _slim_report(metadata: object) -> dict[str, Any]:
         for key, value in report_extended_raw.items():
             if key in REPORT_EXTENDED_METADATA_KEYS:
                 slimmed_extended[key] = value
-            else:
-                dropped["reportExtendedMetadata"].append(key)
         result["reportExtendedMetadata"] = slimmed_extended
 
-    # トップレベル: ``reportMetadata`` と ``reportExtendedMetadata`` 以外を落とす
-    for key in metadata:
-        if key in ("reportMetadata", "reportExtendedMetadata"):
-            continue
-        dropped["top"].append(key)
-
-    result["droppedKeys"] = dropped
     return result
 
 
+def _collect_dropped_keys(metadata: object) -> tuple[str, ...]:
+    """``_slim_report`` と同じルールで、 落としたキー名を出現順で返す。
+
+    warnings に 「 レポート定義の中で使わなかったキー: ... 」 の 1 行を
+    出すために使う。 JSON 出力は一切しない （ CSV 化も不要、 ログは入力区 ）
+    """
+    buckets: list[str] = []
+
+    if not isinstance(metadata, dict):
+        return ()
+
+    report_metadata_raw = metadata.get("reportMetadata")
+    if isinstance(report_metadata_raw, dict):
+        for key in report_metadata_raw:
+            if key not in REPORT_METADATA_KEYS:
+                buckets.append(key)
+
+    report_extended_raw = metadata.get("reportExtendedMetadata")
+    if isinstance(report_extended_raw, dict):
+        for key in report_extended_raw:
+            if key not in REPORT_EXTENDED_METADATA_KEYS:
+                buckets.append(key)
+
+    for key in metadata:
+        if key in ("reportMetadata", "reportExtendedMetadata"):
+            continue
+        buckets.append(key)
+
+    return tuple(buckets)
+
+
 def _slim_object(describe: object) -> dict[str, Any]:
-    """``client.describe_object()`` の戻り値から、SOQL 組立に必要な構造だけを返す。
+    """``client.describe_object()`` の戻り値から、 SOQL 組立に必要な構造だけを返す。
 
     - 残す: ``name`` / ``label`` / ``custom`` / ``fields``
     - 落とす: ``childRelationships`` / ``recordTypeInfos`` / ``urls`` /
@@ -360,6 +378,18 @@ def _extract_picklist(picklist_values: object) -> tuple[list[str], int]:
     return active[:30], len(active)
 
 
+def _dropped_keys_warning_text(dropped: tuple[str, ...]) -> str | None:
+    """``_collect_dropped_keys()`` の戻り値から警告表用の 1 行を組み立てる。
+
+    何も落ちていないときは ``None`` を返す。 出力形式:
+
+        レポート定義の中で使わなかったキー: k1, k2, k3
+    """
+    if not dropped:
+        return None
+    return "レポート定義の中で使わなかったキー: " + ", ".join(dropped)
+
+
 def _fetch_one(
     settings: Settings,
     entry: MasterEntry,
@@ -367,9 +397,11 @@ def _fetch_one(
     site_for: SiteFor,
     cache: dict[str, dict[str, Any]],
 ) -> FetchOutcome:
-    """1 ID の describe を取り、JSON に書く。失敗したら ``status="failed"`` を返す。"""
+    """1 ID の describe を取り、 ``ReportRecord`` を組み立てて返す。
+
+    JSON は書かない。 失敗したら ``status="failed"`` を返し ``record`` は ``None`` 。
+    """
     warnings: list[str] = []
-    output_path = settings.output_dir / f"{entry.key}.json"
 
     # URL → レポート ID
     try:
@@ -378,7 +410,7 @@ def _fetch_one(
         return FetchOutcome(
             entry=entry,
             status="failed",
-            output_path=None,
+            record=None,
             warnings=(),
             error=(
                 f"管理表の URL からレポート ID を取り出せません: {entry.url}"
@@ -394,7 +426,7 @@ def _fetch_one(
         return FetchOutcome(
             entry=entry,
             status="failed",
-            output_path=None,
+            record=None,
             warnings=(),
             error=f"Salesforce の接続先を決定できません: {exc}",
         )
@@ -405,6 +437,8 @@ def _fetch_one(
     metadata: dict[str, Any] = {}
     column_map: list[dict[str, Any]] = []
 
+    related_describes: dict[str, dict[str, Any]] = {}
+
     try:
         with site_class() as client:
             try:
@@ -413,7 +447,7 @@ def _fetch_one(
                 return FetchOutcome(
                     entry=entry,
                     status="failed",
-                    output_path=None,
+                    record=None,
                     warnings=(),
                     error=(
                         f"レポート describe に失敗（HTTP {exc.status_code}）: {report_id}"
@@ -430,14 +464,24 @@ def _fetch_one(
             )
             if object_reason:
                 warnings.append(object_reason)
-            column_map = mapping.build_column_map(metadata, main_describe, object_reason)
+
+            # 列対応表: 主オブジェクトで 1 つも決まらないとき用に、 関連
+            # オブジェクトの describe と relations を渡して解決範囲を広げる。
+            column_map = mapping.build_column_map(
+                metadata,
+                main_describe,
+                object_reason,
+                related_describes=related_describes,
+                relations=[],
+                main_object=main_object_name,
+            )
 
             # 主オブジェクト
             related_nodes: list[RelatedNode] = []
             relations: list[RelationRecord] = []
             if main_object_name and main_describe is not None:
                 objects[main_object_name] = main_describe
-                # 関連オブジェクトを参照先から幅優先で掘る （ ``RELATED_DEPTH`` 段まで ）
+                # 関連オブジェクトを参照先から幅優先で掘る（ ``RELATED_DEPTH`` 段まで ）
                 related_nodes, relations, skipped_names = _collect_related_objects(
                     main_describe,
                     fetcher=lambda name: _fetch_object_cached(client, name, cache, warnings),
@@ -455,12 +499,23 @@ def _fetch_one(
                 for node in related_nodes:
                     if node.describe is not None:
                         objects[node.name] = node.describe
+                        related_describes[node.name] = node.describe
+
+                # 列対応表を取り直す（ 関連オブジェクトが取れてから解く ）
+                column_map = mapping.build_column_map(
+                    metadata,
+                    main_describe,
+                    object_reason,
+                    related_describes=related_describes,
+                    relations=relations,
+                    main_object=main_object_name,
+                )
     except SalesforceRequestError as exc:
         # 接続失敗・認証失敗・致命 HTTP
         return FetchOutcome(
             entry=entry,
             status="failed",
-            output_path=None,
+            record=None,
             warnings=(),
             error=(f"Salesforce への接続でエラー（HTTP {exc.status_code}）: {exc.detail}"),
         )
@@ -468,7 +523,7 @@ def _fetch_one(
         return FetchOutcome(
             entry=entry,
             status="failed",
-            output_path=None,
+            record=None,
             warnings=(),
             error=f"Salesforce エラー: {exc}",
         )
@@ -480,51 +535,37 @@ def _fetch_one(
             f"関連オブジェクトは取得していません"
         )
 
-    # JSON に書く直前に slim する。 ``metadata`` 自体と ``objects`` は
-    # ``_collect_related_objects`` （関連オブジェクトの収集）で
+    # record に詰める直前に slim する。 ``metadata`` 自体と ``objects`` は
+    # ``_collect_related_objects`` （ 関連オブジェクトの収集 ） で
     # 原本の ``fields[].referenceTo`` / ``relationshipName`` を使うので、
-    # ここでは別 dict にコピーして絞る（原本の dict は壊さない）。
-    payload = {
-        "管理番号": entry.key,
-        "概要": entry.summary,
-        "レポートID": report_id,
-        "URL": entry.url,
-        "取得日時": comken_now().isoformat(timespec="seconds"),
-        "主オブジェクト": main_object,
-        "report": _slim_report(metadata),
-        "objects": {name: _slim_object(describe) for name, describe in objects.items()},
-        "関連オブジェクト": [
-            {
-                "親": relation.parent,
-                "参照項目": relation.field,
-                "リレーション名": relation.relationship_name or "",
-                "子": relation.child,
-                "段": relation.depth,
-            }
-            for relation in relations
-        ],
-        "column_map": column_map,
-        "warnings": warnings,
+    # ここでは別 dict にコピーして絞る（ 原本の dict は壊さない ）。
+    slim_report = _slim_report(metadata)
+    slim_objects: dict[str, dict[str, Any]] = {
+        name: _slim_object(describe) for name, describe in objects.items()
     }
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with atomic_write(output_path) as tmp:
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError as exc:
-        # フォルダ・権限・ディスクの失敗。その ID だけの失敗にして残りは続ける
-        return FetchOutcome(
-            entry=entry,
-            status="failed",
-            output_path=None,
-            warnings=tuple(warnings),
-            error=f"JSON の書き出しに失敗しました: {output_path}\n{exc}",
-        )
+    dropped_keys = _collect_dropped_keys(metadata)
+    dropped_keys_warning = _dropped_keys_warning_text(dropped_keys)
+    if dropped_keys_warning:
+        warnings.append(dropped_keys_warning)
+
+    record = ReportRecord(
+        key=entry.key,
+        summary=entry.summary,
+        report_id=report_id,
+        url=entry.url,
+        main_object=main_object,
+        report=slim_report,
+        objects=slim_objects,
+        relations=tuple(relations),
+        column_map=column_map,
+        warnings=tuple(warnings),
+    )
 
     return FetchOutcome(
         entry=entry,
         status="ok",
-        output_path=output_path,
+        record=record,
         warnings=tuple(warnings),
         error=None,
     )
@@ -558,6 +599,10 @@ def _collect_related_objects(
     親にも子にも行に出ない。 主オブジェクトへの参照（ 例: Account.TaskId
     → Task ） や自己参照（ 例: Account.ParentId → Account ） も **出る** 。
 
+    戻り値の ``skipped`` は **重複を除いた** 出現順のリスト。 同じ名前が
+    複数候補として出ても 1 回しか数えない。 警告文の「 N 件」 もこの
+    重複を除いた数。
+
     Args:
         main_describe: 主オブジェクトの describe（ slim 前 ）。
         fetcher: オブジェクト名を取り、 ``describe`` を返す関数。 取れなかった
@@ -584,7 +629,7 @@ def _collect_related_objects(
             ``(親, 項目, 子)`` は 1 行。 取り損ねた子は親にも子にも行に
             出ない。
         ``skipped``: ``related_max`` のせいで掘れなかった候補の
-            オブジェクト名のリスト。 警告用。
+            オブジェクト名。 重複を除いた出現順のリスト。
     """
     main_name_raw = main_describe.get("name") if isinstance(main_describe, dict) else None
     main_name = main_name_raw if isinstance(main_name_raw, str) and main_name_raw else None
@@ -665,6 +710,9 @@ def _collect_related_objects(
             break
         frontier = next_frontier
 
+    # skipped の重複を除く （ 出現順を保つ ）
+    skipped = _dedup_preserve_order(skipped)
+
     # relations: BFS が終わったあとに、 「 取れたオブジェクト全部 （ 主 +
     # nodes ） の fields 」 を主→ nodes の順 （ nodes は段順 ） でたどって
     # 作る。 参照先が「 取れたオブジェクト （ 主を含む ）」 なら 1 行ずつ
@@ -706,6 +754,18 @@ def _collect_related_objects(
             )
 
     return nodes, relations, skipped
+
+
+def _dedup_preserve_order(values: list[str]) -> list[str]:
+    """出現順を保ったまま重複を除く。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
 
 
 def _related_ref_pairs(describe: dict[str, Any]) -> list[tuple[str, str, str]]:

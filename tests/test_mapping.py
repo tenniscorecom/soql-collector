@@ -151,9 +151,9 @@ def test_build_column_map_marks_multiple_candidates_without_picking_one() -> Non
     stage_row = next(row for row in rows if row["列キー"] == "STAGE_NAME")
     assert stage_row["対応フィールドAPI名"] == "(不明)"
     assert stage_row["型"] == ""
-    # どちらを採るか決めかねるため、 両方の候補を「API名(型)」で見せる
-    assert "StageName(Picklist)" in stage_row["備考"]
-    assert "CustomStage__c(Text)" in stage_row["備考"]
+    # どちらを採るか決めかねるため、 両方の候補を鎖+項目で見せる
+    assert "StageName" in stage_row["備考"]
+    assert "CustomStage__c" in stage_row["備考"]
     assert stage_row["備考"].startswith("複数候補あり: ")
 
 
@@ -306,3 +306,238 @@ def test_collect_describable_columns_includes_all_sources_in_order_without_dupli
     }
     result = collect_describable_columns(metadata)
     assert result == ["A", "B", "F", "G", "H", "I"]
+
+
+# ── 関連オブジェクト経由の解決 ─────────────────────────────────────────
+
+
+from dataclasses import dataclass as _dc  # noqa: E402
+
+
+def _fake_relation(
+    parent: str, field: str, relationship_name: str, child: str, depth: int
+) -> object:
+    """``RelationRecord`` 互換のオブジェクトを ``dataclasses`` で作る。"""
+
+    @_dc(frozen=True)
+    class _R:
+        parent: str
+        field: str
+        relationship_name: str | None
+        child: str
+        depth: int
+
+    return _R(parent, field, relationship_name, child, depth)
+
+
+def test_build_column_map_resolves_via_related_object_single_candidate() -> None:
+    """主オブジェクトでラベル一致しない列が、 関連オブジェクトで 1 件だけ
+    ラベル一致するなら、 鎖つき SOQL 名で採用 （ 備考: 「関連オブジェクト経由」 ）。
+
+    例: Task の列「Account Name」 → Account.Name （ 鎖 ``What`` ） 。
+    """
+    metadata = _make_metadata(
+        detail_columns=["ACCOUNT.NAME"],
+        detail_column_labels={"ACCOUNT.NAME": "Account Name"},
+    )
+    task_describe = _describe_with_fields([])  # Task に「Account Name」一致なし
+    account_describe = {
+        "name": "Account",
+        "fields": [{"name": "Name", "label": "Account Name", "type": "Text"}],
+    }
+    relations = [
+        _fake_relation("Task", "WhatId", "What", "Account", 1),
+    ]
+
+    rows = build_column_map(
+        metadata,
+        task_describe,
+        None,
+        related_describes={"Account": account_describe},
+        relations=relations,
+        main_object="Task",
+    )
+
+    row = next(r for r in rows if r["列キー"] == "ACCOUNT.NAME")
+    assert row["所属オブジェクト"] == "Account"
+    assert row["対応フィールドAPI名"] == "What.Name"
+    assert row["型"] == "Text"
+    assert row["備考"] == "関連オブジェクト経由"
+
+
+def test_build_column_map_resolves_via_related_object_with_prefix_filter() -> None:
+    """候補が複数あり、 列キー接頭辞で 1 つに絞れるケース。
+
+    Account と User が両方とも ``"項目名"`` というラベルを持つ列で、
+    Task→Account （ rel="What" ） / Task→User （ rel="Owner" ） の 2 経路。
+    列キー ``OWNER.NAME`` は接頭辞 ``Owner`` が鎖 ``Owner`` の最初の
+    リレーション名と一致するため User 経由が採用される。
+    """
+    metadata = _make_metadata(
+        detail_columns=["OWNER.NAME"],
+        detail_column_labels={"OWNER.NAME": "項目名"},
+    )
+    task_describe = _describe_with_fields([])
+    account_describe = {
+        "name": "Account",
+        "fields": [{"name": "Name", "label": "項目名", "type": "Text"}],
+    }
+    user_describe = {
+        "name": "User",
+        "fields": [{"name": "Name", "label": "項目名", "type": "Text"}],
+    }
+    relations = [
+        _fake_relation("Task", "WhatId", "What", "Account", 1),
+        _fake_relation("Task", "OwnerId", "Owner", "User", 1),
+    ]
+
+    rows = build_column_map(
+        metadata,
+        task_describe,
+        None,
+        related_describes={"Account": account_describe, "User": user_describe},
+        relations=relations,
+        main_object="Task",
+    )
+
+    row = next(r for r in rows if r["列キー"] == "OWNER.NAME")
+    # 接頭辞 ``Owner`` が鎖 ``Owner`` （ Task→User 直 ） の最初のリレーション名と一致
+    assert row["対応フィールドAPI名"] == "Owner.Name"
+    assert row["所属オブジェクト"] == "User"
+    assert row["備考"] == "列キーの接頭辞で絞り込み"
+
+
+def test_build_column_map_multiple_candidates_unresolved() -> None:
+    """候補が複数あり、 接頭辞でも絞れないときは ``"(不明)"`` のまま、
+    備考に「 複数候補あり: ... 」 を入れる。
+
+    Account と User が両方とも ``"項目名"`` というラベルを持つ列で、
+    列キー接頭辞 ``WHAT`` も ``OWNER`` も含まない列キー （ 例: ``NAME`` ） 。
+    """
+    metadata = _make_metadata(
+        detail_columns=["NAME"],
+        detail_column_labels={"NAME": "項目名"},
+    )
+    task_describe = _describe_with_fields([])
+    account_describe = {
+        "name": "Account",
+        "fields": [{"name": "Name", "label": "項目名", "type": "Text"}],
+    }
+    user_describe = {
+        "name": "User",
+        "fields": [{"name": "Name", "label": "項目名", "type": "Text"}],
+    }
+    relations = [
+        _fake_relation("Task", "WhatId", "What", "Account", 1),
+        _fake_relation("Task", "OwnerId", "Owner", "User", 1),
+    ]
+
+    rows = build_column_map(
+        metadata,
+        task_describe,
+        None,
+        related_describes={"Account": account_describe, "User": user_describe},
+        relations=relations,
+        main_object="Task",
+    )
+
+    row = next(r for r in rows if r["列キー"] == "NAME")
+    assert row["対応フィールドAPI名"] == "(不明)"
+    assert row["備考"].startswith("複数候補あり: ")
+    # 候補が両方候補テキストに含まれる （ 最大 5 件 ）
+    assert "What.Name" in row["備考"]
+    assert "Owner.Name" in row["備考"]
+
+
+def test_build_column_map_unmatched_label_via_related() -> None:
+    """主・関連のどちらにもラベルが一致しない列は 「対応フィールドなし」 。"""
+    metadata = _make_metadata(
+        detail_columns=["ACCOUNT.INDUSTRY"],
+        detail_column_labels={"ACCOUNT.INDUSTRY": "業種"},
+    )
+    task_describe = _describe_with_fields([])
+    account_describe = {
+        "name": "Account",
+        "fields": [{"name": "Name", "label": "Account Name", "type": "Text"}],
+    }
+    relations = [
+        _fake_relation("Task", "AccountId", "Account", "Account", 1),
+    ]
+
+    rows = build_column_map(
+        metadata,
+        task_describe,
+        None,
+        related_describes={"Account": account_describe},
+        relations=relations,
+        main_object="Task",
+    )
+
+    row = next(r for r in rows if r["列キー"] == "ACCOUNT.INDUSTRY")
+    assert row["対応フィールドAPI名"] == "(不明)"
+    assert row["備考"] == "対応フィールドなし"
+
+
+# ── C: 関連オブジェクト経由の解決が落ちると C のテストが落ちる ──────────
+
+
+def test_build_column_map_related_resolution_detects_main_only_regression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``build_column_map`` が関連オブジェクトを見ずに主オブジェクトだけで
+    解こうとする壊れた実装に差し替えると、 C のテスト
+    （ ``Account Name`` → ``What.Name`` ） が落ち、 本物の実装では通る
+    ことを直接確かめる。
+
+    検出方法: ``build_column_map`` を ``main_describe`` だけ参照する形に
+    パッチして、 C のテスト条件 （ Task 主で Account.Name を関連経由解決 ）
+    で動かす。
+    """
+    import src.mapping as mapping_module
+
+    real = mapping_module.build_column_map
+
+    def main_only_build_column_map(
+        metadata: dict,
+        main_describe: dict | None,
+        reason: str | None,
+        **kwargs: object,
+    ) -> list[dict[str, str]]:
+        # 関連オブジェクト ／ relations を渡さずに元のロジックを走らせる
+        return real(
+            metadata,
+            main_describe,
+            reason,
+            related_describes=None,
+            relations=None,
+            main_object=kwargs.get("main_object"),
+        )
+
+    monkeypatch.setattr(mapping_module, "build_column_map", main_only_build_column_map)
+
+    # C のテスト条件: Task 主、 Account.Name を 「 Account Name 」 で解決
+    metadata = _make_metadata(
+        detail_columns=["ACCOUNT.NAME"],
+        detail_column_labels={"ACCOUNT.NAME": "Account Name"},
+    )
+    task_describe = _describe_with_fields([])
+    account_describe = {
+        "name": "Account",
+        "fields": [{"name": "Name", "label": "Account Name", "type": "Text"}],
+    }
+    relations = [
+        _fake_relation("Task", "WhatId", "What", "Account", 1),
+    ]
+
+    rows = mapping_module.build_column_map(
+        metadata,
+        task_describe,
+        None,
+        related_describes={"Account": account_describe},
+        relations=relations,
+        main_object="Task",
+    )
+
+    # main_only 実装だと、 Task に 「 Account Name 」 が無いため 「 対応フィールドなし 」 。
+    row = next(r for r in rows if r["列キー"] == "ACCOUNT.NAME")
+    assert row["対応フィールドAPI名"] == "(不明)"

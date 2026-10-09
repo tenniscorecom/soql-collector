@@ -149,11 +149,9 @@ def test_fetch_one_report_no_argv_exits_2() -> None:
     assert exc.value.code == 2
 
 
-def test_fetch_one_report_writes_json_and_csv(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """URL と管理番号を渡すと ``output/single/{管理番号}.json`` と
-    ``output/single/対応表_{管理番号}.csv`` が書かれる。"""
+def test_fetch_one_report_writes_csv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """URL と管理番号を渡すと ``output/single/対応表_{管理番号}.csv`` と
+    ``output/single/列名の対応_{管理番号}.txt`` が書かれる。 JSON は書かれない。"""
     from trial import fetch_one_report
 
     master = tmp_path / "master.xlsx"
@@ -172,10 +170,12 @@ def test_fetch_one_report_writes_json_and_csv(
     )
 
     assert code == 0
-    assert (tmp_path / "output" / "single" / "1001.json").exists()
     assert (tmp_path / "output" / "single" / "対応表_1001.csv").exists()
+    assert (tmp_path / "output" / "single" / "列名の対応_1001.txt").exists()
+    # JSON は書かれていない
+    assert not (tmp_path / "output" / "single" / "1001.json").exists()
     # 本体 output には触らない
-    assert not (tmp_path / "output" / "1001.json").exists()
+    assert not (tmp_path / "output" / "1001.csv").exists()
 
 
 def test_fetch_one_report_default_key_is_sample(
@@ -200,7 +200,7 @@ def test_fetch_one_report_default_key_is_sample(
     )
 
     assert code == 0
-    assert (tmp_path / "output" / "single" / "sample.json").exists()
+    assert (tmp_path / "output" / "single" / "対応表_sample.csv").exists()
 
 
 def test_fetch_one_report_failure_returns_1(

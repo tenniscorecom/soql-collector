@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -98,6 +97,39 @@ def _output_dir_exists(tmp_path: Path) -> Path:
     output = tmp_path / "output"
     output.mkdir(parents=True, exist_ok=True)
     return output
+
+
+def _record_to_payload(record: object) -> dict:
+    """``ReportRecord`` を旧 JSON と同じ形の dict に変換する互換ヘルパー。
+
+    JSON 廃止前はテストが ``payload["..."]`` で読んでいたため、 既存テストの
+    読み取り箇所を最小限の差分で揃えるために用意する。 ``取得日時`` は
+    record には載せない （ CSV では使わない、 JSON にも残さない ）。
+    """
+    from src.fetch import ReportRecord
+
+    assert isinstance(record, ReportRecord)
+    return {
+        "管理番号": record.key,
+        "概要": record.summary,
+        "レポートID": record.report_id,
+        "URL": record.url,
+        "主オブジェクト": record.main_object,
+        "report": record.report,
+        "objects": record.objects,
+        "関連オブジェクト": [
+            {
+                "親": rel.parent,
+                "参照項目": rel.field,
+                "リレーション名": rel.relationship_name or "",
+                "子": rel.child,
+                "段": rel.depth,
+            }
+            for rel in record.relations
+        ],
+        "column_map": record.column_map,
+        "warnings": list(record.warnings),
+    }
 
 
 def _make_metadata(
@@ -219,23 +251,18 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
     outcomes = run_fetch(settings, [entry], site_for=site_for)
 
     assert outcomes[0].status == "ok"
-    assert outcomes[0].output_path is not None
-    payload = json.loads(outcomes[0].output_path.read_text(encoding="utf-8"))
+    assert outcomes[0].record is not None
+    payload = _record_to_payload(outcomes[0].record)
     assert payload["管理番号"] == "1001"
     assert payload["概要"] == "顧客一覧"
     assert payload["レポートID"] == "00O5g00000ABCDE"
     assert payload["URL"] == f"{DOMAIN}/00O5g00000ABCDE/view"
-    assert "取得日時" in payload
     assert payload["主オブジェクト"] == "Opportunity"
     # ``report`` は slim した_モジュール定数（ 値は元と同じ、 不要なキーは落ちる ）。
     # allowlist のキーは全部残るので ``reportMetadata`` は等値になる
     assert payload["report"]["reportMetadata"] == metadata["reportMetadata"]
-    # 3 つのサブキーは常に存在し、 何も落ちていないので空
-    assert payload["report"]["droppedKeys"] == {
-        "reportMetadata": [],
-        "reportExtendedMetadata": [],
-        "top": [],
-    }
+    # ``record.report`` には許可リスト外キーの追跡は含まれない （ warnings に出る ）
+    assert set(payload["report"].keys()) == {"reportMetadata", "reportExtendedMetadata"}
     assert set(payload["objects"]) == {"Opportunity", "Account"}
     # ``objects`` の各値は ``_slim_object`` を通った形（ name/label/custom/fields の 4 キー ）
     expected_opportunity = _slim_object(opportunity_with_name)
@@ -245,8 +272,11 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
         {
             "列キー": "Opp.Name",
             "表示名": "名前",
+            "所属オブジェクト": "Opportunity",
             "対応フィールドAPI名": "Name",
             "型": "string",
+            "参照先オブジェクト": "",
+            "リレーション名": "",
             "備考": "",
         }
     ]
@@ -266,8 +296,8 @@ def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    payload = _record_to_payload(record)
     opp = payload["objects"]["Opportunity"]
     # オブジェクトは 4 キーだけ
     assert set(opp.keys()) == {"name", "label", "custom", "fields"}
@@ -335,8 +365,8 @@ def test_related_objects_dedup_excludes_main_polymorphic(tmp_path: Path) -> None
         },
     )
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    payload = _record_to_payload(record)
     # 順序: Account, Contact, Lead, User（出現順。Account 重複は出ない）
     assert list(payload["objects"]) == ["Opportunity", "Account", "Contact", "Lead", "User"]
 
@@ -351,8 +381,8 @@ def test_related_object_failure_becomes_warning(tmp_path: Path) -> None:
         errors={"User": SalesforceRequestError("GET", "/sobjects/User/describe", 404, "Not Found")},
     )
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    payload = _record_to_payload(record)
     assert payload["主オブジェクト"] == "Opportunity"
     assert "Account" in payload["objects"]
     assert "User" not in payload["objects"]
@@ -383,10 +413,8 @@ def test_related_max_overflow_warns(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(_settings(tmp_path, related_max=2), [entry], site_for=site_for)[
-        0
-    ].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    record = run_fetch(_settings(tmp_path, related_max=2), [entry], site_for=site_for)[0].record
+    payload = _record_to_payload(record)
     assert list(payload["objects"]) == ["Opportunity", "Account", "Contact"]
     warning = next(w for w in payload["warnings"] if "上限" in w)
     # 全体の件数（5 件）と上限（2）、スキップ件数（3 件）と残りの名前が入る
@@ -419,10 +447,10 @@ def _run_task_chain(tmp_path: Path, *, related_depth: int) -> dict:
         object_describes=objects,
     )
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(
+    record = run_fetch(
         _settings(tmp_path, related_depth=related_depth), [entry], site_for=site_for
-    )[0].output_path
-    return json.loads(payload_path.read_text(encoding="utf-8"))
+    )[0].record
+    return _record_to_payload(record)
 
 
 def test_related_depth_1_only_first_level(tmp_path: Path) -> None:
@@ -492,10 +520,8 @@ def test_related_depth_dedup_across_paths(tmp_path: Path) -> None:
     describe = {"reportMetadata": {"reportType": {"type": "X"}, "reportFormat": "TABULAR"}}
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(_settings(tmp_path, related_depth=3), [entry], site_for=site_for)[
-        0
-    ].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    record = run_fetch(_settings(tmp_path, related_depth=3), [entry], site_for=site_for)[0].record
+    payload = _record_to_payload(record)
 
     # ``Y`` は 1 回しか describe されていない
     assert client.describe_object_calls.count("Y") == 1
@@ -522,10 +548,8 @@ def test_related_depth_stops_at_cycle(tmp_path: Path) -> None:
     describe = {"reportMetadata": {"reportType": {"type": "A"}, "reportFormat": "TABULAR"}}
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(_settings(tmp_path, related_depth=5), [entry], site_for=site_for)[
-        0
-    ].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    record = run_fetch(_settings(tmp_path, related_depth=5), [entry], site_for=site_for)[0].record
+    payload = _record_to_payload(record)
 
     # オブジェクトは 3 つとも取れる （ 各段で重複はなし ） 。
     assert set(payload["objects"]) == {"A", "B", "C"}
@@ -557,12 +581,12 @@ def test_related_depth_max_limits_total_across_levels(tmp_path: Path) -> None:
     describe = {"reportMetadata": {"reportType": {"type": "Task"}, "reportFormat": "TABULAR"}}
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(
+    record = run_fetch(
         _settings(tmp_path, related_depth=3, related_max=3),
         [entry],
         site_for=site_for,
-    )[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    )[0].record
+    payload = _record_to_payload(record)
 
     # 近い段から 3 件: Account / Contact / User （ Group は取らない ）
     assert list(payload["objects"]) == ["Task", "Account", "Contact", "User"]
@@ -643,10 +667,10 @@ def test_related_objects_multiple_parents_to_same_child_yields_separate_rows(
     describe = {"reportMetadata": {"reportType": {"type": "Task"}, "reportFormat": "TABULAR"}}
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(
+    record = run_fetch(
         _settings(tmp_path, related_depth=1, related_max=10), [entry], site_for=site_for
-    )[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    )[0].record
+    payload = _record_to_payload(record)
 
     # 子 = User の行が全部出てくる
     user_rows = [r for r in payload["関連オブジェクト"] if r["子"] == "User"]
@@ -699,10 +723,10 @@ def test_related_objects_polymorphic_reference_yields_separate_rows(
     describe = {"reportMetadata": {"reportType": {"type": "Task"}, "reportFormat": "TABULAR"}}
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(
+    record = run_fetch(
         _settings(tmp_path, related_depth=1, related_max=10), [entry], site_for=site_for
-    )[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    )[0].record
+    payload = _record_to_payload(record)
 
     assert payload["関連オブジェクト"] == [
         {
@@ -742,12 +766,12 @@ def test_related_table_omits_child_dropped_by_limit(tmp_path: Path) -> None:
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
     # RELATED_MAX=1 で Account だけ採用、 Contact は skipped。
-    payload_path = run_fetch(
+    record = run_fetch(
         _settings(tmp_path, related_depth=3, related_max=1),
         [entry],
         site_for=site_for,
-    )[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    )[0].record
+    payload = _record_to_payload(record)
 
     # 関連オブジェクトは Account の 1 本だけ
     assert payload["関連オブジェクト"] == [
@@ -766,6 +790,46 @@ def test_related_table_omits_child_dropped_by_limit(tmp_path: Path) -> None:
     assert "Contact" in warning
     # HTTP は 「 Task の主オブジェクト + 上限内の Account 」 の 2 件のみ
     assert client.describe_object_calls == ["Task", "Account"]
+
+
+# ── B: skipped の重複排除 ──────────────────────────────────────────────
+
+
+def test_collect_related_objects_skipped_dedup() -> None:
+    """``related_max=1`` で同じ名前が複数回 skipped になっても、 重複を除いた
+    出現順で 1 回しか残らない。 出現順も保たれる。
+    """
+    from src.fetch import _collect_related_objects
+
+    main = _main_describe(
+        "Task",
+        fields_map={
+            # Account が先頭で shallow に採用される。 残る User / Contact は skipped
+            "AccountId": ["Account"],
+            "AId": ["User"],
+            "BId": ["User"],
+            "CId": ["User"],
+            "Did": ["Contact"],
+        },
+    )
+    objects: dict[str, dict] = {
+        "Task": main,
+        "Account": _main_describe("Account"),
+        "Contact": _main_describe("Contact"),
+        "User": _main_describe("User"),
+    }
+
+    nodes, _, skipped = _collect_related_objects(
+        main,
+        lambda n: objects.get(n),
+        related_depth=1,
+        related_max=1,
+    )
+
+    # Account が 1 件採用され、 User / Contact が skipped
+    assert [node.name for node in nodes] == ["Account"]
+    # User / Contact は重複を除いて出現順を保つ
+    assert skipped == ["User", "Contact"]
 
 
 # ── 主＋関連オブジェクト同士の参照（ 主への参照・自己参照 ） ───────────────
@@ -962,10 +1026,10 @@ def test_run_fetch_emits_main_and_self_references_in_related_objects(
     describe = {"reportMetadata": {"reportType": {"type": "Task"}, "reportFormat": "TABULAR"}}
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(
+    record = run_fetch(
         _settings(tmp_path, related_depth=3, related_max=40), [entry], site_for=site_for
-    )[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    )[0].record
+    payload = _record_to_payload(record)
 
     # ``objects`` には主 + 取れた関連だけ。 順序: Task → Account → User
     assert list(payload["objects"]) == ["Task", "Account", "User"]
@@ -1009,8 +1073,8 @@ def test_main_object_resolves_custom_entity_dollar_type(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    payload = _record_to_payload(record)
 
     # 主オブジェクトが解決済みで、 objects に Project__c が入る
     assert payload["主オブジェクト"] == "Project__c"
@@ -1035,8 +1099,8 @@ def test_main_object_describe_failure_yields_null(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    payload = _record_to_payload(record)
     assert payload["主オブジェクト"] is None
     assert payload["objects"] == {}
     assert any("Opportunity" in w for w in payload["warnings"])
@@ -1058,7 +1122,7 @@ def test_auth_error_on_main_object_marks_id_failed(tmp_path: Path) -> None:
     outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
     assert outcomes[0].status == "failed"
     assert "401" in (outcomes[0].error or "")
-    assert outcomes[0].output_path is None
+    assert outcomes[0].record is None
     # JSON は書かれていない
     assert not list(output.iterdir())
 
@@ -1214,9 +1278,11 @@ def test_site_for_salesforce_error_marks_id_failed(tmp_path: Path) -> None:
     assert statuses == {"good": "ok", "bad": "failed"}
     assert outcomes[1].error and "接続先を決定できません" in outcomes[1].error
 
-    # bad の JSON は書かれていない（good だけ書かれる）
+    # bad は失敗で record 無し、 good は record あり。 ファイルはどれも書かれない
+    assert outcomes[0].record is not None
+    assert outcomes[1].record is None
     files = {path.name for path in output.iterdir()}
-    assert files == {"good.json"}
+    assert files == set()
 
 
 def test_site_for_comken_error_marks_id_failed(tmp_path: Path) -> None:
@@ -1244,101 +1310,53 @@ def test_site_for_comken_error_marks_id_failed(tmp_path: Path) -> None:
     assert not list(output.iterdir())
 
 
-def test_json_write_oserror_marks_id_failed(tmp_path: Path) -> None:
-    """JSON の書き出しで ``OSError`` が起きると、 その ID だけ失敗扱いにする。
-
-    なぜ: 出力先フォルダが消えた・権限が落ちた・ディスクが一杯、 といった
-    環境側の問題で他の ID まで巻き込みたくないため。
-    他の ID はそのまま書き続けられることを確かめる。
+def test_run_fetch_does_not_write_any_files(tmp_path: Path) -> None:
+    """``run_fetch`` は JSON を含めて **何もファイルを書き出さない** 。
+    出力は ``Record`` だけ。 結果は ``outcomes[i].record`` で取り出す。
     """
-    output = _output_dir_exists(tmp_path)
-    entries = [
-        MasterEntry(key="ok", summary="", url=f"{DOMAIN}/00O5g00000AAAAA/view", enabled=True),
-        MasterEntry(key="bad", summary="", url=f"{DOMAIN}/00O5g00000BBBBB/view", enabled=True),
-        MasterEntry(key="ok2", summary="", url=f"{DOMAIN}/00O5g00000CCCCC/view", enabled=True),
-    ]
+    output = tmp_path / "output"
+    output.mkdir()
+    entry = MasterEntry(key="ok", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
         object_describes={"Opportunity": _main_describe("Opportunity")},
     )
     site_for, _ = _site_for(client)
 
-    from src import fetch as fetch_module
+    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
 
-    original_atomic = fetch_module.atomic_write
-    real_atomic = original_atomic
-
-    def broken_atomic_write(path):
-        if path.name == "bad.json":
-            # ``atomic_write`` は ``with`` 文のコンテキストマネージャとして
-            # 使われるので、 ``__enter__`` を呼ぶ前に例外を上げると
-            # ``_fetch_one`` の ``except OSError`` 経路に入る
-            raise OSError("ディスク書き込み失敗")
-        return real_atomic(path)
-
-    fetch_module.atomic_write = broken_atomic_write  # type: ignore[assignment]
-    try:
-        outcomes = run_fetch(_settings(tmp_path), entries, site_for=site_for)
-    finally:
-        fetch_module.atomic_write = original_atomic  # type: ignore[assignment]
-
-    statuses = [o.status for o in outcomes]
-    assert statuses == ["ok", "failed", "ok"]
-    assert outcomes[1].error and "書き出しに失敗" in outcomes[1].error
-
-    # bad の JSON は存在せず、 ok / ok2 は書かれている
-    files = {path.name for path in output.iterdir()}
-    assert files == {"ok.json", "ok2.json"}
+    assert outcomes[0].status == "ok"
+    assert outcomes[0].record is not None
+    # ファイルは何も書かれていない
+    assert not list(output.iterdir())
 
 
 # ── run 経由のテストは tests/test_run.py 側（ CLI は削除 ） ──────────────
 
 
-def test_existing_json_not_corrupted_on_failure(tmp_path: Path) -> None:
-    """``atomic_write`` の中で例外が起きたとき、既存の JSON が壊れない。
-
-    ``atomic_write`` をパッチして途中で例外を上げ、本体の書き込みロジックが
-    一時ファイル経由になっていることを確かめる（直接 ``write_text`` で書き
-    換えると、パッチの影響を受けず JSON が破損する）。
+def test_run_fetch_does_not_use_atomic_write(tmp_path: Path) -> None:
+    """``run_fetch`` は ``atomic_write`` を import すらしていない。
+    結果を ``ReportRecord`` として返すだけで、 ファイル I/O は一切しない。
     """
-    output_dir = tmp_path / "output"
-    output_dir.mkdir()
-    existing = output_dir / "1.json"
-    existing.write_text('{"既存": "そのまま"}', encoding="utf-8")
-
     from src import fetch as fetch_module
 
-    main = _main_describe("Opportunity", fields_map={"AccountId": ["Account"]})
+    # ``atomic_write`` が ``src.fetch`` に存在しないことを直接確かめる
+    assert not hasattr(fetch_module, "atomic_write"), (
+        "fetch は JSON を書かないので atomic_write を import しないこと"
+    )
+
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
-        object_describes={"Opportunity": main},
-        errors={
-            "Account": SalesforceRequestError("GET", "/sobjects/Account/describe", 500, "Boom")
-        },
+        object_describes={"Opportunity": _main_describe("Opportunity")},
     )
     site_for, _ = _site_for(client)
 
-    called = {"count": 0}
-
-    def broken_atomic_write(path):
-        called["count"] += 1
-        # ``atomic_write`` が ``with`` ブロックのコンテキストマネージャとして
-        # 使われていることを保証するため、呼ばれた瞬間に例外を上げる
-        raise RuntimeError("爆発")
-
-    original = fetch_module.atomic_write
-    fetch_module.atomic_write = broken_atomic_write  # type: ignore[assignment]
-    try:
-        with pytest.raises(RuntimeError):
-            run_fetch(_settings(tmp_path), [entry], site_for=site_for)
-    finally:
-        fetch_module.atomic_write = original  # type: ignore[assignment]
-
-    # ``atomic_write`` が必ず通っている（直接 write_text にすると count=0 になる）
-    assert called["count"] == 1
-    # 既存 JSON は残っている
-    assert existing.read_text(encoding="utf-8") == '{"既存": "そのまま"}'
+    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+    assert outcomes[0].status == "ok"
+    assert outcomes[0].record is not None
+    # 出力先ディレクトリも空のまま （ ``run_fetch`` はフォルダも作らない ）
+    assert not list((tmp_path / "output").iterdir()) if (tmp_path / "output").exists() else True
 
 
 # ── ヘルパー関数 ─────────────────────────────────────────────────────────
@@ -1465,7 +1483,7 @@ def _make_report_metadata_with_extras() -> dict:
             "reportTypeExtraInfo": {"heavy": "blob"},
             "joinedReportMetadata": {},
         },
-        # トップレベルの余計なキー（ 全部 ``droppedKeys.top`` に行く ）
+        # トップレベルの余計なキー（ 全部 ``_collect_dropped_keys()`` に出る ）
         "reportTypeMetadata": {"columns": ["very", "heavy", "data"] * 100},
         "attributes": {"type": "Report", "url": "/services/data/v60.0/analytics/reports/00O..."},
         "hasNestedReports": False,
@@ -1474,13 +1492,12 @@ def _make_report_metadata_with_extras() -> dict:
     }
 
 
-def test_slim_report_keeps_only_allowed_keys_and_drops_rest_in_order() -> None:
-    """``_slim_report`` は許可リストのキーだけ残し、 落としたキーを
-    ``droppedKeys`` の該当サブキーに**出現順で**入れる。"""
+def test_slim_report_keeps_only_allowed_keys() -> None:
+    """_slim_report は許可リストのキーだけ残し、 それ以外を落とす。"""
     original = _make_report_metadata_with_extras()
     result = _slim_report(original)
 
-    # ``reportMetadata`` は許可リストにあるキーだけ
+    # reportMetadata は許可リストにあるキーだけ
     expected_keys = {
         "id",
         "name",
@@ -1510,7 +1527,7 @@ def test_slim_report_keeps_only_allowed_keys_and_drops_rest_in_order() -> None:
     for key in expected_keys:
         assert result["reportMetadata"][key] == original["reportMetadata"][key], key
 
-    # ``reportExtendedMetadata`` は 3 つのキーだけ
+    # reportExtendedMetadata は 3 つのキーだけ
     assert set(result["reportExtendedMetadata"].keys()) == {
         "detailColumnInfo",
         "groupingColumnInfo",
@@ -1518,68 +1535,47 @@ def test_slim_report_keeps_only_allowed_keys_and_drops_rest_in_order() -> None:
     }
     assert result["reportExtendedMetadata"]["detailColumnInfo"] == {"Opp.Name": {"label": "商談名"}}
 
-    # ``droppedKeys`` は 3 つのサブキーが常に存在し、 落ちたキー名が出現順で入る
-    assert result["droppedKeys"] == {
-        "reportMetadata": ["useNormalizedFieldForCurrency", "userOrTeamFilterId", "description"],
-        "reportExtendedMetadata": ["reportTypeExtraInfo", "joinedReportMetadata"],
-        "top": ["reportTypeMetadata", "attributes", "hasNestedReports", "folderId", "ownerId"],
-    }
+    # 落としたキー名は result に含めない （ warnings 側で別管理 ）
+    assert set(result.keys()) == {"reportMetadata", "reportExtendedMetadata"}
 
 
 def test_slim_report_excludes_heavy_keys_from_output() -> None:
-    """``reportTypeMetadata`` や ``attributes`` が出力に無いことを
+    """reportTypeMetadata や attributes が出力に無いことを
     厳密に確かめる（ 出力 dict のトップレベルキーが限定されている ）。"""
     result = _slim_report(_make_report_metadata_with_extras())
 
-    # 出力トップレベルは ``reportMetadata`` / ``reportExtendedMetadata`` /
-    # ``droppedKeys`` の 3 つだけ
+    # 出力トップレベルは reportMetadata / reportExtendedMetadata の 2 つだけ
     assert set(result.keys()) == {
         "reportMetadata",
         "reportExtendedMetadata",
-        "droppedKeys",
     }
 
-    # ``reportMetadata`` の中に ``reportTypeMetadata`` が紛れていない
+    # reportMetadata の中に reportTypeMetadata が紛れていない
     assert "reportTypeMetadata" not in result["reportMetadata"]
     assert "attributes" not in result["reportMetadata"]
 
 
 def test_slim_report_handles_missing_or_bad_input() -> None:
-    """``reportMetadata`` が無い／ dict でない／``None`` ／文字列でも例外を上げない。"""
-    # ``reportMetadata`` / ``reportExtendedMetadata`` が無い
+    """reportMetadata が無い／ dict でない／None ／文字列でも例外を上げない。"""
+    # reportMetadata / reportExtendedMetadata が無い
     result = _slim_report({"hasNestedReports": False})
-    assert set(result.keys()) == {"droppedKeys"}
-    assert result["droppedKeys"] == {
-        "reportMetadata": [],
-        "reportExtendedMetadata": [],
-        "top": ["hasNestedReports"],
-    }
+    assert result == {}
 
-    # ``reportMetadata`` が dict でない: 該当キーは結果に出ない
+    # reportMetadata が dict でない: 該当キーは結果に出ない
     result = _slim_report({"reportMetadata": "not a dict", "reportExtendedMetadata": None})
     assert "reportMetadata" not in result
     assert "reportExtendedMetadata" not in result
-    # ``reportMetadata`` / ``reportExtendedMetadata`` は特別扱いなので ``top`` にも入らない
-    assert result["droppedKeys"] == {
-        "reportMetadata": [],
-        "reportExtendedMetadata": [],
-        "top": [],
-    }
 
     # 全体が dict でない
     result = _slim_report(None)
-    assert result == {
-        "droppedKeys": {"reportMetadata": [], "reportExtendedMetadata": [], "top": []}
-    }
+    assert result == {}
 
     result = _slim_report("string")
-    assert result == {
-        "droppedKeys": {"reportMetadata": [], "reportExtendedMetadata": [], "top": []}
-    }
+    assert result == {}
 
 
 def test_slim_report_does_not_mutate_input_dict() -> None:
-    """``_slim_report`` を呼んでも入力の dict は変わらない（ 別 dict にコピー ）。"""
+    """_slim_report を呼んでも入力の dict は変わらない（ 別 dict にコピー ）。"""
     import copy
 
     original = _make_report_metadata_with_extras()
@@ -1587,12 +1583,51 @@ def test_slim_report_does_not_mutate_input_dict() -> None:
 
     _slim_report(original)
 
-    # 入力 dict は ``==`` で比較できるほど変わらない
+    # 入力 dict は == で比較できるほど変わらない
     assert original == snapshot
 
 
-def test_slim_report_dropped_keys_subkeys_always_present() -> None:
-    """何も落ちていないときも ``droppedKeys`` の 3 サブキーは空リストとして存在する。"""
+def test_collect_dropped_keys_lists_in_order() -> None:
+    """_collect_dropped_keys() は落としたキー名を出現順で返す。"""
+    from src.fetch import _collect_dropped_keys
+
+    original = _make_report_metadata_with_extras()
+    dropped = _collect_dropped_keys(original)
+
+    # 3 箇所から出現順で並ぶ
+    assert dropped == (
+        "useNormalizedFieldForCurrency",
+        "userOrTeamFilterId",
+        "description",  # reportMetadata 内
+        "reportTypeExtraInfo",
+        "joinedReportMetadata",  # reportExtendedMetadata 内
+        "reportTypeMetadata",
+        "attributes",
+        "hasNestedReports",
+        "folderId",
+        "ownerId",  # トップレベル
+    )
+
+
+def test_collect_dropped_keys_handles_missing_or_bad_input() -> None:
+    """_collect_dropped_keys() は例外を上げず、 空タプルを返す。"""
+    from src.fetch import _collect_dropped_keys
+
+    # 何も落ちていない
+    assert _collect_dropped_keys({"reportMetadata": {"id": "x"}}) == ()
+    # トップレベルだけ
+    assert _collect_dropped_keys({"topOnly": 1}) == ("topOnly",)
+    # reportMetadata が dict でない
+    assert _collect_dropped_keys({"reportMetadata": "x"}) == ()
+    # 入力が dict でない
+    assert _collect_dropped_keys(None) == ()
+    assert _collect_dropped_keys("string") == ()
+
+
+def test_collect_dropped_keys_empty_when_all_allowed() -> None:
+    """何も落ちていないときは空タプル。"""
+    from src.fetch import _collect_dropped_keys
+
     metadata = {
         "reportMetadata": {
             "id": "00O5g00000ABCDE",
@@ -1605,12 +1640,7 @@ def test_slim_report_dropped_keys_subkeys_always_present() -> None:
             "aggregateColumnInfo": {},
         },
     }
-    result = _slim_report(metadata)
-    assert result["droppedKeys"] == {
-        "reportMetadata": [],
-        "reportExtendedMetadata": [],
-        "top": [],
-    }
+    assert _collect_dropped_keys(metadata) == ()
 
 
 # ── _slim_object ──────────────────────────────────────────────────────────
@@ -1817,11 +1847,12 @@ def test_slim_object_handles_non_dict_input() -> None:
 # ── JSON 出力に重いキーが一切残らないこと ──────────────────────────────────
 
 
-def test_json_output_has_no_heavy_keys_anywhere(tmp_path: Path) -> None:
-    """書き出した JSON のどこにも ``reportTypeMetadata`` / ``childRelationships`` /
-    ``recordTypeInfos`` / ``picklistValues`` が **キーとして** 出現しない
-    （ ``json.dumps`` した文字列に ``"重いキー":`` の形が出ない）。
-    なぜ: 機微な情報や、 巨大な原本が JSON の dict の中に漏れていないことを保証する。
+def test_record_report_has_no_heavy_keys(tmp_path: Path) -> None:
+    """``ReportRecord.report`` のどこにも ``reportTypeMetadata`` /
+    ``childRelationships`` / ``recordTypeInfos`` / ``picklistValues`` が
+    **キーとして** 出現しない（ ``json.dumps`` した文字列に
+    ``"重いキー":`` の形が出ない）。
+    なぜ: 機微な情報や、 巨大な原本が record の中に漏れていないことを保証する。
     """
     # 元 describe に「 重い」 キーを全部盛りにした ``Account`` を作る
     full_describe = {
@@ -1855,18 +1886,22 @@ def test_json_output_has_no_heavy_keys_anywhere(tmp_path: Path) -> None:
     )
     site_for, _ = _site_for(client)
 
-    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
-    raw_text = payload_path.read_text(encoding="utf-8")
+    import json as _json
 
-    # ``"重いキー":`` という**キー形**が出現しない（ ``droppedKeys`` の中で
-    # 「 キー名そのもの」 が文字列として現れるのは仕様 ）
+    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    raw_text = _json.dumps({"report": record.report, "objects": record.objects}, ensure_ascii=False)
+
+    # ``"重いキー":`` という**キー形**が出現しない（ 出力 record の中に
+    # 「 キー名そのもの 」 が文字列として現れるのは無い ）
     for forbidden in (
         "reportTypeMetadata",
         "childRelationships",
         "recordTypeInfos",
         "picklistValues",
     ):
-        assert f'"{forbidden}":' not in raw_text, f"{forbidden!r} が JSON のキーとして残っています"
+        assert f'"{forbidden}":' not in raw_text, (
+            f"{forbidden!r} が record のキーとして残っています"
+        )
 
 
 # ── 関連オブジェクトの集め方が原本の fields を使うこと ──────────────────────
@@ -1907,8 +1942,8 @@ def test_related_objects_collected_from_original_describe_not_slimmed(
     )
     site_for, _ = _site_for(client)
 
-    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    payload = _record_to_payload(record)
 
     # ``Account`` が出てきている（ slim 後の fields から集めていれば出ない）
     assert "Account" in payload["objects"]
@@ -1936,46 +1971,31 @@ def test_slim_report_detects_allowlist_violation(monkeypatch: pytest.MonkeyPatch
     metadata = _make_report_metadata_with_extras()
     result = _slim_report(metadata)
 
-    # 本来 ``droppedKeys.reportMetadata`` に行くはずのキーが ``reportMetadata``
+    # 本来 ``_collect_dropped_keys`` 側に記録されるはずのキーが ``reportMetadata``
     # に**残ってしまっている**（ 改ざんを検出できる ）
     assert "useNormalizedFieldForCurrency" in result["reportMetadata"]
     assert "userOrTeamFilterId" in result["reportMetadata"]
     assert "description" in result["reportMetadata"]
-    # ``droppedKeys.reportMetadata`` には入らない
-    assert "useNormalizedFieldForCurrency" not in result["droppedKeys"]["reportMetadata"]
 
 
-def test_slim_report_detects_dropped_keys_being_emptied(
+def test_slim_report_detects_collect_dropped_keys_being_emptied(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``droppedKeys`` を常に空にすると、 落ちたキーが ``droppedKeys`` に入らない。"""
+    """``_collect_dropped_keys`` を常に空にすると、 落ちたキーが記録されない
+    ことを検出できる。
+    """
     from src import fetch as fetch_module
 
-    def bad_slim_report(metadata):
-        # 許可リストの通り残し、 ただし ``droppedKeys`` は常に空
-        result = {
-            "reportMetadata": {
-                k: v
-                for k, v in metadata["reportMetadata"].items()
-                if k in fetch_module.REPORT_METADATA_KEYS
-            },
-            "reportExtendedMetadata": {
-                k: v
-                for k, v in metadata["reportExtendedMetadata"].items()
-                if k in fetch_module.REPORT_EXTENDED_METADATA_KEYS
-            },
-            "droppedKeys": {"reportMetadata": [], "reportExtendedMetadata": [], "top": []},
-        }
-        return result
+    def bad_collect(metadata: object) -> tuple[str, ...]:
+        # 何も返さない
+        return ()
 
-    monkeypatch.setattr(fetch_module, "_slim_report", bad_slim_report)
+    monkeypatch.setattr(fetch_module, "_collect_dropped_keys", bad_collect)
 
     metadata = _make_report_metadata_with_extras()
-    result = fetch_module._slim_report(metadata)
-    # 落ちたキーが ``droppedKeys`` に**入っていない**（ 改ざんが検出できる ）
-    assert result["droppedKeys"]["top"] == []
-    # 本来は ``top`` に名前が入るはず
-    assert "reportTypeMetadata" not in result["droppedKeys"]["top"]
+    dropped = fetch_module._collect_dropped_keys(metadata)
+    # 落ちたキーが**記録されていない**（ 改ざんが検出できる ）
+    assert dropped == ()
 
 
 def test_slim_object_detects_picklist_total_being_zero(
@@ -2137,8 +2157,8 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
     )
     site_for, _ = _site_for(client)
 
-    payload_path = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].output_path
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    payload = _record_to_payload(record)
 
     # slim 後の ``fields`` から集めていると ``Account`` が**取れない**
     # （ 本物の実装では ``Account`` が必ず取れる ）

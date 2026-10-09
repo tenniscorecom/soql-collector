@@ -253,16 +253,19 @@ def test_run_filters_disabled_rows(
 
     def fake_run_fetch(settings, entries, *, dry_run=False, site_for=None, object_cache=None):
         captured_keys.extend(entry.key for entry in entries)
-        return [
-            FetchOutcome(
-                entry=entry,
-                status="ok",
-                output_path=settings.output_dir / f"{entry.key}.json",
-                warnings=(),
-                error=None,
+        outcomes = []
+        for entry in entries:
+            rec = RecordStub(key=entry.key, summary=entry.summary, report_id="00O", url=entry.url)
+            outcomes.append(
+                FetchOutcome(
+                    entry=entry,
+                    status="ok",
+                    record=rec,
+                    warnings=(),
+                    error=None,
+                )
             )
-            for entry in entries
-        ]
+        return outcomes
 
     monkeypatch.setattr(run_module, "run_fetch", fake_run_fetch)
     monkeypatch.setattr(
@@ -275,6 +278,66 @@ def test_run_filters_disabled_rows(
 
     assert code == 0
     assert captured_keys == ["1001", "1003"]
+
+
+class RecordStub:
+    """``ReportRecord`` 互換のスタブ （ テスト用 ）。 dataclass で型互換 。"""
+
+    def __init__(self, key: str, summary: str, report_id: str, url: str) -> None:
+        from src.fetch import ReportRecord
+
+        self._inner = ReportRecord(
+            key=key,
+            summary=summary,
+            report_id=report_id,
+            url=url,
+            main_object=None,
+            report={},
+            objects={},
+            relations=(),
+            column_map=[],
+            warnings=(),
+        )
+
+    @property
+    def key(self) -> str:
+        return self._inner.key
+
+    @property
+    def summary(self) -> str:
+        return self._inner.summary
+
+    @property
+    def report_id(self) -> str:
+        return self._inner.report_id
+
+    @property
+    def url(self) -> str:
+        return self._inner.url
+
+    @property
+    def main_object(self):  # type: ignore[no-untyped-def]
+        return self._inner.main_object
+
+    @property
+    def report(self) -> dict:
+        return self._inner.report
+
+    @property
+    def objects(self) -> dict:
+        return self._inner.objects
+
+    @property
+    def relations(self) -> tuple:
+        return self._inner.relations
+
+    @property
+    def column_map(self) -> list:
+        return self._inner.column_map
+
+    @property
+    def warnings(self) -> tuple:
+        return self._inner.warnings
 
 
 def test_run_no_enabled_rows_returns_2(
@@ -313,7 +376,7 @@ def test_run_writes_jsons_and_csvs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """有効な行が複数あれば全部取られ、 JSON と CSV ができる。"""
+    """有効な行が複数あれば全部取られ、 CSV ができる。 JSON は書かれない。"""
     from src import run as run_module
     from src.fetch import FetchOutcome
 
@@ -331,14 +394,12 @@ def test_run_writes_jsons_and_csvs(
     def fake_run_fetch(settings, entries, *, dry_run=False, site_for=None, object_cache=None):
         outcomes = []
         for entry in entries:
-            output_path = settings.output_dir / f"{entry.key}.json"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text('{"ok": true}', encoding="utf-8")
+            rec = RecordStub(key=entry.key, summary=entry.summary, report_id="00O", url=entry.url)
             outcomes.append(
                 FetchOutcome(
                     entry=entry,
                     status="ok",
-                    output_path=output_path,
+                    record=rec,
                     warnings=(),
                     error=None,
                 )
@@ -347,8 +408,13 @@ def test_run_writes_jsons_and_csvs(
 
     tables_called: list[dict] = []
 
-    def fake_run_tables(output_dir, *, only_keys=None):
-        tables_called.append({"only_keys": list(only_keys) if only_keys is not None else None})
+    def fake_run_tables(output_dir, records, *, only_keys=None):
+        tables_called.append(
+            {
+                "records": list(records),
+                "only_keys": list(only_keys) if only_keys is not None else None,
+            }
+        )
         return None
 
     monkeypatch.setattr(run_module, "run_fetch", fake_run_fetch)
@@ -357,9 +423,12 @@ def test_run_writes_jsons_and_csvs(
     code = run_module.run([], site_for=lambda _u: (_ for _ in ()).throw(AssertionError()))
 
     assert code == 0
-    assert (tmp_path / "output" / "1001.json").exists()
-    assert (tmp_path / "output" / "1002.json").exists()
-    assert tables_called == [{"only_keys": ["1001", "1002"]}]
+    # JSON は書かれていない
+    assert not (tmp_path / "output" / "1001.json").exists()
+    # CSV へ渡す record と only_keys が一致
+    assert len(tables_called) == 1
+    assert [r.key for r in tables_called[0]["records"]] == ["1001", "1002"]
+    assert tables_called[0]["only_keys"] == ["1001", "1002"]
 
 
 def test_run_partial_failure_continues_and_returns_1(
@@ -388,18 +457,19 @@ def test_run_partial_failure_continues_and_returns_1(
     existing_csv.write_text("既存\nそのまま\n", encoding="utf-8")
 
     def fake_run_fetch(settings, entries, *, dry_run=False, site_for=None, object_cache=None):
+        rec = RecordStub(key=entries[0].key, summary="", report_id="00O", url=entries[0].url)
         return [
             FetchOutcome(
                 entry=entries[0],
                 status="ok",
-                output_path=settings.output_dir / "1001.json",
+                record=rec,
                 warnings=(),
                 error=None,
             ),
             FetchOutcome(
                 entry=entries[1],
                 status="failed",
-                output_path=None,
+                record=None,
                 warnings=(),
                 error="URL からレポート ID を取り出せません",
             ),
@@ -407,8 +477,9 @@ def test_run_partial_failure_continues_and_returns_1(
 
     captured: dict[str, Any] = {}
 
-    def fake_run_tables(output_dir, *, only_keys=None):
+    def fake_run_tables(output_dir, records, *, only_keys=None):
         captured["only_keys"] = list(only_keys) if only_keys is not None else None
+        captured["records"] = list(records)
         return None
 
     monkeypatch.setattr(run_module, "run_fetch", fake_run_fetch)
@@ -418,6 +489,7 @@ def test_run_partial_failure_continues_and_returns_1(
 
     assert code == 1
     assert captured["only_keys"] == ["1001"]
+    assert [r.key for r in captured["records"]] == ["1001"]
     assert existing_csv.read_text(encoding="utf-8") == "既存\nそのまま\n"
 
 
