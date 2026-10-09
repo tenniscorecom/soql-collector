@@ -24,6 +24,7 @@ import logging
 import sys
 from collections.abc import Callable
 
+from src import pii
 from src.fetch import run_fetch
 from src.master import MasterEntry
 from src.settings import load_settings
@@ -84,7 +85,16 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
 
     if records:
         try:
-            run_tables(settings.output_dir, records, only_keys=ok_keys)
+            run_tables(
+                settings.output_dir,
+                records,
+                only_keys=ok_keys,
+                pii_config=pii.PIIConfig(
+                    keywords=settings.pii_keywords,
+                    person_objects=settings.pii_person_objects,
+                ),
+                similar_threshold=settings.similar_column_similarity,
+            )
         except Exception as exc:
             logger.error("CSV の生成に失敗しました: %s", exc)
 

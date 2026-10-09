@@ -34,6 +34,8 @@ from pathlib import Path
 
 from comken.toolbox.csv import CSV
 
+from src import pii, similar
+
 logger = logging.getLogger(__name__)
 
 # 1 つの CSV ファイルあたりの選択肢の最大値数。超えたら末尾に ``…`` を付ける
@@ -61,6 +63,39 @@ CORRESPONDENCE_COLUMNS: tuple[str, ...] = (
     "参照先オブジェクト",
     "リレーション名",
     "備考",
+    "個人情報",
+    "個人情報の根拠",
+)
+
+# 調査表の列名
+SURVEY_TABLE_COLUMNS: tuple[str, ...] = (
+    "管理番号",
+    "概要",
+    "レポートID",
+    "レポートタイプ",
+    "主オブジェクト",
+    "形式",
+    "出力列数",
+    "2000件超",
+    "行数",
+    "2000件超の補足",
+    "個人情報",
+    "個人情報の該当列",
+    "類似グループ",
+    "統合の見込み",
+    "警告数",
+)
+
+# 類似レポートの列名
+SIMILAR_TABLE_COLUMNS: tuple[str, ...] = (
+    "類似グループ",
+    "管理番号",
+    "概要",
+    "レポートID",
+    "基準の管理番号",
+    "区分",
+    "基準との違い",
+    "統合の見込み",
 )
 
 # 項目表の列名
@@ -143,6 +178,8 @@ def run_tables(
     records: Iterable[object],
     *,
     only_keys: Iterable[str] | None = None,
+    pii_config: pii.PIIConfig | None = None,
+    similar_threshold: float = 0.8,
 ) -> TableOutcome:
     """``records`` から CSV を組み立てる。
 
@@ -152,6 +189,9 @@ def run_tables(
         records: ``fetch.ReportRecord`` のイテラブル。 メモリ上の記録。
         only_keys: per-ID CSV ``対応表_{管理番号}.csv`` を作る対象の管理番号。
             ``None`` なら ``records`` の全部を対象にする。
+        pii_config: 対応表の ``個人情報`` 列を埋めるための設定。 ``None`` なら
+            デフォルト設定を使う。 詳細を見ない場合は ``None`` のままでも動く。
+        similar_threshold: 似たレポート判定の Jaccard 下限。
 
     Returns:
         ``TableOutcome``: 書いたファイル一覧。 skipped は常に空 （ 互換用 ）。
@@ -161,6 +201,10 @@ def run_tables(
     """
     record_list = list(records)
     only_set = set(only_keys) if only_keys is not None else None
+    pii_config = pii_config or pii.PIIConfig(
+        keywords=pii.DEFAULT_KEYWORDS,
+        person_objects=pii.DEFAULT_PERSON_OBJECTS,
+    )
 
     wrote: list[Path] = []
 
@@ -177,11 +221,25 @@ def run_tables(
         report = getattr(record, "report", {}) or {}
         objects = getattr(record, "objects", {}) or {}
         column_map = getattr(record, "column_map", []) or []
+        main_object = getattr(record, "main_object", "") or ""
 
         # per-id 対応表
         per_path = output_dir / f"対応表_{key}.csv"
+        per_pii_lookup = _build_pii_lookup_for_record(
+            report=report,
+            column_map=column_map,
+            objects=objects,
+            config=pii_config,
+        )
         per_rows = _build_correspondence_rows_from_record(
-            key, summary, report_id, report, objects, column_map
+            key,
+            summary,
+            report_id,
+            report,
+            objects,
+            column_map,
+            pii_lookup=per_pii_lookup,
+            main_object=main_object or None,
         )
         _write_csv(per_path, CORRESPONDENCE_COLUMNS, per_rows)
         wrote.append(per_path)
@@ -205,14 +263,22 @@ def run_tables(
     # 全体 対応表
     all_correspondence_rows: list[dict[str, str]] = []
     for record in sorted_records:
+        report = getattr(record, "report", {}) or {}
+        objects = getattr(record, "objects", {}) or {}
+        column_map = getattr(record, "column_map", []) or []
+        pii_lookup = _build_pii_lookup_for_record(
+            report=report, column_map=column_map, objects=objects, config=pii_config
+        )
         all_correspondence_rows.extend(
             _build_correspondence_rows_from_record(
                 getattr(record, "key", ""),
                 getattr(record, "summary", ""),
                 getattr(record, "report_id", ""),
-                getattr(record, "report", {}) or {},
-                getattr(record, "objects", {}) or {},
-                getattr(record, "column_map", []) or [],
+                report,
+                objects,
+                column_map,
+                pii_lookup=pii_lookup,
+                main_object=getattr(record, "main_object", "") or None,
             )
         )
     correspondence_path = output_dir / "対応表.csv"
@@ -255,6 +321,39 @@ def run_tables(
     _write_csv(column_names_path, COLUMN_NAMES_COLUMNS, column_names_rows)
     wrote.append(column_names_path)
 
+    # 似たレポートのグループ化（ 全体 ） 。 1 件や該当なしならファイルを作らない
+    similar_groups = similar.find_similar_groups(
+        sorted_records, column_similarity_threshold=similar_threshold
+    )
+    key_to_group: dict[str, tuple[int, str, str]] = {}  # 管理番号 → (group, base, integration)
+    if similar_groups:
+        similar_rows = _build_similar_table_rows(sorted_records, similar_groups)
+        similar_path = output_dir / "類似レポート.csv"
+        _write_csv(similar_path, SIMILAR_TABLE_COLUMNS, similar_rows)
+        wrote.append(similar_path)
+        # 調査表用に 管理番号 → グループ / 基準 / 見込み のマッピングを作る
+        for group in similar_groups:
+            base_integration = next(
+                (p.integration for p in group.pairs if p.key_b == group.base_key),
+                "1本にまとめられる",
+            )
+            key_to_group[group.base_key] = (group.group_number, group.base_key, base_integration)
+            for pair in group.pairs:
+                if pair.key_b != group.base_key:
+                    key_to_group[pair.key_b] = (
+                        group.group_number,
+                        group.base_key,
+                        pair.integration,
+                    )
+
+    # 調査表（ 全体 ）
+    survey_rows = _build_survey_table_rows_from_records(
+        sorted_records, pii_config=pii_config, similar_lookup=key_to_group
+    )
+    survey_path = output_dir / "調査表.csv"
+    _write_csv(survey_path, SURVEY_TABLE_COLUMNS, survey_rows)
+    wrote.append(survey_path)
+
     for path in wrote:
         logger.info("CSV を書き出し: %s（%d 行）", path, _count_data_rows(path))
 
@@ -276,6 +375,240 @@ def _extract_report_type(report: object) -> str:
         return ""
     name = report_type.get("type")
     return name if isinstance(name, str) else ""
+
+
+def _build_pii_lookup_for_record(
+    *,
+    report: dict,
+    column_map: list[dict[str, str]],
+    objects: dict,
+    config: pii.PIIConfig,
+) -> dict[str, tuple[str, str]]:
+    """1 record ぶんの ``列キー → (個人情報, 個人情報の根拠)`` を作る。
+
+    対応表の PII 列を埋めるため、 ``column_map`` の各行について出力列の
+    ときだけ評価する。 絞り込みにだけ使う列は対象外。
+    """
+    output_keys = set(_output_column_keys_from_slim(report))
+    refs = _column_refs_for_record(report=report, column_map=column_map, objects=objects)
+    lookup: dict[str, tuple[str, str]] = {}
+    for ref in refs:
+        if ref.column_key not in output_keys:
+            continue
+        result = pii.evaluate_column_pii(ref, config, objects if isinstance(objects, dict) else {})
+        if result.status in ("あり", "要確認"):
+            lookup[ref.column_key] = (result.status, result.basis)
+    return lookup
+
+
+def _output_column_keys_from_slim(slim_report: object) -> list[str]:
+    """``slim_report`` の出力列キー（ 順序付き ） を集める。"""
+    metadata = slim_report.get("reportMetadata") if isinstance(slim_report, dict) else None
+    if not isinstance(metadata, dict):
+        return []
+    keys: list[str] = []
+    for column in metadata.get("detailColumns") or []:
+        if isinstance(column, str) and column:
+            keys.append(column)
+    for grouping_key in ("groupingsDown", "groupingsAcross"):
+        for grouping in metadata.get(grouping_key) or []:
+            if isinstance(grouping, dict):
+                name = grouping.get("name")
+                if isinstance(name, str) and name:
+                    keys.append(name)
+    for aggregate in metadata.get("aggregates") or []:
+        if isinstance(aggregate, str) and "!" in aggregate:
+            column = aggregate.split("!", 1)[-1]
+            if column:
+                keys.append(column)
+    return keys
+
+
+def _column_refs_for_record(
+    *,
+    report: dict,
+    column_map: list[dict[str, str]],
+    objects: dict,
+) -> list[pii.ColumnRef]:
+    """レポートの出力列から ``pii.ColumnRef`` を作る。"""
+    output_keys = _output_column_keys_from_slim(report)
+    column_map_by_key: dict[str, dict[str, str]] = {}
+    for col in column_map:
+        if not isinstance(col, dict):
+            continue
+        key = col.get("列キー")
+        if isinstance(key, str) and key:
+            column_map_by_key[key] = col
+    refs: list[pii.ColumnRef] = []
+    seen: set[str] = set()
+    for column_key in output_keys:
+        if column_key in seen:
+            continue
+        seen.add(column_key)
+        col = column_map_by_key.get(column_key, {})
+        field_api = _coerce_str(col.get("対応フィールドAPI名")) if isinstance(col, dict) else ""
+        label = _coerce_str(col.get("表示名")) if isinstance(col, dict) else ""
+        field_type = _coerce_str(col.get("型")) if isinstance(col, dict) else ""
+        owner_object = _coerce_str(col.get("所属オブジェクト")) if isinstance(col, dict) else ""
+        field_name = _field_name_from_soql(field_api)
+        resolved = bool(field_api) and field_api != "(不明)"
+        refs.append(
+            pii.ColumnRef(
+                column_key=column_key,
+                label=label or column_key,
+                field_name=field_name,
+                field_type=field_type,
+                owner_object=owner_object,
+                resolved=resolved,
+            )
+        )
+    return refs
+
+
+def _field_name_from_soql(soql_name: str) -> str:
+    """``"Account.Owner.Name"`` から末端の ``"Name"`` を取り出す。"""
+    if not soql_name or soql_name == "(不明)":
+        return ""
+    if "." in soql_name:
+        return soql_name.rsplit(".", 1)[-1]
+    return soql_name
+
+
+def _row_check_status_text(record: object) -> tuple[str, str, str]:
+    """record の ``row_check`` を ``(status_text, rows_text, reason_text)`` に分解する。"""
+    row_check = getattr(record, "row_check", None)
+    if row_check is None:
+        return ("未実施", "", "")
+    status = getattr(row_check, "status", "")
+    rows = getattr(row_check, "rows", None)
+    reason = getattr(row_check, "reason", "") or ""
+    rows_text = "" if rows is None else str(rows)
+    return (status, rows_text, reason)
+
+
+def _row_check_display(record: object) -> tuple[str, str]:
+    """record の ``row_check`` を ``(表示用ステータス, 表示用理由)`` に直す。"""
+    status, _rows, reason = _row_check_status_text(record)
+    return status, reason
+
+
+def _survey_pii_display(record: object) -> tuple[str, str]:
+    """record の ``pii`` を ``(表示用ステータス, 該当列)`` に直す。"""
+    pii_result = getattr(record, "pii", None)
+    if pii_result is None:
+        return ("", "")
+    status = getattr(pii_result, "status", "")
+    matches: list[tuple[str, str]] = getattr(pii_result, "matching_columns", []) or []
+    formatted = "; ".join(f"{label}({basis})" for label, basis in matches)
+    return (status, formatted)
+
+
+def _build_survey_table_rows_from_records(
+    records: Sequence[object],
+    *,
+    pii_config: pii.PIIConfig,
+    similar_lookup: dict[str, tuple[int, str, str]],
+) -> list[dict[str, str]]:
+    """全 record から 調査表 の行を作る。"""
+    rows: list[dict[str, str]] = []
+    for record in records:
+        key = getattr(record, "key", "")
+        summary = getattr(record, "summary", "")
+        report_id = getattr(record, "report_id", "")
+        report = getattr(record, "report", {}) or {}
+        main_object = getattr(record, "main_object", "") or ""
+        report_type = _extract_report_type(report)
+        format_value = _extract_report_format(report)
+        output_columns = _output_column_keys_from_slim(report)
+        status, _rows, reason = _row_check_status_text(record)
+        pii_status, pii_columns = _survey_pii_display(record)
+        warnings = getattr(record, "warnings", ()) or ()
+        group_info = similar_lookup.get(key)
+        if group_info is not None:
+            group_number, base_key, integration = group_info
+            group_text = str(group_number)
+            if base_key != key:
+                group_text = f"{group_number} ({base_key} 基準)"
+        else:
+            group_text = ""
+            integration = ""
+        rows.append(
+            {
+                "管理番号": key,
+                "概要": summary,
+                "レポートID": report_id,
+                "レポートタイプ": report_type,
+                "主オブジェクト": main_object or "(不明)",
+                "形式": format_value,
+                "出力列数": str(len(output_columns)),
+                "2000件超": status,
+                "行数": _rows,
+                "2000件超の補足": reason,
+                "個人情報": pii_status,
+                "個人情報の該当列": pii_columns,
+                "類似グループ": group_text,
+                "統合の見込み": integration,
+                "警告数": str(len(warnings)),
+            }
+        )
+    return rows
+
+
+def _extract_report_format(report: object) -> str:
+    """``record.report.reportMetadata.reportFormat`` を取り出す。 無ければ空文字。"""
+    if not isinstance(report, dict):
+        return ""
+    metadata = report.get("reportMetadata")
+    if not isinstance(metadata, dict):
+        return ""
+    value = metadata.get("reportFormat")
+    return value if isinstance(value, str) else ""
+
+
+def _build_similar_table_rows(
+    records: Sequence[object],
+    groups: list[similar.SimilarGroup],
+) -> list[dict[str, str]]:
+    """似たレポートの行を 1 グループずつ組み立てる。 基準自身の行も出力する。"""
+    record_by_key: dict[str, object] = {getattr(r, "key", ""): r for r in records}
+    rows: list[dict[str, str]] = []
+    for group in groups:
+        base_record = record_by_key.get(group.base_key)
+        base_summary = getattr(base_record, "summary", "") if base_record is not None else ""
+        base_report_id = getattr(base_record, "report_id", "") if base_record is not None else ""
+        # 基準行
+        rows.append(
+            {
+                "類似グループ": str(group.group_number),
+                "管理番号": group.base_key,
+                "概要": base_summary,
+                "レポートID": base_report_id,
+                "基準の管理番号": group.base_key,
+                "区分": "基準",
+                "基準との違い": "",
+                "統合の見込み": "",
+            }
+        )
+        for pair in group.pairs:
+            other_key = pair.key_b
+            other_record = record_by_key.get(other_key)
+            other_summary = getattr(other_record, "summary", "") if other_record is not None else ""
+            other_report_id = (
+                getattr(other_record, "report_id", "") if other_record is not None else ""
+            )
+            rows.append(
+                {
+                    "類似グループ": str(group.group_number),
+                    "管理番号": other_key,
+                    "概要": other_summary,
+                    "レポートID": other_report_id,
+                    "基準の管理番号": group.base_key,
+                    "区分": pair.category,
+                    "基準との違い": pair.diff_text,
+                    "統合の見込み": pair.integration,
+                }
+            )
+    return rows
 
 
 def _build_field_lookup(describe: object) -> dict[str, dict[str, str]]:
@@ -319,18 +652,28 @@ def _build_correspondence_rows_from_record(
     report: dict,
     objects: dict,
     column_map: list[dict[str, str]],
+    *,
+    pii_lookup: dict[str, tuple[str, str]] | None = None,
+    main_object: str | None = None,
 ) -> list[dict[str, str]]:
-    """1 record から対応表の行を作る（ 1 レポート列 = 1 行 ）。"""
+    """1 record から対応表の行を作る（ 1 レポート列 = 1 行 ）。
+
+    ``pii_lookup`` には ``列キー → (個人情報, 個人情報の根拠)`` のマッピングを
+    渡す。 未指定なら PII 列は空になる。 ``main_object`` が ``None`` / 空文字
+    のときは ``主オブジェクト`` 列を ``(不明)`` にする。
+    """
     report_type = _extract_report_type(report)
 
     # column_map に 所属オブジェクト が入っていればそれを採用。 無ければ
     # objects のキーをもとに補完する。
+    main_object_text = main_object or "(不明)"
     rows: list[dict[str, str]] = []
     for col in column_map:
         if not isinstance(col, dict):
             continue
         field_api = _coerce_str(col.get("対応フィールドAPI名"))
         owner_object = _coerce_str(col.get("所属オブジェクト"))
+        column_key = _coerce_str(col.get("列キー"))
         # 所属オブジェクトが空のときのフォールバック: 解決できたフィールドが
         # 主オブジェクト側にあれば主オブジェクト名を入れる。
         lookup: dict[str, str] = {}
@@ -338,13 +681,14 @@ def _build_correspondence_rows_from_record(
             describe = objects.get(owner_object)
             if isinstance(describe, dict):
                 lookup = _build_field_lookup(describe).get(field_api, {})
+        pii_status, pii_basis = (pii_lookup or {}).get(column_key, ("", ""))
         row = {
             "管理番号": key,
             "概要": summary,
             "レポートID": report_id,
             "レポートタイプ": report_type,
-            "主オブジェクト": _get_main_object_name(objects),
-            "列キー": _coerce_str(col.get("列キー")),
+            "主オブジェクト": main_object_text,
+            "列キー": column_key,
             "表示名": _coerce_str(col.get("表示名")),
             "所属オブジェクト": owner_object,
             "対応フィールドAPI名": field_api,
@@ -352,24 +696,11 @@ def _build_correspondence_rows_from_record(
             "参照先オブジェクト": lookup.get("referenceTo", ""),
             "リレーション名": lookup.get("relationshipName", ""),
             "備考": _coerce_str(col.get("備考")),
+            "個人情報": pii_status,
+            "個人情報の根拠": pii_basis,
         }
         rows.append(row)
     return rows
-
-
-def _get_main_object_name(objects: object) -> str:
-    """``record.main_object`` 相当を objects の構造から推測する。
-
-    fetch 側で ``objects[main_object] = main_describe`` を最初に行っているので、
-    dict の最初のキーが主オブジェクト名。 互換用にこの推定で埋める。
-    """
-    if not isinstance(objects, dict):
-        return ""
-    if not objects:
-        return ""
-    # dict の挿入順は Python 3.7+ で保証されているので先頭キーで十分
-    first = next(iter(objects))
-    return first if isinstance(first, str) else ""
 
 
 # ── 項目表 ──────────────────────────────────────────────────────────────

@@ -77,6 +77,10 @@ def _make_settings(tmp_path: Path, master: Path) -> Any:
         related_max=40,
         related_depth=1,
         credential_prefix="",
+        row_limit=True,
+        pii_keywords=("name", "電話"),
+        pii_person_objects=("Contact",),
+        similar_column_similarity=0.8,
     )
 
 
@@ -96,6 +100,9 @@ class _ReportStub:
 
     def describe(self, report_id: str) -> dict:
         return self._describe
+
+    def get(self, report_id: str, filters: object = None, allow_truncated: bool = False) -> object:
+        return []
 
 
 class _FakeClient:
@@ -408,7 +415,7 @@ def test_run_writes_jsons_and_csvs(
 
     tables_called: list[dict] = []
 
-    def fake_run_tables(output_dir, records, *, only_keys=None):
+    def fake_run_tables(output_dir, records, *, only_keys=None, **kwargs):
         tables_called.append(
             {
                 "records": list(records),
@@ -477,7 +484,7 @@ def test_run_partial_failure_continues_and_returns_1(
 
     captured: dict[str, Any] = {}
 
-    def fake_run_tables(output_dir, records, *, only_keys=None):
+    def fake_run_tables(output_dir, records, *, only_keys=None, **kwargs):
         captured["only_keys"] = list(only_keys) if only_keys is not None else None
         captured["records"] = list(records)
         return None

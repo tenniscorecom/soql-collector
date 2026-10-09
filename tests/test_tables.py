@@ -229,8 +229,8 @@ def test_correspondence_per_id_csv_basic(tmp_path: Path) -> None:
 
 
 def test_correspondence_main_object_null(tmp_path: Path) -> None:
-    """主オブジェクトが ``None`` でも、 対応表に行が出る
-    （ 主オブジェクトと参照先の列は空のまま ）。
+    """主オブジェクトが ``None`` のときは ``主オブジェクト`` 列が ``(不明)`` になり、
+    参照先とリレーション名の列は空のまま。
     """
     output = tmp_path / "output"
     output.mkdir()
@@ -241,9 +241,37 @@ def test_correspondence_main_object_null(tmp_path: Path) -> None:
     _, rows = _read_csv(output / "対応表_1001.csv")
     assert len(rows) == 5
     for row in rows:
-        assert row["主オブジェクト"] == ""
+        assert row["主オブジェクト"] == "(不明)"
         assert row["参照先オブジェクト"] == ""
         assert row["リレーション名"] == ""
+
+
+def test_survey_main_object_unknown(tmp_path: Path) -> None:
+    """調査表: record の ``main_object`` が ``None`` のときは ``主オブジェクト``
+    列を ``(不明)`` にする。 ``objects`` dict の先頭キーで誤って補完しない。
+    """
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object=None)
+    # 主オブジェクトが取れなくても objects には 取れたオブジェクトが入る
+    # ことが実運用上あるが、 それでも ``主オブジェクト`` は ``(不明)`` のまま
+    record.objects["RelatedOnly__c"] = {
+        "name": "RelatedOnly__c",
+        "label": "関連のみ",
+        "custom": True,
+        "fields": [{"name": "Name__c", "label": "名前", "type": "string"}],
+    }
+
+    run_tables(output, [record])
+
+    _, survey_rows = _read_csv(output / "調査表.csv")
+    assert len(survey_rows) == 1
+    survey_row = survey_rows[0]
+    # record.main_object = None だが objects に何か入ってるので、
+    # 旧実装だと先頭キー (``RelatedOnly__c``) で補完されてしまう。 新実装は
+    # ``(不明)`` を入れる
+    assert survey_row["主オブジェクト"] == "(不明)"
+    assert survey_row["管理番号"] == "1001"
 
 
 def test_correspondence_writes_csv_with_utf8_bom_and_crlf(tmp_path: Path) -> None:
@@ -485,6 +513,7 @@ def test_empty_records_writes_empty_csvs(tmp_path: Path) -> None:
     aggregate_path = output / "集計表.csv"
     warning_path = output / "警告表.csv"
     column_names_path = output / "列名の対応.csv"
+    survey_path = output / "調査表.csv"
     assert correspondence_path.exists()
     assert field_path.exists()
     assert related_path.exists()
@@ -492,6 +521,7 @@ def test_empty_records_writes_empty_csvs(tmp_path: Path) -> None:
     assert aggregate_path.exists()
     assert warning_path.exists()
     assert column_names_path.exists()
+    assert survey_path.exists()
 
     _, corr_rows = _read_csv(correspondence_path)
     _, field_rows = _read_csv(field_path)
@@ -502,6 +532,8 @@ def test_empty_records_writes_empty_csvs(tmp_path: Path) -> None:
 
     # per-ID CSV は無い
     assert list(output.glob("対応表_*.csv")) == []
+    # 類似レポートは該当なしで書かれない
+    assert not (output / "類似レポート.csv").exists()
 
     # 全 CSV が書かれたパスの集合 （ 順序は実装都合 ）
     expected = {
@@ -512,6 +544,7 @@ def test_empty_records_writes_empty_csvs(tmp_path: Path) -> None:
         aggregate_path,
         warning_path,
         column_names_path,
+        survey_path,
     }
     assert set(outcome.wrote) == expected
     assert outcome.skipped == ()

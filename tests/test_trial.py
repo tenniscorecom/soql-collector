@@ -79,6 +79,9 @@ class _ReportStub:
     def describe(self, report_id: str) -> dict:
         return self._describe
 
+    def get(self, report_id: str, filters: object = None, allow_truncated: bool = False) -> object:
+        return []
+
 
 class _FakeClient:
     def __init__(

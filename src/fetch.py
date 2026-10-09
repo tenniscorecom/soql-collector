@@ -36,17 +36,19 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 from typing import Any
 
 from comken.exceptions import (
     ComkenError,
     SalesforceError,
     SalesforceReportIDNotFoundError,
+    SalesforceReportTruncatedError,
     SalesforceRequestError,
 )
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src import mapping
+from src import mapping, pii
 from src.master import MasterEntry
 from src.settings import Settings
 
@@ -55,6 +57,25 @@ logger = logging.getLogger(__name__)
 # ``describe_object`` が 401 / 403 を返したとき、 その ID 全体を失敗させる
 # ステータスコード（ comken の ``ReportAPI.describe`` と同じく ）。
 FATAL_STATUS_CODES: frozenset[int] = frozenset({401, 403})
+
+# ``client.report.get()`` の戻り値 ``Table`` の最小インターフェース （ ``len()`` だけ ）。
+# テストで偽の ``Table`` を入れるために ``Any`` を扱う。
+_TableLike = Any
+
+# レポート access denied エラー（ 401 / 403 由来 ） のメッセージ接頭辞
+_REPORT_ACCESS_DENIED_PREFIX = "Salesforce のレポート API（Analytics API）へのアクセスが"
+
+# レポート形式エラー（ 集計 / マトリックス ） の文言マーカー
+_REPORT_FORMAT_MARKERS = ("このレポートは", "形式です")
+
+# 理由欄に出す例外メッセージの最大長（ 行データや機微情報を漏らさない ）
+_ERROR_REASON_MAX_LENGTH = 200
+
+# レポート row check の状態定数
+ROW_CHECK_OVER = "超えている"
+ROW_CHECK_UNDER = "超えていない"
+ROW_CHECK_UNKNOWN = "判定不可"
+ROW_CHECK_DISABLED = "未実施"
 
 # 接続先判定の既定実装（ comken の ``site_for`` ）。 テストでは差し替える。
 SiteFor = Callable[[str], type]
@@ -126,6 +147,26 @@ class RelationRecord:
 
 
 @dataclass(frozen=True)
+class RowCheck:
+    """2000 行チェックの結果。 1 レポート 1 件。
+
+    ``status`` は次のいずれか:
+
+    - ``超えている`` （ SalesforceReportTruncatedError ）
+    - ``超えていない`` （ 取得でき、 ``rows`` に行数 ）
+    - ``判定不可`` （ ``reason`` に理由 ）
+    - ``未実施`` （ ``[CHECKS] ROW_LIMIT = ×`` で実行しなかった ）
+
+    行データ（ 値そのもの ） は **保持しない** 。 メモリ上でも行数だけ数え、
+    CSV / ログ / 警告 / 例外メッセージに絶対に出さない。
+    """
+
+    status: str
+    rows: int | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
 class ReportRecord:
     """1 ID の取得結果をメモリに保持する記録。 ``frozen`` で再代入しない。
 
@@ -148,6 +189,12 @@ class ReportRecord:
     relations: tuple[RelationRecord, ...]  # 主＋関連オブジェクト同士の参照
     column_map: list[dict[str, str]]  # 列対応表
     warnings: tuple[str, ...]  # 警告メッセージ
+    #: 2000 行チェックの結果。 ``None`` なら 未実施。 失敗した ID は record ごと無い
+    row_check: RowCheck | None = None
+    #: レポート単位の PII 判定結果。 調査表と 対応表の 個人情報 列で使う
+    pii: pii.ReportPIIResult = dc_field(
+        default_factory=lambda: pii.ReportPIIResult(status="なし", matching_columns=())
+    )
 
 
 @dataclass(frozen=True)
@@ -390,6 +437,202 @@ def _dropped_keys_warning_text(dropped: tuple[str, ...]) -> str | None:
     return "レポート定義の中で使わなかったキー: " + ", ".join(dropped)
 
 
+def _check_row_count(client: Any, report_id: str, metadata: dict[str, Any]) -> RowCheck:
+    """``client.report.get()`` を呼んで 2000 行チェックを行う。
+
+    - ``SalesforceReportTruncatedError`` → ``超えている`` （ ``rows=None`` ）
+    - 正常終了 → ``超えていない`` （ ``rows=len(table)`` ）
+    - 集計 / マトリックス形式（ describe で TABULAR 以外） → ``判定不可`` で
+      「集計/マトリックス形式のため判定できません」
+    - 401 / 403 由来の ``SalesforceError`` は呼び出し元に再送出（ レポート全体を
+      失敗扱いにする ）
+    - その他の例外 → ``判定不可`` で 例外名＋短い説明
+    """
+    format_value = _report_format(metadata)
+    if format_value and format_value != "TABULAR":
+        return RowCheck(
+            status=ROW_CHECK_UNKNOWN,
+            rows=None,
+            reason="集計/マトリックス形式のため判定できません",
+        )
+
+    try:
+        table = client.report.get(report_id)
+    except SalesforceReportTruncatedError:
+        # 2000 行超。 切り捨て検知は正常パスの一部なので reason は None。
+        return RowCheck(status=ROW_CHECK_OVER, rows=None, reason=None)
+    except SalesforceError as exc:
+        if _is_report_access_denied(exc):
+            # 401 / 403: レポート全体を失敗扱いにするために再送出
+            raise
+        if _is_report_format_error(exc):
+            return RowCheck(
+                status=ROW_CHECK_UNKNOWN,
+                rows=None,
+                reason="集計/マトリックス形式のため判定できません",
+            )
+        return RowCheck(
+            status=ROW_CHECK_UNKNOWN,
+            rows=None,
+            reason=_format_error_reason(exc),
+        )
+    except Exception as exc:
+        return RowCheck(
+            status=ROW_CHECK_UNKNOWN,
+            rows=None,
+            reason=_format_error_reason(exc),
+        )
+    return RowCheck(
+        status=ROW_CHECK_UNDER,
+        rows=_safe_row_count(table),
+        reason=None,
+    )
+
+
+def _safe_row_count(table: Any) -> int:
+    """``Table`` 互換オブジェクトの行数を取り出す。 ``len()`` を持たない偽物に備える。"""
+    try:
+        return len(table)
+    except TypeError:
+        return 0
+
+
+def _report_format(metadata: dict[str, Any]) -> str:
+    """``metadata`` から ``reportFormat`` を取り出す。 取得できなければ空文字。"""
+    if not isinstance(metadata, dict):
+        return ""
+    report_metadata = metadata.get("reportMetadata")
+    if not isinstance(report_metadata, dict):
+        return ""
+    value = report_metadata.get("reportFormat")
+    return value if isinstance(value, str) else ""
+
+
+def _is_report_access_denied(exc: SalesforceError) -> bool:
+    """comken の ``_report_access_denied_error`` か（ 401 / 403 ） を判定する。"""
+    message = str(exc)
+    return _REPORT_ACCESS_DENIED_PREFIX in message and ("401" in message or "403" in message)
+
+
+def _is_report_format_error(exc: SalesforceError) -> bool:
+    """comken の ``_report_format_error`` （ 集計 / マトリックス ） を判定する。"""
+    message = str(exc)
+    return all(marker in message for marker in _REPORT_FORMAT_MARKERS)
+
+
+def _format_error_reason(exc: BaseException) -> str:
+    """例外を 1 行の理由文字列に整形する。 メッセージは上限で切る。"""
+    type_name = type(exc).__name__
+    message = str(exc).strip()
+    if not message:
+        return type_name
+    if len(message) > _ERROR_REASON_MAX_LENGTH:
+        message = message[:_ERROR_REASON_MAX_LENGTH] + "…"
+    return f"{type_name}: {message}"
+
+
+def _evaluate_record_pii(
+    slim_report: dict[str, Any],
+    column_map: list[dict[str, str]],
+    slim_objects: dict[str, dict[str, Any]],
+    config: pii.PIIConfig,
+) -> pii.ReportPIIResult:
+    """``ReportRecord`` 用の PII 評価を行う。 出力列のみ対象。"""
+    refs = _collect_output_column_refs(slim_report, column_map)
+    return pii.evaluate_report_pii(refs, config, slim_objects)
+
+
+def _collect_output_column_refs(
+    slim_report: dict[str, Any],
+    column_map: list[dict[str, str]],
+) -> list[pii.ColumnRef]:
+    """レポートの出力列（ detailColumns / groupingsDown / groupingsAcross /
+    集計対象 ） について PII 評価の入力 ``ColumnRef`` を作る。
+
+    絞り込みにだけ使う列は対象外。 ``column_map`` が見つからない列は未解決として
+    扱う。
+    """
+    output_keys = _output_column_keys(slim_report)
+    refs: list[pii.ColumnRef] = []
+    column_map_by_key: dict[str, dict[str, str]] = {}
+    for col in column_map:
+        if not isinstance(col, dict):
+            continue
+        key = col.get("列キー")
+        if isinstance(key, str) and key:
+            column_map_by_key[key] = col
+
+    seen: set[str] = set()
+    for column_key in output_keys:
+        if column_key in seen:
+            continue
+        seen.add(column_key)
+        col = column_map_by_key.get(column_key, {})
+        if not isinstance(col, dict):
+            col = {}
+        label = _coerce_str(col.get("表示名")) or column_key
+        field_api = _coerce_str(col.get("対応フィールドAPI名"))
+        field_type = _coerce_str(col.get("型"))
+        owner_object = _coerce_str(col.get("所属オブジェクト"))
+        field_name = _field_name_from_soql(field_api)
+        resolved = bool(field_api) and field_api != "(不明)"
+        refs.append(
+            pii.ColumnRef(
+                column_key=column_key,
+                label=label,
+                field_name=field_name,
+                field_type=field_type,
+                owner_object=owner_object,
+                resolved=resolved,
+            )
+        )
+    return refs
+
+
+def _output_column_keys(slim_report: dict[str, Any]) -> list[str]:
+    """``slim_report`` の出力列キーを順序付きで集める。
+
+    並び順: ``detailColumns`` → ``groupingsDown`` の ``name`` →
+    ``groupingsAcross`` の ``name`` → ``aggregates`` の対象列
+    （ ``"!"`` の後ろ ）。
+    """
+    metadata = slim_report.get("reportMetadata") if isinstance(slim_report, dict) else None
+    if not isinstance(metadata, dict):
+        return []
+    keys: list[str] = []
+    for column in metadata.get("detailColumns") or []:
+        if isinstance(column, str) and column:
+            keys.append(column)
+    for grouping_key in ("groupingsDown", "groupingsAcross"):
+        for grouping in metadata.get(grouping_key) or []:
+            if isinstance(grouping, dict):
+                name = grouping.get("name")
+                if isinstance(name, str) and name:
+                    keys.append(name)
+    for aggregate in metadata.get("aggregates") or []:
+        if not isinstance(aggregate, str) or "!" not in aggregate:
+            continue
+        column = aggregate.split("!", 1)[-1]
+        if column:
+            keys.append(column)
+    return keys
+
+
+def _field_name_from_soql(soql_name: str) -> str:
+    """``"Account.Owner.Name"`` から末端の ``"Name"`` を取り出す。"""
+    if not soql_name or soql_name == "(不明)":
+        return ""
+    if "." in soql_name:
+        return soql_name.rsplit(".", 1)[-1]
+    return soql_name
+
+
+def _coerce_str(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _fetch_one(
     settings: Settings,
     entry: MasterEntry,
@@ -454,6 +697,13 @@ def _fetch_one(
                         f"\n{exc.detail}"
                     ),
                 )
+
+            # 2000 行チェック: ``[CHECKS] ROW_LIMIT`` が ○ のときだけ実行。
+            # 401 / 403 のような致命エラーは外側の except に伝播させて ID 全体を
+            # 失敗扱いにする。 その他のエラーは ``RowCheck`` に縮退する。
+            row_check: RowCheck | None = (
+                _check_row_count(client, report_id, metadata) if settings.row_limit else None
+            )
 
             # 主オブジェクトの解決（ ``$`` / ``@`` を含むときは候補を
             # ``_fetch_object_cached()`` で順に試す）。 ``describe_object`` が
@@ -549,6 +799,17 @@ def _fetch_one(
     if dropped_keys_warning:
         warnings.append(dropped_keys_warning)
 
+    # PII 評価: 出力列だけを対象にする。 絞り込みにだけ使う列は対象外。
+    pii_config = pii.PIIConfig(
+        keywords=settings.pii_keywords,
+        person_objects=settings.pii_person_objects,
+    )
+    pii_result = _evaluate_record_pii(slim_report, column_map, slim_objects, pii_config)
+
+    # 2000 件超判定が 判定不可 なら、 警告表にも 1 行入れる
+    if row_check is not None and row_check.status == ROW_CHECK_UNKNOWN and row_check.reason:
+        warnings.append(f"2000件超の判定ができませんでした: {row_check.reason}")
+
     record = ReportRecord(
         key=entry.key,
         summary=entry.summary,
@@ -560,6 +821,8 @@ def _fetch_one(
         relations=tuple(relations),
         column_map=column_map,
         warnings=tuple(warnings),
+        row_check=row_check,
+        pii=pii_result,
     )
 
     return FetchOutcome(

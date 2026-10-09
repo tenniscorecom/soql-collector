@@ -23,12 +23,27 @@ DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
 
 class _ReportStub:
-    def __init__(self, describe: dict) -> None:
+    def __init__(
+        self,
+        describe: dict,
+        *,
+        get_table: object | None = None,
+        get_error: BaseException | None = None,
+    ) -> None:
         self._describe = describe
+        self._get_table = get_table if get_table is not None else []
+        self._get_error = get_error
+        self.get_calls: list[str] = []
 
     def describe(self, report_id: str) -> dict:
         self.last_report_id = report_id
         return self._describe
+
+    def get(self, report_id: str, filters: object = None, allow_truncated: bool = False) -> object:
+        self.get_calls.append(report_id)
+        if self._get_error is not None:
+            raise self._get_error
+        return self._get_table
 
 
 class _FakeClient:
@@ -37,10 +52,13 @@ class _FakeClient:
         describe: dict,
         object_describes: dict[str, dict] | None = None,
         errors: dict[str, BaseException] | None = None,
+        *,
+        get_table: object | None = None,
+        get_error: BaseException | None = None,
     ) -> None:
         self._object_describes = object_describes or {}
         self._errors = errors or {}
-        self.report = _ReportStub(describe)
+        self.report = _ReportStub(describe, get_table=get_table, get_error=get_error)
         self.describe_object_calls: list[str] = []
 
     def describe_object(self, name: str) -> dict:
@@ -89,6 +107,10 @@ def _settings(tmp_path: Path, related_max: int = 40, related_depth: int = 1) -> 
         related_max=related_max,
         related_depth=related_depth,
         credential_prefix="",
+        row_limit=True,
+        pii_keywords=("name", "電話"),
+        pii_person_objects=("Contact",),
+        similar_column_similarity=0.8,
     )
 
 

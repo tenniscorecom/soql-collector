@@ -24,6 +24,7 @@ from typing import Any
 from comken.runtime import is_dry_run
 from comken.toolbox.salesforce.report import report_id_from_url
 
+from src import pii
 from src.fetch import FetchOutcome, run_fetch
 from src.master import MasterEntry, filter_enabled, read_master
 from src.settings import Settings, load_settings
@@ -78,8 +79,18 @@ def run(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> in
     # 取れた record だけから CSV を組み立てる。 失敗した ID の CSV は作らず
     # 既存も消さない。
     records = [o.record for o in outcomes if o.record is not None]
+    pii_config = pii.PIIConfig(
+        keywords=settings.pii_keywords,
+        person_objects=settings.pii_person_objects,
+    )
     try:
-        run_tables(settings.output_dir, records, only_keys=ok_keys)
+        run_tables(
+            settings.output_dir,
+            records,
+            only_keys=ok_keys,
+            pii_config=pii_config,
+            similar_threshold=settings.similar_column_similarity,
+        )
     except Exception as exc:
         # CSV の失敗は全体の失敗にはしない （ record は取れているので ）
         logger.error("CSV の生成に失敗しました: %s", exc)
