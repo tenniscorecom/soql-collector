@@ -135,7 +135,7 @@ class RelatedNode:
 class RelationRecord:
     """主＋関連の **取れた** オブジェクト同士で張られた親→子の参照 1 本。
 
-    ``JSON: 関連オブジェクト`` と ``tables: 関連表.csv`` の 1 行に対応する。
+    ``tables: 関連表.csv`` の 1 行に対応する。
     ポリモーフィックな参照は ``referenceTo`` のエントリごとに 1 本ずつ記録する。
     """
 
