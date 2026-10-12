@@ -69,7 +69,7 @@ def read_master(path: Path) -> list[MasterEntry]:
         enabled_text = str(raw.get(COL_ENABLED) or "")
         enabled = _is_enabled(enabled_text)
         entries.append(MasterEntry(key=key, summary=summary, url=url, enabled=enabled))
-    logger.debug("レポート管理表読込完了: path=%s, 件数=%d", path, len(entries))
+    logger.info("レポート管理表読込完了: path=%s, 件数=%d", path, len(entries))
     return entries
 
 

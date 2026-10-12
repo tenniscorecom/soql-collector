@@ -34,6 +34,7 @@ CSV を組み立てる。 許可リストでレポート describe から落と�
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field as dc_field
@@ -244,8 +245,11 @@ def run_fetch(
     cache = object_cache if object_cache is not None else {}
 
     outcomes: list[FetchOutcome] = []
-    for entry in entries:
+    total = len(entries)
+    for index, entry in enumerate(entries, start=1):
         if dry_run:
+            # dry-run のログは呼び出し側（ ``run.py`` / ``trial/`` ） が
+            # ``[dry-run]`` の形でまとめて出す。 ここでは何もしない
             outcomes.append(
                 FetchOutcome(
                     entry=entry,
@@ -256,8 +260,124 @@ def run_fetch(
                 )
             )
             continue
-        outcomes.append(_fetch_one(settings, entry, site_for=site_for, cache=cache))
+        # ログ用にレポート ID を取り出しておく。 URL が壊れているときは
+        # ``_fetch_one`` 側で個別失敗に縮退するので、 ここでは "(URL不正)"
+        # と書いて続行する
+        report_id_for_log = _report_id_for_log(entry)
+        logger.info(
+            "[%d/%d] 取得開始: 管理番号=%s 概要=%s レポートID=%s",
+            index,
+            total,
+            entry.key,
+            entry.summary,
+            report_id_for_log,
+        )
+        started_at = time.perf_counter()
+        outcome = _fetch_one(settings, entry, site_for=site_for, cache=cache)
+        elapsed = time.perf_counter() - started_at
+        if outcome.status == "ok":
+            logger.info(
+                "[%d/%d] 取得完了: 管理番号=%s 警告=%d 件 所要秒=%.1f",
+                index,
+                total,
+                outcome.entry.key,
+                len(outcome.warnings),
+                elapsed,
+            )
+        elif outcome.status == "failed":
+            logger.error(
+                "[%d/%d] 取得失敗: 管理番号=%s 理由=%s 所要秒=%.1f",
+                index,
+                total,
+                outcome.entry.key,
+                outcome.error,
+                elapsed,
+            )
+        for warning in outcome.warnings:
+            logger.warning("  - %s", warning)
+        outcomes.append(outcome)
     return outcomes
+
+
+# ── ログ ──────────────────────────────────────────────────────────────────
+# 1 レポート分の処理の各節目で INFO を 1 行ずつ出す。 INFO は節目と分岐の
+# 理由だけにとどめ、 値そのもの（ 個人情報の値など ） は絶対に出さない。
+# 失敗時の ERROR は ``run_fetch`` 側で出す。 フォールバック（ except で
+# 続行した箇所 ） の WARNING は ``_fetch_object_cached`` 側で出す。
+# ログメッセージは既存スタイル（ ``管理番号=%s 概要=%s 警告=%d 件`` ） に
+# そろえる。
+
+
+def _report_id_for_log(entry: MasterEntry) -> str:
+    """``entry.url`` からログ用のレポート ID を取り出す。 URL が壊れていたら
+    ``"(URL不正)"`` を返す（ ``_fetch_one`` 側で個別失敗に縮退する前提）。"""
+    try:
+        return report_id_from_url(entry.url)
+    except SalesforceReportIDNotFoundError:
+        return "(URL不正)"
+
+
+def _log_row_check(row_check: RowCheck | None) -> None:
+    """2000 件チェックの結果を 1 行で出す。 行数だけ、 値は出さない。"""
+    if row_check is None:
+        logger.info("  2000件チェック: 未実施")
+        return
+    rows_text = str(row_check.rows) if row_check.rows is not None else "-"
+    logger.info("  2000件チェック: 判定=%s 行数=%s", row_check.status, rows_text)
+
+
+def _log_report_contents(metadata: dict[str, Any], main_object_name: str | None) -> None:
+    """レポートの形式・主オブジェクト・列数・フィルタ数を 1 行にまとめて出す。"""
+    logger.info(
+        "  レポート: 形式=%s 主オブジェクト=%s 列数=%d フィルタ数=%d",
+        _report_format(metadata) or "(なし)",
+        main_object_name or "(不明)",
+        _count_detail_columns(metadata),
+        _count_report_filters(metadata),
+    )
+
+
+def _count_detail_columns(metadata: dict[str, Any]) -> int:
+    """``metadata`` の ``detailColumns`` 件数。 取得できなければ 0。"""
+    report_metadata = metadata.get("reportMetadata") if isinstance(metadata, dict) else None
+    if not isinstance(report_metadata, dict):
+        return 0
+    columns = report_metadata.get("detailColumns")
+    return len(columns) if isinstance(columns, list) else 0
+
+
+def _count_report_filters(metadata: dict[str, Any]) -> int:
+    """``metadata`` の ``reportFilters`` 件数。 取得できなければ 0。"""
+    report_metadata = metadata.get("reportMetadata") if isinstance(metadata, dict) else None
+    if not isinstance(report_metadata, dict):
+        return 0
+    filters = report_metadata.get("reportFilters")
+    return len(filters) if isinstance(filters, list) else 0
+
+
+def _log_related_objects(
+    related_nodes: list[RelatedNode],
+    skipped_names: list[str],
+) -> None:
+    """関連オブジェクトの収集結果を 1 行で出す。 件数・段・打ち切りの有無。"""
+    collected_count = len(related_nodes)
+    if collected_count == 0:
+        logger.info("  関連オブジェクト: 0 件 打ち切り=なし")
+        return
+    depth_reached = max(node.depth for node in related_nodes)
+    truncated = bool(skipped_names)
+    logger.info(
+        "  関連オブジェクト: %d 件 段=%d 打ち切り=%s",
+        collected_count,
+        depth_reached,
+        "あり" if truncated else "なし",
+    )
+
+
+def _log_pii(pii_result: pii.ReportPIIResult) -> None:
+    """個人情報判定の結果を 1 行で出す。 列名だけ、 値は出さない。"""
+    columns_text = ", ".join(label for label, _ in pii_result.matching_columns) or "-"
+    logger.info("  個人情報: %s 根拠列=%s", pii_result.status, columns_text)
 
 
 # ── record 用の slim ────────────────────────────────────────────────────────
@@ -704,6 +824,7 @@ def _fetch_one(
             row_check: RowCheck | None = (
                 _check_row_count(client, report_id, metadata) if settings.row_limit else None
             )
+            _log_row_check(row_check)
 
             # 主オブジェクトの解決（ ``$`` / ``@`` を含むときは候補を
             # ``_fetch_object_cached()`` で順に試す）。 ``describe_object`` が
@@ -714,6 +835,7 @@ def _fetch_one(
             )
             if object_reason:
                 warnings.append(object_reason)
+            _log_report_contents(metadata, main_object_name)
 
             # 列対応表: 主オブジェクトで 1 つも決まらないとき用に、 関連
             # オブジェクトの describe と relations を渡して解決範囲を広げる。
@@ -746,6 +868,7 @@ def _fetch_one(
                         f"上限 {settings.related_max} を超えたため、"
                         f"次の {len(skipped_names)} 件は取得しません: {', '.join(skipped_names)}"
                     )
+                _log_related_objects(related_nodes, skipped_names)
                 for node in related_nodes:
                     if node.describe is not None:
                         objects[node.name] = node.describe
@@ -805,6 +928,7 @@ def _fetch_one(
         person_objects=settings.pii_person_objects,
     )
     pii_result = _evaluate_record_pii(slim_report, column_map, slim_objects, pii_config)
+    _log_pii(pii_result)
 
     # 2000 件超判定が 判定不可 なら、 警告表にも 1 行入れる
     if row_check is not None and row_check.status == ROW_CHECK_UNKNOWN and row_check.reason:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -2186,3 +2187,105 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
     # （ 本物の実装では ``Account`` が必ず取れる ）
     assert "Account" not in payload["objects"]
     assert call_log  # 収集ロジックは呼ばれた
+
+
+# ── ログに機微な値を漏らさない ──────────────────────────────────────────────
+
+# 目印の文字列。 行データがログや出力に漏れていないことを検知するために使う
+_LOG_SECRET = "LOG-SECRET-ROW-VALUE"
+
+
+def test_run_fetch_does_not_leak_row_data_to_logs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``run_fetch`` を DEBUG ログで走らせても、 レポートの行データ
+    （ 個人情報を含みうる ``Table`` の値そのもの ） がログに一切出ないこと。
+    なぜ: 1 レポート分の経過ログを INFO で出すようにしたため、 うっかり
+    値そのものを ``logger.info`` に渡していないことを保証する。
+    """
+    caplog.set_level(logging.DEBUG)
+
+    class _TableWithSecret:
+        def __init__(self) -> None:
+            self._rows = [
+                {"col": f"value {_LOG_SECRET} 1"},
+                {"col": f"value {_LOG_SECRET} 2"},
+            ]
+
+        def __len__(self) -> int:
+            return 2
+
+    entry = MasterEntry(
+        key="1001",
+        summary="顧客一覧",
+        url=f"{DOMAIN}/00O5g00000ABCDE/view",
+        enabled=True,
+    )
+    metadata = _make_metadata()
+    client = _FakeClient(
+        describe=metadata,
+        object_describes={"Opportunity": _main_describe("Opportunity")},
+        get_table=_TableWithSecret(),
+    )
+    site_for, _ = _site_for(client)
+    settings = _settings(tmp_path)
+
+    outcomes = run_fetch(settings, [entry], site_for=site_for)
+
+    assert outcomes[0].status == "ok"
+    # ログに値そのものが漏れていない （ DEBUG 以上全部 ）
+    for record in caplog.records:
+        assert _LOG_SECRET not in record.getMessage(), (
+            f"行データ {_LOG_SECRET!r} がログに漏れた: {record.getMessage()}"
+        )
+
+
+def test_run_fetch_emits_each_outcome_warning_once_at_warning_level(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``outcome.warnings`` の各要素が ``logger.warning("  - %s", warning)`` で
+    ちょうど 1 回ずつ WARNING ログに出る。 ``_fetch_object_cached`` の
+    フォールバック WARNING を消しているので、 同じ文言が二重に出ない。
+    """
+    caplog.set_level(logging.WARNING)
+
+    main = _main_describe(
+        "Opportunity", fields_map={"AccountId": ["Account"], "OwnerId": ["User"]}
+    )
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_make_metadata(),
+        object_describes={"Opportunity": main, "Account": _main_describe("Account")},
+        errors={
+            "User": SalesforceRequestError("GET", "/sobjects/User/describe", 404, "Not Found")
+        },
+    )
+    site_for, _ = _site_for(client)
+
+    expected_warning = "オブジェクト User の describe に失敗（HTTP 404: Not Found）"
+
+    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+
+    assert outcomes[0].status == "ok"
+    # warnings に User の失敗がちょうど 1 件だけ積まれている
+    assert outcomes[0].warnings == (expected_warning,)
+    # WARNING レベルで 「  - 」 プレフィックス付きで 1 回出る
+    prefixed_warning_records = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING and record.getMessage().startswith("  - ")
+    ]
+    assert len(prefixed_warning_records) == 1, (
+        f"プレフィックス付き WARNING は 1 件のはず、 "
+        f"実際 {[r.getMessage() for r in prefixed_warning_records]}"
+    )
+    assert expected_warning in prefixed_warning_records[0].getMessage()
+    # 同じ文言が他の WARNING にも出ないこと （ 二重ログ防止 ）
+    duplicated = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING and expected_warning in record.getMessage()
+    ]
+    assert len(duplicated) == 1, (
+        f"同一 WARNING が複数回出た: {[r.getMessage() for r in duplicated]}"
+    )
