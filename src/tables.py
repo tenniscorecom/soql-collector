@@ -41,7 +41,7 @@ from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
 from openpyxl.utils import get_column_letter
 
-from src import pii, similar
+from src import pii, similar, soql_builder
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ COLUMN_NAMES_CSV_NAME = "列名の対応.csv"
 
 # シート名 （ 表示順 ）
 SHEET_OVERVIEW = "一覧"
+SHEET_SOQL = "SOQL"
 SHEET_UNRESOLVED = "取得できなかった項目"
 SHEET_RESOLVED = "項目の対応"
 SHEET_CONDITION = "条件"
@@ -77,6 +78,7 @@ SHEET_RELATED = "関連"
 
 SHEET_NAMES_IN_ORDER: tuple[str, ...] = (
     SHEET_OVERVIEW,
+    SHEET_SOQL,
     SHEET_UNRESOLVED,
     SHEET_RESOLVED,
     SHEET_CONDITION,
@@ -105,6 +107,18 @@ SURVEY_COLUMNS: tuple[str, ...] = (
     "統合の見込み",
     "取得できなかった項目数",
     "警告数",
+    "SOQL状態",
+)
+
+# SOQL シートの列名
+SOQL_COLUMNS: tuple[str, ...] = (
+    "管理番号",
+    "概要",
+    "主オブジェクト",
+    "状態",
+    "SOQL",
+    "作れなかった部分",
+    "要確認",
 )
 
 # 取得できなかった項目シートの列名
@@ -336,6 +350,7 @@ def run_tables(
     warning_rows = _build_warning_table_rows_from_records(sorted_records)
     field_rows = _build_field_table_rows_from_records(sorted_records)
     related_rows = _build_related_table_rows_from_records(sorted_records)
+    soql_rows = _build_soql_sheet_rows_from_records(sorted_records)
 
     wrote: list[Path] = []
 
@@ -344,6 +359,7 @@ def run_tables(
         _write_xlsx(
             xlsx_path,
             survey=survey_rows,
+            soql=soql_rows,
             unresolved=unresolved_rows,
             resolved=resolved_rows,
             condition=condition_rows,
@@ -355,11 +371,12 @@ def run_tables(
         )
         wrote.append(xlsx_path)
         logger.info(
-            "Excel を書き出し: %s（ 一覧=%d / 取得できなかった項目=%d / "
+            "Excel を書き出し: %s（ 一覧=%d / SOQL=%d / 取得できなかった項目=%d / "
             "項目の対応=%d / 条件=%d / 集計=%d / 似たレポート=%d / "
             "警告=%d / 項目一覧=%d / 関連=%d ）",
             xlsx_path,
             len(survey_rows),
+            len(soql_rows),
             len(unresolved_rows),
             len(resolved_rows),
             len(condition_rows),
@@ -477,6 +494,42 @@ def _survey_pii_display(record: object) -> tuple[str, str]:
     return (status, formatted)
 
 
+def soql_status_for_record(record: object) -> str:
+    """record から ``build_soql`` を呼んで ``status`` を返すヘルパー。
+
+    エラー時は空文字。 一覧シートの ``SOQL状態`` 列で使う。
+    """
+    try:
+        return soql_builder.build_soql(record).status
+    except Exception:  # どんな例外でも表は壊さない
+        logger.exception("SOQL 状態の取得に失敗: key=%s", getattr(record, "key", ""))
+        return ""
+
+
+def _build_soql_sheet_rows_from_records(records: Sequence[object]) -> list[dict[str, str]]:
+    """全 record から ``SOQL`` シートの行を作る。 ``build_soql`` の戻り値を
+    列ごとに展開する。
+
+    ``作れなかった部分`` / ``要確認`` は改行区切りで 1 セルにまとめる ( Excel
+    で 1 行の折り返しが効くように ) 。
+    """
+    rows: list[dict[str, str]] = []
+    for record in records:
+        draft = soql_builder.build_soql(record)
+        rows.append(
+            {
+                "管理番号": getattr(record, "key", ""),
+                "概要": getattr(record, "summary", ""),
+                "主オブジェクト": getattr(record, "main_object", "") or "(不明)",
+                "状態": draft.status,
+                "SOQL": draft.soql,
+                "作れなかった部分": "\n".join(draft.missing),
+                "要確認": "\n".join(draft.checks),
+            }
+        )
+    return rows
+
+
 def _build_survey_table_rows_from_records(
     records: Sequence[object],
     *,
@@ -526,6 +579,7 @@ def _build_survey_table_rows_from_records(
                 "統合の見込み": integration,
                 "取得できなかった項目数": str(unresolved_count),
                 "警告数": str(len(warnings)),
+                "SOQL状態": soql_status_for_record(record),
             }
         )
     return rows
@@ -1441,6 +1495,7 @@ def _write_xlsx(
     path: Path,
     *,
     survey: list[dict[str, str]],
+    soql: list[dict[str, str]],
     unresolved: list[dict[str, str]],
     resolved: list[dict[str, str]],
     condition: list[dict[str, str]],
@@ -1454,7 +1509,7 @@ def _write_xlsx(
 
     毎回丸ごと作り直すため、 既存ファイルがあれば消す。 comken の ``Excel``
     は新規ファイルを開くときに既定の ``Sheet`` を作る。 一覧シートは新規
-    ブックの既定シートを改名し、 残り 8 枚は ``create_sheet`` で追加する
+    ブックの既定シートを改名し、 残り 9 枚は ``create_sheet`` で追加する
     ( openpyxl のシート順 = 表示順 ) 。
     """
     if path.exists():
@@ -1463,6 +1518,7 @@ def _write_xlsx(
 
     payload: dict[str, tuple[tuple[str, ...], list[dict[str, str]]]] = {
         SHEET_OVERVIEW: (SURVEY_COLUMNS, survey),
+        SHEET_SOQL: (SOQL_COLUMNS, soql),
         SHEET_UNRESOLVED: (UNRESOLVED_COLUMNS, unresolved),
         SHEET_RESOLVED: (RESOLVED_COLUMNS, resolved),
         SHEET_CONDITION: (CONDITION_COLUMNS, condition),

@@ -270,13 +270,51 @@ def _aggregate_field_columns(aggregates: object) -> list[str]:
     ]
 
 
+def _date_filter_column(report_metadata: dict[str, Any]) -> str | None:
+    """``standardDateFilter`` の列キーを 1 件だけ返す。 無い / 形式不正は ``None`` 。
+
+    レポート describe では日付条件の対象列は 1 つだけ。 ``column`` キーが無い
+    ものは無視。 SOQL 組立時に対応を取るために列対応表に含める必要がある。
+    """
+    date_filter = report_metadata.get("standardDateFilter")
+    if not isinstance(date_filter, dict):
+        return None
+    column = date_filter.get("column")
+    if isinstance(column, str) and column:
+        return column
+    return None
+
+
+def _sort_by_columns(report_metadata: dict[str, Any]) -> list[str]:
+    """``sortBy`` の ``sortColumn`` を取り出して順番通りに返す。
+
+    SELECT には出ないが ``ORDER BY`` で使う列も列対応表に含める
+    ( ``build_column_map()`` がラベルで解決するため) 。
+    """
+    sort_by = report_metadata.get("sortBy")
+    if not isinstance(sort_by, list):
+        return []
+    keys: list[str] = []
+    for entry in sort_by:
+        if not isinstance(entry, dict):
+            continue
+        sort_column = entry.get("sortColumn")
+        if isinstance(sort_column, str) and sort_column:
+            keys.append(sort_column)
+    return keys
+
+
 def collect_describable_columns(report_metadata: dict[str, Any]) -> list[str]:
     """``build_column_map()`` が解決を試みる列キーの一覧を組み立てる（重複除去済み）。
 
     ``detailColumns`` （SELECT に出す列） に加え、 SELECT には出ないが
     ``reportFilters`` だけで使う列、 ``SUMMARY`` / ``MATRIX`` の
     ``groupingsDown`` / ``groupingsAcross`` のグルーピング列、 ``aggregates``
-    の集計対象列も含める。
+    の集計対象列、 ``standardDateFilter`` の列、 ``sortBy`` の列も含める。
+
+    ``standardDateFilter`` と ``sortBy`` の列を加えたことで、 「 取得でき
+    なかった項目 」 シートや ``列名の対応.csv`` にも出るようになり、 SOQL
+    組立時に WHERE / ORDER BY で使えるようになる。
     """
     columns = list(report_metadata.get("detailColumns", []))
     for column_key in (
@@ -284,6 +322,12 @@ def collect_describable_columns(report_metadata: dict[str, Any]) -> list[str]:
         + _grouping_columns(report_metadata)
         + _aggregate_field_columns(report_metadata.get("aggregates"))
     ):
+        if column_key not in columns:
+            columns.append(column_key)
+    date_column = _date_filter_column(report_metadata)
+    if date_column and date_column not in columns:
+        columns.append(date_column)
+    for column_key in _sort_by_columns(report_metadata):
         if column_key not in columns:
             columns.append(column_key)
     return columns

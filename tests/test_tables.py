@@ -27,6 +27,7 @@ from src.tables import (
     SHEET_RELATED,
     SHEET_RESOLVED,
     SHEET_SIMILAR,
+    SHEET_SOQL,
     SHEET_UNRESOLVED,
     SHEET_WARNING,
     SIMILAR_COLUMNS,
@@ -252,6 +253,7 @@ def test_sheet_names_in_order(tmp_path: Path) -> None:
 
     assert sheet_names == [
         SHEET_OVERVIEW,
+        SHEET_SOQL,
         SHEET_UNRESOLVED,
         SHEET_RESOLVED,
         SHEET_CONDITION,
