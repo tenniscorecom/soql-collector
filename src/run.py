@@ -24,7 +24,6 @@ import logging
 import sys
 import time
 from collections.abc import Callable
-from typing import Any
 
 from comken.runtime import is_dry_run
 from comken.toolbox.salesforce.report import report_id_from_url
@@ -88,9 +87,18 @@ def run(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> in
 
     # レポートの取得 （ 同じ実行内で ``describe_object`` を 1 回にまとめる ）
     started_at = time.perf_counter()
-    object_cache: dict[str, dict[str, Any]] = {}
+    from src.describe_store import DescribeStore
+
+    describe_store = DescribeStore.load(settings.describe_csv_path)
+    refresh_set: set[tuple[str, str]] = set()
     outcomes = list(
-        run_fetch(settings, entries, site_for=site_for, object_cache=object_cache)
+        run_fetch(
+            settings,
+            entries,
+            site_for=site_for,
+            describe_store=describe_store,
+            refresh_set=refresh_set,
+        )
     )
     total_elapsed = time.perf_counter() - started_at
     ok_count = sum(1 for o in outcomes if o.status == "ok")
@@ -100,6 +108,12 @@ def run(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> in
         ok_count,
         failed_count,
         total_elapsed,
+    )
+    logger.info(
+        "オブジェクトの describe: 保存データから %d 件 / Salesforce から %d 件 / 取り直し %d 件",
+        describe_store.csv_hit_count,
+        describe_store.api_count,
+        describe_store.refresh_count,
     )
 
     ok_keys = [o.entry.key for o in outcomes if o.status == "ok"]

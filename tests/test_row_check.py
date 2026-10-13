@@ -18,6 +18,7 @@ from comken.exceptions import (
     SalesforceRequestError,
 )
 
+from src.describe_store import DescribeStore
 from src.fetch import _check_row_count, _fetch_one
 from src.master import MasterEntry
 from src.settings import Settings
@@ -110,6 +111,7 @@ def _settings(tmp_path: Path, *, row_limit: bool = True) -> Settings:
         pii_keywords=(),
         pii_person_objects=(),
         similar_column_similarity=0.8,
+        describe_csv_path=tmp_path / "describe.csv",
     )
 
 
@@ -224,7 +226,13 @@ def test_row_limit_disabled_skips_get(tmp_path: Path) -> None:
     )
     settings = _settings(tmp_path, row_limit=False)
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
-    outcome = _fetch_one(settings, entry, site_for=_site_for(client), cache={})
+    outcome = _fetch_one(
+            settings,
+            entry,
+            site_for=_site_for(client),
+            store=DescribeStore.empty(tmp_path / "describe.csv"),
+            refresh_set=set(),
+        )
     assert outcome.status == "ok"
     assert outcome.record is not None
     assert outcome.record.row_check is None
@@ -263,7 +271,13 @@ def test_row_data_never_leaks_to_output(tmp_path: Path, caplog: pytest.LogCaptur
     client2 = _FakeClient(describe=_metadata(), get_error=err)
     settings = _settings(tmp_path)
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
-    outcome = _fetch_one(settings, entry, site_for=_site_for(client2), cache={})
+    outcome = _fetch_one(
+            settings,
+            entry,
+            site_for=_site_for(client2),
+            store=DescribeStore.empty(tmp_path / "describe.csv"),
+            refresh_set=set(),
+        )
     # 警告 / エラーメッセージに目印が入らない
     assert outcome.status == "ok"
     assert outcome.record is not None

@@ -41,6 +41,15 @@ MASTER_XLSX_PATH = ./input/レポート管理表.xlsx
 ; describe 結果（JSON）の出力先フォルダ。省略時は ./output
 OUTPUT_DIR = ./output
 
+; オブジェクト describe を実行をまたいで貯める CSV ファイル。
+; 1 行 1 項目 （ 組織 / オブジェクト / オブジェクト表示名 / カスタムオブジェクト /
+; 項目 API 名 / 項目表示名 / 型 / 参照先 / リレーション名 / カスタム項目 /
+; 絞り込み可 / 並べ替え可 / 選択肢 / 取得日時 ） 。 レポートの describe は毎回
+; Salesforce に聞くが、 オブジェクトの describe はここに貯めたものを使い、 無い
+; ものだけ Salesforce に取りに行く。 削除すると全件取り直しになる。
+; 省略時は ./data/項目定義.csv
+; DESCRIBE_CSV_PATH = ./data/項目定義.csv
+
 
 [LIMITS]
 ; 関連オブジェクト（参照先）の取得件数上限。主オブジェクトの fields から

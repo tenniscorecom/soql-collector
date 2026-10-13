@@ -112,6 +112,7 @@ def _settings(tmp_path: Path, related_max: int = 40, related_depth: int = 1) -> 
         pii_keywords=("name", "電話"),
         pii_person_objects=("Contact",),
         similar_column_similarity=0.8,
+        describe_csv_path=tmp_path / "describe.csv",
     )
 
 
@@ -1385,17 +1386,24 @@ def test_run_fetch_does_not_use_atomic_write(tmp_path: Path) -> None:
 # ── ヘルパー関数 ─────────────────────────────────────────────────────────
 
 
-def test_fetch_object_cached_calls_only_once() -> None:
-    """キャッシュ: 同じ名前は 1 回しか HTTP を打たない。"""
+def test_fetch_object_cached_calls_only_once(tmp_path: Path) -> None:
+    """キャッシュ: 同じ ``(org, object)`` は 1 回しか HTTP を打たない。"""
     client = _FakeClient(
         describe={},
         object_describes={"Account": _main_describe("Account")},
     )
-    cache: dict = {}
+    from src.describe_store import DescribeStore
+
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+    org = "example.my.salesforce.com"
     warnings1: list[str] = []
-    assert _fetch_object_cached(client, "Account", cache, warnings1) is not None
+    assert (
+        _fetch_object_cached(client, org, "Account", store, warnings1) is not None
+    )
     warnings2: list[str] = []
-    assert _fetch_object_cached(client, "Account", cache, warnings2) is not None
+    assert (
+        _fetch_object_cached(client, org, "Account", store, warnings2) is not None
+    )
     # 2 回目は client.describe_object が呼ばれないので calls には 1 件のみ
     assert client.describe_object_calls.count("Account") == 1
     assert warnings2 == []

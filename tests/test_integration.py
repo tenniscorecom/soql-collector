@@ -193,6 +193,7 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
         pii_keywords=pii.DEFAULT_KEYWORDS,
         pii_person_objects=pii.DEFAULT_PERSON_OBJECTS,
         similar_column_similarity=0.8,
+        describe_csv_path=tmp_path / "describe.csv",
     )
 
     from comken.exceptions import SalesforceReportTruncatedError
@@ -305,6 +306,7 @@ def test_e2e_single_record_no_similar_sheet(tmp_path: Path) -> None:
         pii_keywords=pii.DEFAULT_KEYWORDS,
         pii_person_objects=pii.DEFAULT_PERSON_OBJECTS,
         similar_column_similarity=0.8,
+        describe_csv_path=tmp_path / "describe.csv",
     )
     client = _FakeClient(
         describe=_describe("Opportunity", ["Opp.Name"]),
@@ -354,6 +356,7 @@ def test_e2e_resolved_correspondence_has_pii_columns(tmp_path: Path) -> None:
         pii_keywords=pii.DEFAULT_KEYWORDS,
         pii_person_objects=pii.DEFAULT_PERSON_OBJECTS,
         similar_column_similarity=0.8,
+        describe_csv_path=tmp_path / "describe.csv",
     )
     client = _FakeClient(
         # 「 メール 」 ラベルが Contact.Email と一致する想定 ( 既存テストと同形 )

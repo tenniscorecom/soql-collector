@@ -50,6 +50,7 @@ from comken.exceptions import (
 from comken.toolbox.salesforce.report import report_id_from_url
 
 from src import mapping, pii
+from src.describe_store import DescribeStore, org_from_url
 from src.master import MasterEntry
 from src.settings import Settings
 
@@ -215,7 +216,8 @@ def run_fetch(
     *,
     dry_run: bool = False,
     site_for: SiteFor | None = None,
-    object_cache: dict[str, dict[str, Any]] | None = None,
+    describe_store: DescribeStore | None = None,
+    refresh_set: set[tuple[str, str]] | None = None,
 ) -> list[FetchOutcome]:
     """``entries`` の各エントリについて、 describe を取り ``ReportRecord`` を返す。
 
@@ -227,9 +229,11 @@ def run_fetch(
         entries: 処理対象の管理表エントリ（ 既に ``--all`` 絞り込み済み ）。
         dry_run: True なら接続せず、 対象だけ表示用 ``FetchOutcome`` を返す。
         site_for: URL → Salesforce サイトクラスの関数。テスト用差し替え。
-        object_cache: ``describe_object`` の結果共有辞書。``None`` なら内部で作る。
-            同じ実行内で個別オブジェクトの取得 (``run_objects``) と共有するための
-            入口。テストでも同じ名前に 2 回 HTTP を打たないことを検証する。
+        describe_store: メモリ＋CSV の describe キャッシュ。 ``None`` のときは
+            ``settings.describe_csv_path`` から空ストアを作る。 同じ実行内で
+            ``describe_object`` を 1 回にまとめるための入口。
+        refresh_set: 取り直し （ 一度 API で取り直して再試行 ） を実行済みの
+            ``(org, object_lower)`` の集合。 ``None`` のときは内部で作る。
 
     Returns:
         入力と同じ順の ``FetchOutcome`` リスト。失敗 ID を含む個別では continue する。
@@ -241,8 +245,10 @@ def run_fetch(
 
     assert site_for is not None  # 上の分岐で必ず代入される
 
-    # 同じ実行内で重複する describe_object を 1 回にまとめる（User / Account 等）
-    cache = object_cache if object_cache is not None else {}
+    if describe_store is None:
+        describe_store = DescribeStore.empty(settings.describe_csv_path)
+    if refresh_set is None:
+        refresh_set = set()
 
     outcomes: list[FetchOutcome] = []
     total = len(entries)
@@ -273,7 +279,13 @@ def run_fetch(
             report_id_for_log,
         )
         started_at = time.perf_counter()
-        outcome = _fetch_one(settings, entry, site_for=site_for, cache=cache)
+        outcome = _fetch_one(
+            settings,
+            entry,
+            site_for=site_for,
+            store=describe_store,
+            refresh_set=refresh_set,
+        )
         elapsed = time.perf_counter() - started_at
         if outcome.status == "ok":
             logger.info(
@@ -758,13 +770,15 @@ def _fetch_one(
     entry: MasterEntry,
     *,
     site_for: SiteFor,
-    cache: dict[str, dict[str, Any]],
+    store: DescribeStore,
+    refresh_set: set[tuple[str, str]],
 ) -> FetchOutcome:
     """1 ID の describe を取り、 ``ReportRecord`` を組み立てて返す。
 
     JSON は書かない。 失敗したら ``status="failed"`` を返し ``record`` は ``None`` 。
     """
     warnings: list[str] = []
+    org = org_from_url(entry.url)
 
     # URL → レポート ID
     try:
@@ -799,8 +813,15 @@ def _fetch_one(
     main_object_name: str | None = None
     metadata: dict[str, Any] = {}
     column_map: list[dict[str, Any]] = []
-
     related_describes: dict[str, dict[str, Any]] = {}
+    related_nodes: list[RelatedNode] = []
+    relations: list[RelationRecord] = []
+    row_check: RowCheck | None = None
+    object_reason: str | None = None
+
+    # CSV から読んだ （ 今回 API で取ったものではない ） オブジェクトのキー。
+    # 取り直し判定に使う。
+    csv_used_keys: set[tuple[str, str]] = set()
 
     try:
         with site_class() as client:
@@ -821,7 +842,7 @@ def _fetch_one(
             # 2000 行チェック: ``[CHECKS] ROW_LIMIT`` が ○ のときだけ実行。
             # 401 / 403 のような致命エラーは外側の except に伝播させて ID 全体を
             # 失敗扱いにする。 その他のエラーは ``RowCheck`` に縮退する。
-            row_check: RowCheck | None = (
+            row_check = (
                 _check_row_count(client, report_id, metadata) if settings.row_limit else None
             )
             _log_row_check(row_check)
@@ -830,8 +851,8 @@ def _fetch_one(
             # ``_fetch_object_cached()`` で順に試す）。 ``describe_object`` が
             # 401 / 403 を返したら ``_fetch_object_cached`` がそのまま上位へ
             # ``SalesforceRequestError`` を送出し、 ID 全体を失敗扱いにする。
-            main_object_name, main_describe, object_reason = _choose_main(
-                client, metadata, cache, warnings
+            main_object_name, main_describe, object_reason, csv_used_keys = _choose_main(
+                client, org, metadata, store, warnings
             )
             if object_reason:
                 warnings.append(object_reason)
@@ -849,14 +870,14 @@ def _fetch_one(
             )
 
             # 主オブジェクト
-            related_nodes: list[RelatedNode] = []
-            relations: list[RelationRecord] = []
             if main_object_name and main_describe is not None:
                 objects[main_object_name] = main_describe
                 # 関連オブジェクトを参照先から幅優先で掘る（ ``RELATED_DEPTH`` 段まで ）
                 related_nodes, relations, skipped_names = _collect_related_objects(
                     main_describe,
-                    fetcher=lambda name: _fetch_object_cached(client, name, cache, warnings),
+                    fetcher=lambda name: _fetch_object_cached(
+                        client, org, name, store, warnings, csv_used_keys
+                    ),
                     related_depth=settings.related_depth,
                     related_max=settings.related_max,
                 )
@@ -883,6 +904,56 @@ def _fetch_one(
                     relations=relations,
                     main_object=main_object_name,
                 )
+
+            # 取り直し: 列対応に (不明) が残り、 CSV から読んだオブジェクトが
+            # このレポートで使われているなら API で取り直す。
+            if (
+                main_object_name
+                and main_describe is not None
+                and _has_unresolved_columns(column_map, object_reason)
+            ):
+                refresh_keys = csv_used_keys - refresh_set
+                if refresh_keys:
+                    refresh_set.update(refresh_keys)
+                    for key in refresh_keys:
+                        object_name = _api_name_from_store(store, key)
+                        if object_name is None:
+                            continue
+                        logger.info(
+                            "取り直し: 管理番号=%s 組織=%s オブジェクト=%s",
+                            entry.key,
+                            key[0],
+                            object_name,
+                        )
+                        refreshed = store.refresh_from_api(
+                            client, key[0], object_name, warnings
+                        )
+                        if refreshed is None:
+                            continue
+                        # メモリに反映
+                        if main_object_name and _object_key(org, main_object_name) == key:
+                            main_describe = refreshed
+                            objects[main_object_name] = refreshed
+                        else:
+                            for obj_name in list(objects):
+                                if _object_key(org, obj_name) == key:
+                                    objects[obj_name] = refreshed
+                                    related_describes[obj_name] = refreshed
+                                    break
+
+                    # 列対応表を取り直す（ 取り直し後 ）
+                    column_map = mapping.build_column_map(
+                        metadata,
+                        main_describe,
+                        object_reason,
+                        related_describes=related_describes,
+                        relations=relations,
+                        main_object=main_object_name,
+                    )
+                # 1 パス内では取り直しは 1 度きり （ 取り直し後も (不明) が
+                # 残るケースは API 側でも解決できないので、 無限ループを避ける ）
+                # ※ 同じ実行の中で複数レポートがある場合は refresh_set で
+                #   同じ (org, object) を 1 度しか取り直さない
     except SalesforceRequestError as exc:
         # 接続失敗・認証失敗・致命 HTTP
         return FetchOutcome(
@@ -1192,23 +1263,30 @@ def _related_ref_pairs(describe: dict[str, Any]) -> list[tuple[str, str, str]]:
 
 def _fetch_object_cached(
     client: Any,
+    org: str,
     name: str,
-    cache: dict[str, dict[str, Any]],
+    store: DescribeStore,
     warnings: list[str],
+    csv_used_keys: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    """``client.describe_object(name)`` を呼び、結果をキャッシュする。
+    """``client.describe_object(name)`` を呼び、結果をストアにキャッシュする。
 
     戻り値:
         成功時は describe の dict。失敗時（HTTP エラー / ``ValueError``）は
         ``None``。401 / 403 は ``SalesforceRequestError`` をそのまま上位へ
         送出する（呼び出し側で ID 全体を失敗扱い）。
+
+    ``csv_used_keys`` を渡すと、 CSV から読んだ （ 今回 API で取ったものではない ）
+    ``(org, object_lower)`` のキーをそこに追加する。 取り直しの判定に使う。
     """
-    if name in cache:
-        cached = cache[name]
+    cached = store.lookup(org, name)
+    if cached is not None:
         describe = cached.get("describe")
         warning = cached.get("warning")
         if warning:
             warnings.append(warning)
+        if csv_used_keys is not None and cached.get("source") == "csv":
+            csv_used_keys.add((org.lower(), name.strip().lower()))
         return describe if isinstance(describe, dict) else None
 
     try:
@@ -1217,12 +1295,12 @@ def _fetch_object_cached(
         if exc.status_code in FATAL_STATUS_CODES:
             raise
         warning = f"オブジェクト {name} の describe に失敗（HTTP {exc.status_code}: {exc.detail}）"
-        cache[name] = {"describe": None, "warning": warning}
+        store.record_api_failure(org, name, warning)
         warnings.append(warning)
         return None
     except ValueError as exc:
         warning = f"オブジェクト {name} の describe に失敗: {exc}"
-        cache[name] = {"describe": None, "warning": warning}
+        store.record_api_failure(org, name, warning)
         warnings.append(warning)
         return None
 
@@ -1230,16 +1308,66 @@ def _fetch_object_cached(
         # 念のため空 dict と同じ扱いにする
         describe = {}
 
-    cache[name] = {"describe": describe, "warning": None}
+    store.record_api_success(org, name, describe)
     return describe
+
+
+def _has_unresolved_columns(
+    column_map: list[dict[str, Any]],
+    object_reason: str | None,
+) -> bool:
+    """``column_map`` に ``対応フィールドAPI名 == "(不明)"`` の行が **1 つでも**
+    あるかを返す。
+
+    ``object_reason`` が ``None`` でないとき （ 主オブジェクト不明・ describe 失敗 ）
+    は、そのレポートの主オブジェクトはそもそも API で取れていないので、
+    取り直しの対象外とする。
+    """
+    if object_reason:
+        return False
+    if not isinstance(column_map, list):
+        return False
+    for row in column_map:
+        if not isinstance(row, dict):
+            continue
+        api = row.get("対応フィールドAPI名")
+        if isinstance(api, str) and api == "(不明)":
+            return True
+    return False
+
+
+def _object_key(org: str, object_name: str) -> tuple[str, str]:
+    """``(org, object)`` をストレージ用の正規化キーにする （ ``DescribeStore._key``
+    と同じ正規化 ）。"""
+    return (org.strip().lower(), object_name.strip().lower())
+
+
+def _api_name_from_store(store: DescribeStore, key: tuple[str, str]) -> str | None:
+    """``(org, object_lower)`` に対応する describe がストアにあれば ``name`` を返す。
+    取り直しの API 呼び出しで正しい API 名 （ 大文字小文字そのまま ） を渡すために必要。
+    """
+    entry = store.memory_cache.get(key)
+    if entry is not None:
+        describe = entry.get("describe")
+        if isinstance(describe, dict):
+            name = describe.get("name")
+            if isinstance(name, str) and name:
+                return name
+    describe = store.csv_index.get(key)
+    if isinstance(describe, dict):
+        name = describe.get("name")
+        if isinstance(name, str) and name:
+            return name
+    return None
 
 
 def _choose_main(
     client: Any,
+    org: str,
     metadata: dict[str, Any],
-    cache: dict[str, dict[str, Any]],
+    store: DescribeStore,
     warnings: list[str],
-) -> tuple[str | None, dict[str, Any] | None, str | None]:
+) -> tuple[str | None, dict[str, Any] | None, str | None, set[tuple[str, str]]]:
     """``metadata`` の ``reportType.type`` から主オブジェクトを決める。
 
     ``report_type_candidates()`` で抽出した候補を先頭から
@@ -1253,13 +1381,17 @@ def _choose_main(
     側で ``try`` している前提）。
 
     Returns:
-        ``(main_object_name | None, main_describe | None, reason | None)``
+        ``(main_object_name | None, main_describe | None, reason | None,
+        csv_used_keys)``
         - ``main_object_name``: 採用した主オブジェクト名。 describe が取れ
           なかったときは ``None``
         - ``main_describe``: 主オブジェクトの describe dict。 特定・取得に失敗
           したときは ``None``
         - ``reason``: ``main_describe`` が ``None`` のときの理由（ ``None``
           なら取得成功）
+        - ``csv_used_keys``: このレポートで参照されたオブジェクトのうち、
+          **CSV から読んだもの** （ 今回 API で取ったものではない ） の
+          ``(org, object_lower)`` の集合。 取り直し判定用
     """
     report_metadata = metadata.get("reportMetadata", {}) if isinstance(metadata, dict) else {}
     object_name = report_metadata.get("reportType", {}).get("type", "")
@@ -1267,9 +1399,12 @@ def _choose_main(
         object_name = ""
 
     candidates = mapping.report_type_candidates(object_name)
+    csv_used_keys: set[tuple[str, str]] = set()
     for candidate in candidates:
-        describe = _fetch_object_cached(client, candidate, cache, warnings)
+        describe = _fetch_object_cached(
+            client, org, candidate, store, warnings, csv_used_keys
+        )
         if describe is not None:
-            return candidate, describe, None
+            return candidate, describe, None, csv_used_keys
 
-    return None, None, mapping.candidate_failure_reason(object_name, candidates)
+    return None, None, mapping.candidate_failure_reason(object_name, candidates), csv_used_keys

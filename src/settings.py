@@ -28,6 +28,9 @@ from comken.exceptions import ConfigKeyNotFoundError
 logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_DIR = "./output"
+# ``[FILES] DESCRIBE_CSV_PATH`` の既定値。 オブジェクト describe を実行を
+# またいで貯めるファイルの既定。 ``config.ini`` からの相対
+DEFAULT_DESCRIBE_CSV_PATH = "./data/項目定義.csv"
 DEFAULT_RELATED_MAX = 40
 # ``[LIMITS] RELATED_DEPTH`` の既定値。 1 = 今までの挙動 （ 参照先 1 段だけ ）。
 # 関連オブジェクトの合計件数は ``RELATED_MAX`` で別個に打ち切る
@@ -101,6 +104,8 @@ class Settings:
     pii_person_objects: tuple[str, ...]
     # 似たレポート判定で 「 近い 」 とみなす Jaccard の下限
     similar_column_similarity: float
+    # オブジェクト describe の実行をまたぐ保存先 CSV のパス
+    describe_csv_path: Path
 
 
 def load_settings(project_root: Path | None = None) -> Settings:
@@ -128,6 +133,13 @@ def load_settings(project_root: Path | None = None) -> Settings:
         )
     output_value = _optional(
         parser, "FILES", "OUTPUT_DIR", ini_path, default=DEFAULT_OUTPUT_DIR
+    ).strip()
+    describe_csv_value = _optional(
+        parser,
+        "FILES",
+        "DESCRIBE_CSV_PATH",
+        ini_path,
+        default=DEFAULT_DESCRIBE_CSV_PATH,
     ).strip()
     related_value = _optional(
         parser,
@@ -182,6 +194,7 @@ def load_settings(project_root: Path | None = None) -> Settings:
         pii_keywords=pii_keywords,
         pii_person_objects=pii_objects,
         similar_column_similarity=similar_similarity,
+        describe_csv_path=_resolve(base_dir, describe_csv_value),
     )
 
 

@@ -67,7 +67,17 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
     settings = dataclasses.replace(base_settings, output_dir=base_settings.output_dir / "single")
 
     entry = MasterEntry(key=args.key, summary="単品サンプル", url=args.url, enabled=True)
-    outcomes = run_fetch(settings, [entry], site_for=site_for)
+    from src.describe_store import DescribeStore
+
+    describe_store = DescribeStore.load(settings.describe_csv_path)
+    refresh_set: set[tuple[str, str]] = set()
+    outcomes = run_fetch(
+        settings,
+        [entry],
+        site_for=site_for,
+        describe_store=describe_store,
+        refresh_set=refresh_set,
+    )
 
     ok_keys: list[str] = []
     failed_count = 0
