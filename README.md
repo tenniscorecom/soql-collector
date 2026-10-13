@@ -64,6 +64,13 @@ python -m trial.fetch_one_report <レポートのURL> [管理番号]
 出力は `output/single/` 配下に xlsx と csv が書かれ、本体の `output/` は
 汚さない。 詳しくは `docs/使い方.md` を参照。
 
+「対応が取れなかった列がある（その項目を持つオブジェクトの情報が取れていない）」
+ときは `trial/fetch_objects.py` が使える。 ファイル先頭の `OBJECT_NAMES` /
+`ORG_URL` を書き換えて `python -m trial.fetch_objects` を実行すると、 各
+オブジェクトの describe を 1 回の接続で取り直し（ キャッシュを読まず ） 、
+`data/項目定義.csv` のキャッシュに追加し、 `output/single/オブジェクトの
+項目.csv` に展開します。
+
 ## 出力ファイル
 
 `[FILES] OUTPUT_DIR`（既定 `./output`）に次の 2 種類が置かれる。
