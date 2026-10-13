@@ -31,6 +31,9 @@ DEFAULT_OUTPUT_DIR = "./output"
 # ``[FILES] DESCRIBE_CSV_PATH`` の既定値。 オブジェクト describe を実行を
 # またいで貯めるファイルの既定。 ``config.ini`` からの相対
 DEFAULT_DESCRIBE_CSV_PATH = "./data/項目定義.csv"
+# ``[FILES] COLUMN_MAP_CSV_PATH`` の既定値。 人が手で見比べる 列の対応.csv
+# の置き場所。 ``config.ini`` からの相対
+DEFAULT_COLUMN_MAP_CSV_PATH = "./data/列の対応.csv"
 DEFAULT_RELATED_MAX = 40
 # ``[LIMITS] RELATED_DEPTH`` の既定値。 1 = 今までの挙動 （ 参照先 1 段だけ ）。
 # 関連オブジェクトの合計件数は ``RELATED_MAX`` で別個に打ち切る
@@ -87,7 +90,7 @@ ROW_LIMIT_ENABLED = "○"
 ROW_LIMIT_DISABLED = "×"
 ROW_LIMIT_CHOICES: frozenset[str] = frozenset({ROW_LIMIT_ENABLED, ROW_LIMIT_DISABLED})
 
-# ``[CHECKS] SOQL_COUNT`` の取り得る値。 既定 ○ 。
+# ``[CHECKS] SOQL_COUNT`` の取り得る値。 既定 × 。
 SOQL_COUNT_ENABLED = "○"
 SOQL_COUNT_DISABLED = "×"
 SOQL_COUNT_CHOICES: frozenset[str] = frozenset({SOQL_COUNT_ENABLED, SOQL_COUNT_DISABLED})
@@ -113,6 +116,8 @@ class Settings:
     similar_column_similarity: float
     # オブジェクト describe の実行をまたぐ保存先 CSV のパス
     describe_csv_path: Path
+    # 人が手で見比べる 列の対応.csv のパス
+    column_map_csv_path: Path
 
 
 def load_settings(project_root: Path | None = None) -> Settings:
@@ -147,6 +152,13 @@ def load_settings(project_root: Path | None = None) -> Settings:
         "DESCRIBE_CSV_PATH",
         ini_path,
         default=DEFAULT_DESCRIBE_CSV_PATH,
+    ).strip()
+    column_map_csv_value = _optional(
+        parser,
+        "FILES",
+        "COLUMN_MAP_CSV_PATH",
+        ini_path,
+        default=DEFAULT_COLUMN_MAP_CSV_PATH,
     ).strip()
     related_value = _optional(
         parser,
@@ -188,7 +200,7 @@ def load_settings(project_root: Path | None = None) -> Settings:
     row_limit = row_limit_value == ROW_LIMIT_ENABLED
 
     soql_count_value = _optional(
-        parser, "CHECKS", "SOQL_COUNT", ini_path, default=SOQL_COUNT_ENABLED
+        parser, "CHECKS", "SOQL_COUNT", ini_path, default=SOQL_COUNT_DISABLED
     ).strip()
     if soql_count_value not in SOQL_COUNT_CHOICES:
         raise ConfigKeyNotFoundError(
@@ -212,6 +224,7 @@ def load_settings(project_root: Path | None = None) -> Settings:
         pii_person_objects=pii_objects,
         similar_column_similarity=similar_similarity,
         describe_csv_path=_resolve(base_dir, describe_csv_value),
+        column_map_csv_path=_resolve(base_dir, column_map_csv_value),
     )
 
 

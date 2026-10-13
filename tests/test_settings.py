@@ -119,14 +119,14 @@ def test_load_settings_ignores_objects_section(tmp_path: Path) -> None:
 # ── [CHECKS] SOQL_COUNT ────────────────────────────────────────────
 
 
-def test_load_settings_soql_count_default_enabled(tmp_path: Path) -> None:
-    """``[CHECKS] SOQL_COUNT`` が無いとき既定の ``○``（ True ）。"""
+def test_load_settings_soql_count_default_disabled(tmp_path: Path) -> None:
+    """``[CHECKS] SOQL_COUNT`` が無いとき既定の ``×``（ False ）。"""
     master_path = tmp_path / "master.xlsx"
     _write_ini(tmp_path, f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n")
 
     settings = load_settings(tmp_path)
 
-    assert settings.soql_count is True
+    assert settings.soql_count is False
 
 
 def test_load_settings_soql_count_disabled(tmp_path: Path) -> None:

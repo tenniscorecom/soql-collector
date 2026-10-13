@@ -33,7 +33,8 @@ SOQL として出力し、 取れない部分は 「 作れなかった部分 �
 
 1. Python 3.11 以上を用意する
 2. `config.ini.example` を `config.ini` にコピーし、 `[FILES] MASTER_XLSX_PATH`
-   / `OUTPUT_DIR`、 `[LIMITS] RELATED_MAX` / `[LIMITS] RELATED_DEPTH`、
+   / `OUTPUT_DIR` / `DESCRIBE_CSV_PATH` / `COLUMN_MAP_CSV_PATH`、
+   `[LIMITS] RELATED_MAX` / `[LIMITS] RELATED_DEPTH`、
    `[SF] CREDENTIAL_PREFIX`、 必要に応じて `[CHECKS] ROW_LIMIT` /
    `[CHECKS] SOQL_COUNT` / `[PII] KEYWORDS` / `[PII] OBJECTS` /
    `[SIMILAR] COLUMN_SIMILARITY` を書き換える （詳細は
@@ -84,6 +85,12 @@ python -m trial.fetch_one_report <レポートのURL> [管理番号]
 項目 / 絞り込み可 / 並べ替え可 / 選択肢 / 取得日時` の 14 列で、 **レコード
 の値は入らない** 。 レポートは毎回 Salesforce に聞くが、 オブジェクトの
 describe はここに溜めたものを使い、 無いものだけ API から取る。
+
+さらに、 `[FILES] COLUMN_MAP_CSV_PATH` （ 既定 `./data/列の対応.csv` ） に
+**人が手で見比べる列の対応表** を書く。 自動の列対応で取れない列を、
+人が Excel で開いて SOQL 列名を直したり空欄を埋めたりする。 列は
+`主オブジェクト, 列キー, 表示名, SOQL列名, メモ, 使っているレポート数, 更新日`
+の 7 列。 値が入っているセルは次の実行で上書きされない。
 
 - 全部取り直したいときはファイルを消す
 - 1 オブジェクトだけ取り直したいときは該当 (組織, オブジェクト) の行を消す

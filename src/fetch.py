@@ -49,7 +49,7 @@ from comken.exceptions import (
 )
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src import mapping, pii, soql_builder
+from src import column_map_csv, mapping, pii, soql_builder
 from src.describe_store import DescribeStore, org_from_url
 from src.master import MasterEntry
 from src.settings import Settings
@@ -284,6 +284,7 @@ def run_fetch(
     site_for: SiteFor | None = None,
     describe_store: DescribeStore | None = None,
     refresh_set: set[tuple[str, str]] | None = None,
+    column_map_overrides: dict[tuple[str, str], Any] | None = None,
 ) -> list[FetchOutcome]:
     """``entries`` の各エントリについて、 describe を取り ``ReportRecord`` を返す。
 
@@ -300,6 +301,10 @@ def run_fetch(
             ``describe_object`` を 1 回にまとめるための入口。
         refresh_set: 取り直し （ 一度 API で取り直して再試行 ） を実行済みの
             ``(org, object_lower)`` の集合。 ``None`` のときは内部で作る。
+        column_map_overrides: 人が ``列の対応.csv`` に入れた上書き。
+            ``(主オブジェクト小文字, 列キー)`` → ``ColumnMapRow`` の dict。
+            ``_fetch_one`` に渡して ``column_map`` の ``対応フィールドAPI名``
+            等を差し替える。 空 dict なら何もしない
 
     Returns:
         入力と同じ順の ``FetchOutcome`` リスト。失敗 ID を含む個別では continue する。
@@ -315,6 +320,8 @@ def run_fetch(
         describe_store = DescribeStore.empty(settings.describe_csv_path)
     if refresh_set is None:
         refresh_set = set()
+    if column_map_overrides is None:
+        column_map_overrides = {}
 
     outcomes: list[FetchOutcome] = []
     total = len(entries)
@@ -351,6 +358,7 @@ def run_fetch(
             site_for=site_for,
             store=describe_store,
             refresh_set=refresh_set,
+            column_map_overrides=column_map_overrides,
         )
         elapsed = time.perf_counter() - started_at
         if outcome.status == "ok":
@@ -1046,12 +1054,15 @@ def _fetch_one(
     site_for: SiteFor,
     store: DescribeStore,
     refresh_set: set[tuple[str, str]],
+    column_map_overrides: dict[tuple[str, str], Any] | None = None,
 ) -> FetchOutcome:
     """1 ID の describe を取り、 ``ReportRecord`` を組み立てて返す。
 
     JSON は書かない。 失敗したら ``status="failed"`` を返し ``record`` は ``None`` 。
     """
     warnings: list[str] = []
+    if column_map_overrides is None:
+        column_map_overrides = {}
     org = org_from_url(entry.url)
 
     # URL → レポート ID
@@ -1261,6 +1272,18 @@ def _fetch_one(
     slim_objects: dict[str, dict[str, Any]] = {
         name: _slim_object(describe) for name, describe in objects.items()
     }
+
+    # 人が ``列の対応.csv`` に入れた値で ``column_map`` を上書きする。
+    # ``slim_objects`` から ``Account.Name`` のようなドット記法の型を引く。
+    # 既存テストが ``column_map`` を ``dict`` として読むので、 各行を copy
+    # して新しい list にする
+    column_map = column_map_csv.apply_overrides(
+        column_map_rows=column_map,
+        existing=column_map_overrides,
+        main_object=main_object or "",
+        objects=slim_objects,
+        warnings=warnings,
+    )
 
     dropped_keys = _collect_dropped_keys(metadata)
     dropped_keys_warning = _dropped_keys_warning_text(dropped_keys)

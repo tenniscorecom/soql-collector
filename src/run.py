@@ -25,10 +25,11 @@ import sys
 import time
 from collections.abc import Callable
 
+from comken.exceptions import CSVError
 from comken.runtime import is_dry_run
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src import pii
+from src import column_map_csv, pii
 from src.fetch import run_fetch
 from src.master import MasterEntry, filter_enabled, read_master
 from src.settings import Settings, load_settings
@@ -85,6 +86,15 @@ def run(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> in
         logger.error("管理表に『有効』が ○ の行がありません")
         return 2
 
+    # 人が手で見比べる ``列の対応.csv`` を 1 回の実行の最初に読む。
+    # 見出し違いなら ``CSVError`` で止める （ 出力物に壊せない位置 ） 。
+    # ファイルが無いときは空 dict （ 新規扱い ） 。
+    try:
+        column_map_overrides = column_map_csv.load_column_map(settings.column_map_csv_path)
+    except CSVError as exc:
+        logger.error("%s", exc)
+        return 2
+
     # レポートの取得 （ 同じ実行内で ``describe_object`` を 1 回にまとめる ）
     started_at = time.perf_counter()
     from src.describe_store import DescribeStore
@@ -98,6 +108,7 @@ def run(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> in
             site_for=site_for,
             describe_store=describe_store,
             refresh_set=refresh_set,
+            column_map_overrides=column_map_overrides,
         )
     )
     total_elapsed = time.perf_counter() - started_at
@@ -136,6 +147,15 @@ def run(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> in
     except Exception as exc:
         # CSV の失敗は全体の失敗にはしない （ record は取れているので ）
         logger.error("CSV の生成に失敗しました: %s", exc)
+
+    # ``列の対応.csv`` を最後に 1 回書く （ 人が入れた値を壊さない ）。
+    # PermissionError 等は ``merge_and_write`` 内で WARNING だけになり、 処理は続く
+    column_map_csv._merge_and_write_after_run(
+        path=settings.column_map_csv_path,
+        existing=column_map_overrides,
+        records=records,
+        today=column_map_csv.today_local(),
+    )
 
     return 1 if failed_count else 0
 

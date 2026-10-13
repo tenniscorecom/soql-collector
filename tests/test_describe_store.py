@@ -115,6 +115,7 @@ def _settings(tmp_path: Path) -> Settings:
         pii_person_objects=("Contact",),
         similar_column_similarity=0.8,
         describe_csv_path=tmp_path / "describe.csv",
+        column_map_csv_path=tmp_path / "column_map.csv",
     )
 
 

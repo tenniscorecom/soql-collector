@@ -83,6 +83,7 @@ def _make_settings(tmp_path: Path, master: Path) -> Any:
         pii_person_objects=("Contact",),
         similar_column_similarity=0.8,
         describe_csv_path=tmp_path / "describe.csv",
+        column_map_csv_path=tmp_path / "column_map.csv",
     )
 
 
@@ -261,7 +262,14 @@ def test_run_filters_disabled_rows(
     captured_keys: list[str] = []
 
     def fake_run_fetch(
-        settings, entries, *, dry_run=False, site_for=None, describe_store=None, refresh_set=None
+        settings,
+        entries,
+        *,
+        dry_run=False,
+        site_for=None,
+        describe_store=None,
+        refresh_set=None,
+        column_map_overrides=None,
     ):
         captured_keys.extend(entry.key for entry in entries)
         outcomes = []
@@ -403,7 +411,14 @@ def test_run_writes_jsons_and_csvs(
     _patch_load_settings(monkeypatch, _make_settings(tmp_path, master))
 
     def fake_run_fetch(
-        settings, entries, *, dry_run=False, site_for=None, describe_store=None, refresh_set=None
+        settings,
+        entries,
+        *,
+        dry_run=False,
+        site_for=None,
+        describe_store=None,
+        refresh_set=None,
+        column_map_overrides=None,
     ):
         outcomes = []
         for entry in entries:
@@ -470,7 +485,14 @@ def test_run_partial_failure_continues_and_returns_1(
     existing_csv.write_text("既存\nそのまま\n", encoding="utf-8")
 
     def fake_run_fetch(
-        settings, entries, *, dry_run=False, site_for=None, describe_store=None, refresh_set=None
+        settings,
+        entries,
+        *,
+        dry_run=False,
+        site_for=None,
+        describe_store=None,
+        refresh_set=None,
+        column_map_overrides=None,
     ):
         rec = RecordStub(key=entries[0].key, summary="", report_id="00O", url=entries[0].url)
         return [
