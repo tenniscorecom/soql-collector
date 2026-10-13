@@ -5,9 +5,13 @@
 多く、 自動の対応が間違っていることもある。 そこで **全レポート分の列を 1 つ
 の CSV に並べ、 人が Excel で開いて直せる** ようにする。 ルール:
 
-- **値がすでに入っているセルは、 次の実行で決して上書きしない** （ 人が入れた
-  値でも、 前回自動で入った値でも、 現在のデータを尊重する ）
-- **空欄と新しい行だけを自動で埋める**
+- 手で入れるのは **自動で取れなかった（ ``対応フィールドAPI名`` が ``(不明)``
+  か空の ） 列だけ** 。 自動で取れた列は CSV の値を信用しず、 自動の
+  結果を優先する （ 人が入れた値は自動の結果で置き換えられ、 WARNING が出る ）
+- 自動で取れなかった列は、 CSV の ``SOQL列名`` があれば使い、 ``型`` は
+  項目定義から引く。 引けなければ 「 打ち間違い？ 」 WARNING だけ出し値は
+  そのまま使う
+- 表示名は毎回、 レポートの表示名で自動になる
 - ファイルが無ければ新規作成。 既存ファイルが見出し違いなら ``CSVError``
 - 書き込みが ``PermissionError`` （ Excel で開いている等 ） なら実行は止めず
   WARNING だけ出す。 他の出力はそのまま作る
@@ -40,6 +44,15 @@ COLUMN_MAP_CSV_COLUMNS: tuple[str, ...] = (
     "使っているレポート数",
     "更新日",
 )
+
+
+# ``apply_overrides`` が 「 CSV の手で入れた値を当てはめた 」 列の ``備考``
+# に付ける印。 ``_merge_and_write_after_run`` がこの印を見て、 その列を
+# 「 自動で取れなかった 」 列として ``merge_and_write`` に渡す。 これにより
+# ``merge_and_write`` 側の既存ルール （ 自動で取れず CSV に手入力が入って
+# いる行のメモを 「 手入力 」 に統一する ） がそのまま機能する。 値としては
+# 残るので上書きしない
+OVERRIDE_MARKER: str = "列の対応.csv の値"
 
 
 # ── 行型 ────────────────────────────────────────────────────────────────
@@ -153,13 +166,18 @@ def apply_overrides(
     """``column_map`` の各行に ``列の対応.csv`` の上書きを適用する。
 
     ルール:
-    - CSV に ``(主オブジェクト小文字, 列キー)`` が有り、 かつ ``SOQL列名``
-      が空でない → その値で ``対応フィールドAPI名`` を上書き。 ``備考`` を
-      「 列の対応.csv の値 」 に差し替え。 ``型`` は ``objects`` から
-      ``Account.Name`` のようなドット記法をたどって引く
-    - CSV に無い、 または ``SOQL列名`` が空 → 触らない
-    - 型の引き合いで ``objects`` に無いパスを通ったら WARNING を出す。 値は
-      そのまま使う
+    - ``対応フィールドAPI名`` が空でも ``(不明)`` でもない （ 自動が解決
+      できた ） 行は、 **CSV を見ずに自動の結果をそのまま使う** 。 CSV の
+      値は信用しない
+    - ``対応フィールドAPI名`` が空か ``(不明)`` （ 自動が取れなかった ）
+      行に限り、 CSV に ``(主オブジェクト小文字, 列キー)`` が有り かつ
+      ``SOQL列名`` が空でないとき → CSV の値で ``対応フィールドAPI名`` を
+      上書きし、 ``型`` は ``objects`` から ``Account.Name`` のようなドット
+      記法をたどって引く
+    - 自動が解決できたのに ``objects`` から型が引けないときは WARNING を
+      出す （ CSV は見ていないので 「 打ち間違い？ 」 の警告は出さない ）
+    - 自動が解決できず CSV の値で上書きしたが型が引けないときは 「 打ち
+      間違い？ 」 WARNING を出す。 値はそのまま使う
 
     鍵は **``column_map`` 行の ``所属オブジェクト`` ではなく** ``main_object``
     （ レポートの主オブジェクト ） を使う。 同じ ``Opp.Account.Name`` 列でも、
@@ -176,22 +194,27 @@ def apply_overrides(
             の起点に使う。 ``column_map`` 行の ``所属オブジェクト`` は使わない。
         objects: ``record.objects`` 互換 （ ``name`` / ``fields`` を持つ dict
             の dict ）。 CSV には無い型引き当てに使う。 キーはオブジェクト名。
+        warnings: 呼び出し側の warnings list。 そのまま追加する。
 
     Returns:
         新しい list （ 各 dict はコピー ）。 呼び出し側はこれを ``column_map``
         として使う。
     """
-    if not existing:
-        return list(column_map_rows)
     new_rows: list[dict[str, str]] = []
     for row in column_map_rows:
         if not isinstance(row, dict):
             new_rows.append(dict(row))
             continue
         column_key = _coerce_str(row.get("列キー"))
+        auto_api_name = _coerce_str(row.get("対応フィールドAPI名"))
         if not main_object or not column_key:
             new_rows.append(dict(row))
             continue
+        # 自動で取れた列は CSV を見ない
+        if _is_auto_resolved(auto_api_name):
+            new_rows.append(dict(row))
+            continue
+        # 自動で取れなかった列だけ CSV を当てる
         override = existing.get(_normalize_key(main_object, column_key))
         if override is None or not override.soql_name:
             new_rows.append(dict(row))
@@ -212,9 +235,19 @@ def apply_overrides(
                 "列の対応.csv の SOQL列名が項目定義に見つかりません"
                 f"（打ち間違い？）: {main_object} / {column_key} / {override.soql_name}"
             )
-        new_row["備考"] = "列の対応.csv の値"
+        new_row["備考"] = OVERRIDE_MARKER
         new_rows.append(new_row)
     return new_rows
+
+
+def _is_auto_resolved(auto_api_name: str) -> bool:
+    """``対応フィールドAPI名`` が 「 自動で取れた 」 値かどうかを返す。
+
+    空文字と ``(不明)`` は 「 自動で取れなかった 」 とみなす。 それ以外の
+    値は 「 自動で取れた 」 とする。 自動が取れた行は ``apply_overrides``
+    でも ``merge_and_write`` でも CSV を信用しない。
+    """
+    return bool(auto_api_name) and auto_api_name != "(不明)"
 
 
 # ── 書き出し ────────────────────────────────────────────────────────────
@@ -232,14 +265,16 @@ def merge_and_write(
 
     ルール:
     - ``observed`` に無いキー → 触らない
-    - ``observed`` に有るキーかつ行が無い → 行を足す。 ``SOQL列名`` は
-      ``observed.soql_name`` （ 自動で取れた値 ）、 ``メモ`` は
-      ``observed.note`` （ 取れなかった理由、 取れたときは空 ） 、
-      ``表示名`` は ``observed.display_name`` 、
-      ``使っているレポート数`` と ``更新日`` は今回分
-    - ``observed`` に有るキーかつ行が有る → ``SOQL列名`` / ``表示名`` /
-      ``メモ`` は **既に入っているセルを触らず** 空欄だけ埋める。
-      ``使っているレポート数`` と ``更新日`` は今回分 （ 触ってよい ）
+    - ``observed`` に有るキーで ``observed.soql_name`` が空でも ``(不明)``
+      でもない （ 自動で取れた ） 行 → ``SOQL列名`` を ``observed.soql_name``
+      で **必ず書き換える** 。 既に値が入っていて （ 人が入れた値でも ）
+      自動の結果と違うときは WARNING を出して置き換えられたことを知らせる。
+      ``メモ`` は空にする
+    - ``observed`` に有るキーで自動が取れなかった行 → ``SOQL列名`` は
+      既存の値をそのまま残す。 ``メモ`` は、 既存 ``SOQL列名`` が空なら今回
+      の取れなかった理由、 既に手入力で埋まっていれば 「 手入力 」 にする
+    - ``表示名`` は毎回 ``observed.display_name`` で書き換える
+    - ``使っているレポート数`` と ``更新日`` は今回用いた行で毎回書き換える
     - 並びは 主オブジェクト → 列キー
     - 書き込みが ``PermissionError`` なら実行は止めず WARNING だけ出す。
       ファイルの中身は触らない （ ``atomic_write`` 系の挙動と同じく ）
@@ -263,7 +298,7 @@ def merge_and_write(
         key = _normalize_key(obs.main_object, obs.column_key)
         observed_keys.add(key)
         report_counts[key] = report_counts.get(key, 0) + 1
-        # observed の内容を「 今回の値で埋める候補 」 として覚える
+        # observed の内容を 「 今回の値で埋める候補 」 として覚える
         new_rows[key] = ColumnMapRow(
             main_object=obs.main_object,
             column_key=obs.column_key,
@@ -278,13 +313,31 @@ def merge_and_write(
     merged: dict[tuple[str, str], ColumnMapRow] = dict(existing)
     for key, row in new_rows.items():
         existing_row = existing.get(key)
-        # 既に値が入っているセルは触らない。 空のセルだけ埋める
-        existing_soql = existing_row.soql_name if existing_row else ""
-        existing_display = existing_row.display_name if existing_row else ""
-        existing_note = existing_row.note if existing_row else ""
-        soql_name = existing_soql if existing_soql else row.soql_name
-        display_name = existing_display if existing_display else row.display_name
-        note = existing_note if existing_note else row.note
+        auto_resolved = _is_auto_resolved(row.soql_name)
+        # 自動で取れた列は自動の結果で必ず上書きする
+        if auto_resolved:
+            soql_name = row.soql_name
+            note = ""
+            previous = existing_row.soql_name if existing_row else ""
+            if previous and previous != soql_name:
+                # 人が入れた値を自動の結果で置き換えた
+                logger.warning(
+                    "列の対応.csv の手入力を自動の結果で置き換えました: "
+                    "%s / %s / %s → %s",
+                    row.main_object,
+                    row.column_key,
+                    previous,
+                    soql_name,
+                )
+        else:
+            # 自動で取れなかった列は CSV の値を壊さない
+            soql_name = existing_row.soql_name if existing_row else ""
+            if soql_name:
+                note = "手入力"
+            else:
+                note = row.note
+        # 表示名は毎回、 レポートの表示名で上書きする
+        display_name = row.display_name
         merged[key] = ColumnMapRow(
             main_object=row.main_object,
             column_key=row.column_key,
@@ -444,13 +497,28 @@ def _merge_and_write_after_run(
             # 鍵は **常に** ``record.main_object`` 。 ``row.get("所属オブジェクト")``
             # は使わない: 自動解決で ``Account`` 等に振られていることがあり、
             # CSV の手入力行と別行になる・二重化の元になる
+            #
+            # ``備考`` に ``OVERRIDE_MARKER`` が付いていれば ``apply_overrides``
+            # が CSV の手で入れた値を当てはめた列。 ``対応フィールドAPI名`` は
+            # 既に上書き済みで 「 自動で取れた 」 ように見えるが、 元は自動が
+            # 取れなかった列。 ここで ``soql_name`` を空に戻しておかないと、
+            # ``merge_and_write`` が 「 自動で取れた 」 と誤判定してメモを空に
+            # 戻してしまう。 空に戻せば ``merge_and_write`` 側の 「 自動で取れ
+            # なかった列で既存 ``SOQL列名`` が入っていればメモ=手入力 」 の
+            # 既存ルールで 「 手入力 」 に統一される
+            note_text = _coerce_str(row.get("備考"))
+            if note_text == OVERRIDE_MARKER:
+                soql_name_text = ""
+                note_text = ""
+            else:
+                soql_name_text = _coerce_str(row.get("対応フィールドAPI名"))
             observed.append(
                 ObservedColumnRow(
                     main_object=main_object_text,
                     column_key=column_key,
                     display_name=_coerce_str(row.get("表示名")),
-                    soql_name=_coerce_str(row.get("対応フィールドAPI名")),
-                    note=_coerce_str(row.get("備考")),
+                    soql_name=soql_name_text,
+                    note=note_text,
                 )
             )
     merge_and_write(
