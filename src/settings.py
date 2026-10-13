@@ -87,6 +87,11 @@ ROW_LIMIT_ENABLED = "○"
 ROW_LIMIT_DISABLED = "×"
 ROW_LIMIT_CHOICES: frozenset[str] = frozenset({ROW_LIMIT_ENABLED, ROW_LIMIT_DISABLED})
 
+# ``[CHECKS] SOQL_COUNT`` の取り得る値。 既定 ○ 。
+SOQL_COUNT_ENABLED = "○"
+SOQL_COUNT_DISABLED = "×"
+SOQL_COUNT_CHOICES: frozenset[str] = frozenset({SOQL_COUNT_ENABLED, SOQL_COUNT_DISABLED})
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -99,6 +104,8 @@ class Settings:
     credential_prefix: str
     # レポートごとに 2000 行チェックを実行するか （ True = 実行 ）
     row_limit: bool
+    # レポートごとに 件数チェック（ SOQL の COUNT とレポートの総件数の突き合わせ ） を実行するか
+    soql_count: bool
     # PII 判定に使うキーワードと個人系オブジェクト
     pii_keywords: tuple[str, ...]
     pii_person_objects: tuple[str, ...]
@@ -180,6 +187,15 @@ def load_settings(project_root: Path | None = None) -> Settings:
         raise ConfigKeyNotFoundError("CHECKS", "ROW_LIMIT", sorted(ROW_LIMIT_CHOICES), ini_path)
     row_limit = row_limit_value == ROW_LIMIT_ENABLED
 
+    soql_count_value = _optional(
+        parser, "CHECKS", "SOQL_COUNT", ini_path, default=SOQL_COUNT_ENABLED
+    ).strip()
+    if soql_count_value not in SOQL_COUNT_CHOICES:
+        raise ConfigKeyNotFoundError(
+            "CHECKS", "SOQL_COUNT", sorted(SOQL_COUNT_CHOICES), ini_path
+        )
+    soql_count = soql_count_value == SOQL_COUNT_ENABLED
+
     pii_keywords = _parse_pii_keywords(parser, ini_path)
     pii_objects = _parse_pii_objects(parser, ini_path)
     similar_similarity = _parse_similar_similarity(parser, ini_path)
@@ -191,6 +207,7 @@ def load_settings(project_root: Path | None = None) -> Settings:
         related_depth=related_depth,
         credential_prefix=credential_prefix,
         row_limit=row_limit,
+        soql_count=soql_count,
         pii_keywords=pii_keywords,
         pii_person_objects=pii_objects,
         similar_column_similarity=similar_similarity,

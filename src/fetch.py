@@ -49,10 +49,11 @@ from comken.exceptions import (
 )
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src import mapping, pii
+from src import mapping, pii, soql_builder
 from src.describe_store import DescribeStore, org_from_url
 from src.master import MasterEntry
 from src.settings import Settings
+from src.soql_builder import STATUS_NONE, SoqlDraft
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,15 @@ ROW_CHECK_OVER = "超えている"
 ROW_CHECK_UNDER = "超えていない"
 ROW_CHECK_UNKNOWN = "判定不可"
 ROW_CHECK_DISABLED = "未実施"
+
+# 件数チェックの状態定数。 ``CountCheck.status`` にそのまま入る
+COUNT_CHECK_MATCHED = "一致"
+COUNT_CHECK_MISMATCHED = "不一致"
+COUNT_CHECK_UNKNOWN = "確認できず"
+COUNT_CHECK_DISABLED = "未実施"
+
+# 件数チェックの集計取得時、 明細を返さないクエリパラメータ。 行データを取らないため必須
+COUNT_INCLUDE_DETAILS = "false"
 
 # 接続先判定の既定実装（ comken の ``site_for`` ）。 テストでは差し替える。
 SiteFor = Callable[[str], type]
@@ -169,6 +179,33 @@ class RowCheck:
 
 
 @dataclass(frozen=True)
+class CountCheck:
+    """件数チェック（ レポート総件数 vs SOQL の totalSize ） の結果。 1 レポート 1 件。
+
+    ``status`` は次のいずれか:
+
+    - ``一致`` … レポートの総件数と SOQL の件数 （ ``topRows.rowLimit`` が有る
+      ときは ``min(totalSize, limit)`` ） が一致
+    - ``不一致`` … 両方の件数が取れたが 一致しない
+    - ``確認できず`` … レポートの総件数が取れない、 SOQL がエラー、 SOQL が
+      作れず 等。 理由は ``reason`` に入る
+    - ``未実施`` … ``[CHECKS] SOQL_COUNT = ×`` で実行しなかった
+
+    ``limit`` は ``topRows.rowLimit`` の値。 ``LIMIT`` が無い・読めないときは
+    ``None`` 。 一致/不一致の判定で使った値と同じものを保持する。
+
+    行データ（ 値そのもの ） は **保持しない** 。 メモリ上でも件数だけ数え、
+    CSV / ログ / 警告 / 例外メッセージに絶対に出さない。
+    """
+
+    status: str
+    report_count: int | None
+    soql_count: int | None
+    limit: int | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
 class ReportRecord:
     """1 ID の取得結果をメモリに保持する記録。 ``frozen`` で再代入しない。
 
@@ -197,6 +234,19 @@ class ReportRecord:
     pii: pii.ReportPIIResult = dc_field(
         default_factory=lambda: pii.ReportPIIResult(status="なし", matching_columns=())
     )
+    #: 件数チェック（ レポート総件数 vs SOQL の totalSize ） の結果。
+    #: ``None`` なら未実施。 ``[CHECKS] SOQL_COUNT = ×`` のときや、
+    #: 件数チェック自体を実装しなかった古い record では ``None``
+    count_check: CountCheck | None = None
+    #: ``build_soql(record)`` の戻り値。 1 レポート分につき組み立てを 1 回に
+    #: まとめるため ``_fetch_one`` で組み立てて record に持たせる。 tables は
+    #: この ``soql_draft`` をそのまま使う （ build_soql を二度呼ばない ）。
+    #: 古い record で組み立てていないときは ``作れず`` の空 draft 相当を返す
+    soql_draft: SoqlDraft = dc_field(
+        default_factory=lambda: SoqlDraft(
+            soql="", status=STATUS_NONE, missing=(), checks=()
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -208,6 +258,22 @@ class FetchOutcome:
     record: ReportRecord | None  # status="ok" のときだけ入る
     warnings: tuple[str, ...]
     error: str | None
+
+
+@dataclass(frozen=True)
+class _SoqlDraftInput:
+    """``build_soql`` / ``build_count_soql`` に渡す一時的な入力オブジェクト。
+
+    ``ReportRecord`` を作る前に件数チェック用の SOQL を組み立てるため、 main_object
+    / report / column_map だけを持つ薄い dataclass を使う。 ``build_count_soql``
+    は ``soql_draft`` 属性も見るので、 そちらも含める （ ``build_soql`` には
+    影響しない ） 。
+    """
+
+    main_object: str | None
+    report: dict[str, Any]
+    column_map: list[dict[str, Any]]
+    soql_draft: SoqlDraft | None = None
 
 
 def run_fetch(
@@ -336,6 +402,22 @@ def _log_row_check(row_check: RowCheck | None) -> None:
         return
     rows_text = str(row_check.rows) if row_check.rows is not None else "-"
     logger.info("  2000件チェック: 判定=%s 行数=%s", row_check.status, rows_text)
+
+
+def _log_count_check(count_check: CountCheck | None) -> None:
+    """件数チェックの結果を 1 行で出す。 件数だけ、 SOQL 本文は出さない
+    （ 出力先は ``debug`` ） 。"""
+    if count_check is None:
+        logger.info("  件数チェック: 未実施")
+        return
+    report_text = str(count_check.report_count) if count_check.report_count is not None else "-"
+    soql_text = str(count_check.soql_count) if count_check.soql_count is not None else "-"
+    logger.info(
+        "  件数チェック: 結果=%s レポート=%s SOQL=%s",
+        count_check.status,
+        report_text,
+        soql_text,
+    )
 
 
 def _log_report_contents(metadata: dict[str, Any], main_object_name: str | None) -> None:
@@ -627,6 +709,198 @@ def _safe_row_count(table: Any) -> int:
         return len(table)
     except TypeError:
         return 0
+
+
+def _check_count(
+    client: Any,
+    report_id: str,
+    count_soql: str | None,
+    limit: int | None,
+) -> CountCheck:
+    """件数チェック（ レポート総件数 vs SOQL の totalSize ） を実行する。
+
+    - レポートの総件数を ``client.request("GET", "/analytics/reports/{id}?includeDetails=false")``
+      で取得し、 ``factMap["T!T"]["aggregates"]`` のうち ``reportMetadata.aggregates``
+      で ``RowCount`` の位置にある値を ``report_count`` とする。 取れなかった
+      ときは ``確認できず`` で理由 「レポートの総件数が取れない」
+    - ``count_soql`` が ``None`` のときは SOQL の件数チェックは省略し、
+      レポートの総件数だけ返す （ 呼び出し側で SOQL が無い / 作れず のケース ）
+    - SOQL の件数を ``client.request("GET", "/query?q=...")`` で ``totalSize`` を読む。
+      エラー時は ``確認できず`` で Salesforce のエラーメッセージを ``reason`` に。
+      ``limit`` が有るときは ``min(totalSize, limit)`` を SOQL 件数とする
+    - ``SalesforceRequestError`` の 401 / 403 はそのまま上位へ送出
+      （ レポート全体を失敗扱いにする、 既存 ``_check_row_count`` と同じ ）
+    - その他の ``SalesforceError`` / 例外は ``確認できず`` に縮退
+
+    行データ（ 値そのもの ） は取得しない。 ``includeDetails=false`` を付け、
+    SOQL クエリも件数だけなので ``records`` の中身は触らない。
+    """
+    report_count = _fetch_report_total_count(client, report_id)
+
+    if count_soql is None:
+        # SOQL が無い （ 作れず ） とき。 レポートの総件数が取れていれば、
+        # 件数チェック全体としては 「確認できず」 にする
+        if report_count is None:
+            return CountCheck(
+                status=COUNT_CHECK_UNKNOWN,
+                report_count=None,
+                soql_count=None,
+                limit=limit,
+                reason="レポートの総件数が取れない",
+            )
+        return CountCheck(
+            status=COUNT_CHECK_UNKNOWN,
+            report_count=report_count,
+            soql_count=None,
+            limit=limit,
+            reason="SOQL を作れず",
+        )
+
+    soql_count, soql_error = _fetch_soql_total_count(client, count_soql, limit)
+
+    if report_count is None and soql_count is None:
+        return CountCheck(
+            status=COUNT_CHECK_UNKNOWN,
+            report_count=None,
+            soql_count=None,
+            limit=limit,
+            reason="レポートの総件数が取れない",
+        )
+    if report_count is None:
+        return CountCheck(
+            status=COUNT_CHECK_UNKNOWN,
+            report_count=None,
+            soql_count=soql_count,
+            limit=limit,
+            reason="レポートの総件数が取れない",
+        )
+    if soql_count is None:
+        return CountCheck(
+            status=COUNT_CHECK_UNKNOWN,
+            report_count=report_count,
+            soql_count=None,
+            limit=limit,
+            reason=soql_error or "SOQL の件数が取れない",
+        )
+    if report_count == soql_count:
+        return CountCheck(
+            status=COUNT_CHECK_MATCHED,
+            report_count=report_count,
+            soql_count=soql_count,
+            limit=limit,
+            reason=None,
+        )
+    return CountCheck(
+        status=COUNT_CHECK_MISMATCHED,
+        report_count=report_count,
+        soql_count=soql_count,
+        limit=limit,
+        reason=None,
+    )
+
+
+def _fetch_report_total_count(client: Any, report_id: str) -> int | None:
+    """レポート実行結果の ``factMap`` から総件数を取り出す。
+
+    ``?includeDetails=false`` を付けるので明細データは返ってこない。 ``RowCount``
+    が ``reportMetadata.aggregates`` に無い、 ``factMap["T!T"]["aggregates"]`` の
+    対応位置の値が無い / 整数でない、 等のときは ``None`` 。
+
+    401 / 403 は ``SalesforceRequestError`` のまま上位へ送出、 その他は ``None`` 。
+    """
+    reports_path = client.data_path("/analytics/reports")
+    path = f"{reports_path}/{report_id}?includeDetails={COUNT_INCLUDE_DETAILS}"
+    try:
+        result, _ = client.request("GET", path, component="report")
+    except SalesforceRequestError as exc:
+        if exc.status_code in FATAL_STATUS_CODES:
+            raise
+        return None
+    except SalesforceError:
+        return None
+    return _extract_row_count_from_report_payload(result)
+
+
+def _extract_row_count_from_report_payload(payload: object) -> int | None:
+    """``client.request`` の戻り値からレポート総件数を取り出す。
+
+    ``reportMetadata.aggregates`` の中で ``"RowCount"`` の位置にある
+    ``factMap["T!T"]["aggregates"]`` の値を返す。 位置が取れない /
+    値が整数でないときは ``None`` 。
+    """
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get("reportMetadata")
+    if not isinstance(metadata, dict):
+        return None
+    aggregates = metadata.get("aggregates")
+    if not isinstance(aggregates, list):
+        return None
+
+    row_count_idx: int | None = None
+    for idx, agg in enumerate(aggregates):
+        if isinstance(agg, str) and agg == "RowCount":
+            row_count_idx = idx
+            break
+    if row_count_idx is None:
+        return None
+
+    fact_map = payload.get("factMap")
+    if not isinstance(fact_map, dict):
+        return None
+    t_t = fact_map.get("T!T")
+    if not isinstance(t_t, dict):
+        return None
+    fact_aggregates = t_t.get("aggregates")
+    if not isinstance(fact_aggregates, list):
+        return None
+    if row_count_idx >= len(fact_aggregates):
+        return None
+    value = fact_aggregates[row_count_idx]
+    # bool は int の subclass なのでここで除外
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _fetch_soql_total_count(
+    client: Any,
+    count_soql: str,
+    limit: int | None,
+) -> tuple[int | None, str | None]:
+    """SOQL ``COUNT()`` の ``totalSize`` を取り、 ``limit`` が有るときは ``min`` を返す。
+
+    戻り値は ``(total_size, error_message)`` 。 ``total_size`` が取れたときは
+    ``error_message`` は ``None`` 。 エラー時は ``total_size=None`` と
+    ``error_message`` に短いエラー理由の文字列を返す。
+
+    401 / 403 は ``SalesforceRequestError`` のまま上位へ送出する。
+    その他のエラーは縮退し、 メッセージを ``error_message`` に乗せる （ 値が
+    取れない理由を残して件数チェック表の 「 確認できず 」 で表示するため ）。
+    """
+    from urllib.parse import quote
+
+    path = f"{client.data_path('/query')}?q={quote(count_soql)}"
+    try:
+        result, _ = client.request("GET", path, component="query")
+    except SalesforceRequestError as exc:
+        if exc.status_code in FATAL_STATUS_CODES:
+            raise
+        return None, _format_error_reason(exc)
+    except SalesforceError as exc:
+        return None, _format_error_reason(exc)
+    if not isinstance(result, dict):
+        return None, "SOQL クエリのレスポンスが想定の形ではない"
+    total_size = result.get("totalSize")
+    if isinstance(total_size, bool):
+        return None, "SOQL クエリの totalSize が不正"
+    if not isinstance(total_size, int):
+        return None, "SOQL クエリの totalSize が無い / 数字でない"
+    if limit is not None and limit < total_size:
+        return limit, None
+    return total_size, None
 
 
 def _report_format(metadata: dict[str, Any]) -> str:
@@ -1005,6 +1279,29 @@ def _fetch_one(
     if row_check is not None and row_check.status == ROW_CHECK_UNKNOWN and row_check.reason:
         warnings.append(f"2000件超の判定ができませんでした: {row_check.reason}")
 
+    # 件数チェック: 1 レポート分の ``build_soql`` 結果を組み立てて record に持たせ、
+    # 続けて ``build_count_soql`` で COUNT 用 SOQL を作って ``_check_count`` に渡す。
+    # 1 レポート分で ``build_soql`` は 1 回しか呼ばない （ tables 側もこの
+    # ``soql_draft`` をそのまま使う ）
+    soql_draft = soql_builder.build_soql(
+        _SoqlDraftInput(main_object=main_object, report=slim_report, column_map=column_map)
+    )
+
+    count_check: CountCheck | None = None
+    if settings.soql_count:
+        count_soql, count_limit = soql_builder.build_count_soql(
+            _SoqlDraftInput(
+                main_object=main_object,
+                report=slim_report,
+                column_map=column_map,
+                soql_draft=soql_draft,
+            )
+        )
+        # COUNT 用 SOQL が無い （ ``作れず`` ） のときも ``_check_count`` 側で
+        # 「 SOQL を作れず 」 の理由にして返す
+        count_check = _check_count(client, report_id, count_soql, count_limit)
+    _log_count_check(count_check)
+
     record = ReportRecord(
         key=entry.key,
         summary=entry.summary,
@@ -1018,6 +1315,8 @@ def _fetch_one(
         warnings=tuple(warnings),
         row_check=row_check,
         pii=pii_result,
+        count_check=count_check,
+        soql_draft=soql_draft,
     )
 
     return FetchOutcome(

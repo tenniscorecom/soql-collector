@@ -114,3 +114,57 @@ def test_load_settings_ignores_objects_section(tmp_path: Path) -> None:
     # 関連フィールドが存在しないことを確認
     assert not hasattr(settings, "objects_names")
     assert not hasattr(settings, "objects_org_id")
+
+
+# ── [CHECKS] SOQL_COUNT ────────────────────────────────────────────
+
+
+def test_load_settings_soql_count_default_enabled(tmp_path: Path) -> None:
+    """``[CHECKS] SOQL_COUNT`` が無いとき既定の ``○``（ True ）。"""
+    master_path = tmp_path / "master.xlsx"
+    _write_ini(tmp_path, f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n")
+
+    settings = load_settings(tmp_path)
+
+    assert settings.soql_count is True
+
+
+def test_load_settings_soql_count_disabled(tmp_path: Path) -> None:
+    """``[CHECKS] SOQL_COUNT = ×`` で False。"""
+    master_path = tmp_path / "master.xlsx"
+    _write_ini(
+        tmp_path,
+        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n"
+        "[CHECKS]\nSOQL_COUNT = ×\n",
+    )
+
+    settings = load_settings(tmp_path)
+
+    assert settings.soql_count is False
+
+
+def test_load_settings_soql_count_explicit_enabled(tmp_path: Path) -> None:
+    """``[CHECKS] SOQL_COUNT = ○`` で True。"""
+    master_path = tmp_path / "master.xlsx"
+    _write_ini(
+        tmp_path,
+        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n"
+        "[CHECKS]\nSOQL_COUNT = ○\n",
+    )
+
+    settings = load_settings(tmp_path)
+
+    assert settings.soql_count is True
+
+
+def test_load_settings_soql_count_invalid_raises(tmp_path: Path) -> None:
+    """``[CHECKS] SOQL_COUNT`` が ``○`` / ``×`` 以外ならエラー。"""
+    master_path = tmp_path / "master.xlsx"
+    _write_ini(
+        tmp_path,
+        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n"
+        "[CHECKS]\nSOQL_COUNT = foo\n",
+    )
+
+    with pytest.raises(ConfigKeyNotFoundError):
+        load_settings(tmp_path)

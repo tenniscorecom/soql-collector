@@ -68,6 +68,20 @@ class _FakeClient:
         self.report = _ReportStub(describe, get_table=get_table, get_error=get_error)
         self.describe_object_calls: list[str] = []
 
+    def data_path(self, path: str) -> str:
+        return path
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: object = None,
+        component: str = "other",
+        headers: dict[str, str] | None = None,
+        data: str | None = None,
+    ) -> tuple[object, dict[str, str]]:
+        return None, {}
+
     def describe_object(self, name: str) -> dict:
         self.describe_object_calls.append(name)
         return self._object_describes.get(name, {"name": name, "fields": []})
@@ -100,7 +114,7 @@ def _site_for(client: _FakeClient):
     return resolver
 
 
-def _settings(tmp_path: Path, *, row_limit: bool = True) -> Settings:
+def _settings(tmp_path: Path, *, row_limit: bool = True, soql_count: bool = False) -> Settings:
     return Settings(
         master_xlsx_path=tmp_path / "master.xlsx",
         output_dir=tmp_path / "output",
@@ -108,6 +122,7 @@ def _settings(tmp_path: Path, *, row_limit: bool = True) -> Settings:
         related_depth=1,
         credential_prefix="",
         row_limit=row_limit,
+        soql_count=soql_count,
         pii_keywords=(),
         pii_person_objects=(),
         similar_column_similarity=0.8,

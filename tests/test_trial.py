@@ -92,6 +92,20 @@ class _FakeClient:
         self._object_describes = object_describes or {}
         self.describe_object_calls: list[str] = []
 
+    def data_path(self, path: str) -> str:
+        return path
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: object = None,
+        component: str = "other",
+        headers: dict[str, str] | None = None,
+        data: str | None = None,
+    ) -> tuple[object, dict[str, str]]:
+        return None, {}
+
     def describe_object(self, name: str) -> dict:
         self.describe_object_calls.append(name)
         return self._object_describes.get(name, {"name": name, "fields": []})

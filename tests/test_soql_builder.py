@@ -1369,6 +1369,205 @@ def test_boolean_filter_repeats_same_number_substitutes_both() -> None:
     assert "( 1 " not in soql_normalized
 
 
+# ── 件数用 SOQL の組み立て ────────────────────────────────────────────
+
+
+def test_count_soql_for_three_columns_has_no_columns() -> None:
+    """3 列の SOQL で件数用は ``SELECT COUNT()\\nFROM …\\nWHERE …`` になり、 SELECT 句に列名が残らない。
+
+    文字列の切り貼りで 1 行目だけ ``COUNT()`` に置換する実装だと 2 列目以降が
+    カンマだけ残って壊れる (``COUNT(),\\n  What.Name,\\n  Owner.Name`` のような形)。
+    """
+    column_map = _column_map_with_types(
+        [
+            ("Subject", "Subject", "string"),
+            ("What.Name", "What.Name", "string"),
+            ("Owner.Name", "Owner.Name", "string"),
+        ]
+    )
+    record = _make_record(
+        main_object="Task",
+        detail_columns=["Subject", "What.Name", "Owner.Name"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Subject", "operator": "contains", "value": "A LIMIT B"},
+            {"column": "What.Name", "operator": "equals", "value": "B"},
+        ],
+        report_boolean_filter="1 OR 2",
+        sort_by=[{"sortColumn": "Subject", "sortOrder": "ASC"}],
+        top_rows={"rowLimit": 10},
+    )
+    draft = build_soql(record)
+    count = draft.count_soql
+    # ``SELECT COUNT()`` の直後は改行で ``FROM`` になる
+    assert count.startswith("SELECT COUNT()\n")
+    # SELECT 部分 (``\nFROM`` の前) は ``SELECT COUNT()`` の 1 行だけ
+    select_part = count.split("\nFROM", 1)[0]
+    assert select_part == "SELECT COUNT()"
+    # 元の SOQL と同じ ``FROM`` / ``WHERE`` を持つ
+    assert "FROM Task" in count
+    # WHERE 全文がそのまま残っている ( `` LIMIT `` を含む値で切れていない)
+    soql_normalized = count.replace("\n  AND\n  ", " AND ")
+    assert "Subject LIKE '%A LIMIT B%'" in soql_normalized
+    assert "What.Name = 'B'" in soql_normalized
+    # ``ORDER BY`` / ``LIMIT`` は末尾に付かない ( WHERE 内の ``'A LIMIT B%'``
+    # や ``'%A LIMIT B%'`` は値の一部なのでここで除去してから確認する)
+    soql_no_value_limit = soql_normalized.replace("'%A LIMIT B%'", "")
+    assert "LIMIT" not in soql_no_value_limit.upper()
+
+
+def test_count_soql_where_not_cut_by_limit_or_order_by_in_value() -> None:
+    """値に `` LIMIT `` / `` ORDER BY `` を含むとき、 WHERE が切れていない。
+
+    文字列検索で ``LIMIT`` / ``ORDER BY`` を探して切る実装だと、 値の途中で切れる。
+    """
+    column_map = _column_map_with_types(
+        [
+            ("Subject", "Subject", "string"),
+            ("What.Name", "What.Name", "string"),
+            ("Owner.Name", "Owner.Name", "string"),
+        ]
+    )
+    record = _make_record(
+        detail_columns=["Subject", "What.Name", "Owner.Name"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Subject", "operator": "contains", "value": "A LIMIT B"},
+            {"column": "What.Name", "operator": "equals", "value": "ORDER BY B"},
+        ],
+        report_boolean_filter="1 OR 2",
+    )
+    draft = build_soql(record)
+    count = draft.count_soql
+    # 元の SOQL の WHERE は ```` + `` AND `` + ``````
+    # ( ``Subject LIKE '%A LIMIT B%'`` ) OR ( ``What.Name = 'ORDER BY B'`` ``) ``
+    expected_where = "( Subject LIKE '%A LIMIT B%' ) OR ( What.Name = 'ORDER BY B' )"
+    assert expected_where in count
+    # 値の途中で切れていない ( 元の SOQL の ``count`` 比較する代わりに
+    # 全文が含まれていることで確認 )
+    assert count.endswith(expected_where) or expected_where in count
+    # ``ORDER BY`` / ``LIMIT`` は無い ( 値は ``'ORDER BY B'`` / ``'%A LIMIT B%'`` の形なので
+    # ``count.upper()`` でも大文字小文字を区別せずに出てこない)
+    upper_count = count.upper()
+    # 値の中の `` ORDER BY `` / `` LIMIT `` はカウントしても 1 個以上ある。
+    # 文字列 ``ORDER BY`` 句 ( 大文字+半角スペース+大文字 ) を探す: ``\\n ORDER BY`` 由来は無い。
+    # 確実に切り貼りしていない証として、 末尾の ``)`` の後に ``ORDER BY`` / ``LIMIT`` が出てこない。
+    assert not upper_count.endswith(("ORDER BY", "LIMIT"))
+
+
+def test_count_soql_with_top_rows_returns_limit_and_no_limit_clause() -> None:
+    """``topRows`` があるときは ``limit`` が返り、 件数用 SOQL に ``LIMIT`` が付かない。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        sort_by=[{"sortColumn": "Name", "sortOrder": "ASC"}],
+        top_rows={"rowLimit": 42},
+    )
+    draft = build_soql(record)
+    # 件数用 SOQL に ``LIMIT`` は付かない
+    assert "LIMIT" not in draft.count_soql.upper()
+    # ``limit`` フィールドに正の整数が入る
+    assert draft.limit == 42
+
+
+def test_build_count_soql_reads_from_soql_draft() -> None:
+    """``build_count_soql(record)`` は ``record.soql_draft`` の ``count_soql`` /
+    ``limit`` をそのまま返す ( 文字列を切り貼りしない )。"""
+    column_map = _column_map_with_types(
+        [
+            ("Subject", "Subject", "string"),
+            ("What.Name", "What.Name", "string"),
+            ("Owner.Name", "Owner.Name", "string"),
+        ]
+    )
+    record = _make_record(
+        detail_columns=["Subject", "What.Name", "Owner.Name"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Subject", "operator": "contains", "value": "A LIMIT B"},
+            {"column": "What.Name", "operator": "equals", "value": "ORDER BY B"},
+        ],
+        report_boolean_filter="1 OR 2",
+        top_rows={"rowLimit": 10},
+    )
+    # ``build_soql`` を回して ``soql_draft`` を持つ record を作る
+    draft = build_soql(record)
+    record_with_draft = ReportRecord(
+        key=record.key,
+        summary=record.summary,
+        report_id=record.report_id,
+        url=record.url,
+        main_object=record.main_object,
+        report=record.report,
+        objects=record.objects,
+        relations=record.relations,
+        column_map=record.column_map,
+        warnings=record.warnings,
+        soql_draft=draft,
+    )
+
+    from src.soql_builder import build_count_soql
+
+    count_soql, limit = build_count_soql(record_with_draft)
+    # ``build_soql`` が ``STATUS_NONE`` で無いので count_soql が返る
+    assert count_soql is not None
+    assert count_soql.startswith("SELECT COUNT()\n")
+    assert limit == 10
+    # SELECT 部分 (``\nFROM`` の前) は ``SELECT COUNT()`` 1 行だけ
+    select_part = count_soql.split("\nFROM", 1)[0]
+    assert select_part == "SELECT COUNT()"
+    # ``ORDER BY`` / ``LIMIT`` は末尾に付かない (``ORDER BY`` / ``LIMIT`` 句
+    # として出てこないこと。「値の ``ORDER BY`` / ``LIMIT``」 は WHERE 内に
+    # ``%A LIMIT B%`` / ``'ORDER BY B'`` として含まれているのを確認する)
+    soql_no_value_orderby = count_soql.replace("'ORDER BY B'", "")
+    soql_no_value_limit = soql_no_value_orderby.replace("'%A LIMIT B%'", "")
+    assert "ORDER BY" not in soql_no_value_limit.upper()
+    assert "LIMIT" not in soql_no_value_limit.upper()
+    # 値が壊れていない ( 元の SOQL の WHERE と一致 )
+    assert "( Subject LIKE '%A LIMIT B%' )" in count_soql
+    assert "( What.Name = 'ORDER BY B' )" in count_soql
+
+
+def test_count_soql_for_three_columns_and_value_limit_does_not_break_wire() -> None:
+    """3 列 + 値に ``LIMIT`` / ``ORDER BY`` を含む条件で ``_FakeClient`` の
+    ``/query?q=...`` 側の SOQL 形 assert を通ること自体は、
+    ``tests/test_count_check.py`` 側の統合テストが担当する ( そちらの
+    ``_FakeClient.request`` が ``SELECT COUNT()`` 形 (``FROM`` の前に
+    余計な列名が無い) を assert しているため、文字列の切り貼りで
+    1 行目だけ ``COUNT()`` に置換する壊れた実装だと必ず落ちる)。
+
+    ここは個別の ``SoqlDraft`` レベルで 3 列 + ``LIMIT`` / ``ORDER BY`` 値を
+    持った case が、 件数用 SOQL の ``count_soql`` にも ``build_soql`` の
+    ``soql`` と整合した形で反映されることを保証する薄いテスト。
+    """
+    column_map = _column_map_with_types(
+        [
+            ("Subject", "Subject", "string"),
+            ("What.Name", "What.Name", "string"),
+            ("Owner.Name", "Owner.Name", "string"),
+        ]
+    )
+    record = _make_record(
+        detail_columns=["Subject", "What.Name", "Owner.Name"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Subject", "operator": "contains", "value": "A LIMIT B"},
+            {"column": "What.Name", "operator": "equals", "value": "ORDER BY B"},
+        ],
+        report_boolean_filter="1 OR 2",
+    )
+    draft = build_soql(record)
+    # 件数用 SOQL は ``SELECT COUNT()`` で始まり ``FROM`` の前に何もない
+    select_part, sep, _from_and_rest = draft.count_soql.partition("\nFROM")
+    assert select_part == "SELECT COUNT()"
+    assert sep == "\nFROM"
+    # 元の SOQL の ``WHERE`` 全文が件数用 SOQL に残っている ( `` LIMIT `` /
+    # `` ORDER BY `` を含む値で切れていない)
+    assert "( Subject LIKE '%A LIMIT B%' )" in draft.count_soql
+    assert "( What.Name = 'ORDER BY B' )" in draft.count_soql
+
+
 # ── 壊れた版での動作確認 ( 一時的に手で壊して実行→戻す ) ──────────────
 # 仕様: 「 壊したコードで一時的に走らせて元に戻す 」 。
 # 既存のテストが落ちることを report 用に確認する。 テストファイルには

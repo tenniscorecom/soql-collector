@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import Any
 
@@ -113,12 +113,22 @@ class SoqlDraft:
             コープ=MyTerritory: 実行ユーザーで結果が変わる。 OwnerId 等
             の条件を足すか確認 」 「 日時の条件をタイムゾーン無しの UTC 0 時
             で置き換えた: CloseDate >= 2025-01-01 」 。
+        count_soql: 件数チェック用に ``SELECT COUNT()`` へ書き換えた SOQL
+            (``FROM`` / ``WHERE`` は同じ、 ``ORDER BY`` と ``LIMIT`` は
+            付けない )。 ``build_soql`` が ``作れず`` のときは空文字。
+            ``build_soql`` と同じ ``select_lines`` / ``where_lines`` から
+            組み立てるため、 文字列の切り貼りをしない。
+        limit: ``reportMetadata.topRows.rowLimit`` の正の整数。 件数
+            チェックで ``min(totalSize, limit)`` を計算するための値。 無い
+            / 読めないときは ``None`` 。
     """
 
     soql: str
     status: str
     missing: tuple[str, ...]
     checks: tuple[str, ...]
+    count_soql: str = field(default="")
+    limit: int | None = field(default=None)
 
 
 def _coerce_str(value: object) -> str:
@@ -884,6 +894,18 @@ def build_soql(record: Any) -> SoqlDraft:
 
     soql = "\n".join(lines)
 
+    # ── 件数用 SOQL を組み立てる ─────────────────────────────────────────
+    # 同じ ``select_lines`` / ``where_lines`` から組み立てる （ 文字列の
+    # 切り貼りをしない ）。 ``ORDER BY`` / ``LIMIT`` は付けない。
+    count_lines: list[str] = ["SELECT COUNT()", f"FROM {main_object}"]
+    if where_lines:
+        where_block_count = "\n  AND\n  ".join(where_lines)
+        count_lines.append(f"WHERE {where_block_count}")
+    count_soql = "\n".join(count_lines)
+
+    # ── topRows.rowLimit から ``limit`` を抽出 ────────────────────────
+    limit: int | None = _extract_top_rows_limit(metadata.get("topRows"))
+
     # ── 状態の決定 ──────────────────────────────────────────────────────
     if missing:
         status = STATUS_PARTIAL
@@ -897,4 +919,52 @@ def build_soql(record: Any) -> SoqlDraft:
         status=status,
         missing=tuple(missing),
         checks=tuple(checks),
+        count_soql=count_soql,
+        limit=limit,
     )
+
+
+def build_count_soql(record: Any) -> tuple[str | None, int | None]:
+    """``record.soql_draft`` に組み立て済みの件数用 SOQL と ``limit`` を返す。
+
+    文字列の切り貼りはしない。 ``build_soql(record)`` が同じ部品
+    (``select_lines`` / ``where_lines``) から組み立てた ``count_soql`` を
+    そのまま返す。 ``fetch.py`` では ``build_soql`` を 1 レポート分につき
+    1 回しか呼ばず、 その戻り値を record に持たせておいて、ここで読み出す。
+
+    Args:
+        record: ``ReportRecord`` 互換 (``main_object`` / ``report`` /
+            ``column_map`` 属性があれば良い )。 ``soql_draft`` 属性があれば
+            それを使う。 無ければ ``build_soql(record)`` を呼んで組み立てる。
+
+    Returns:
+        ``(count_soql, limit)``:
+        - ``count_soql`` … ``SELECT COUNT() FROM ... WHERE ...`` の SOQL 。
+          ``build_soql`` が ``作れず`` のときは ``None`` 。
+        - ``limit`` … ``topRows.rowLimit`` の値。 無い / 読めないときは ``None`` 。
+    """
+    soql_draft = getattr(record, "soql_draft", None)
+    if not isinstance(soql_draft, SoqlDraft):
+        soql_draft = build_soql(record)
+
+    if soql_draft.status == STATUS_NONE or not soql_draft.count_soql:
+        return None, soql_draft.limit
+    return soql_draft.count_soql, soql_draft.limit
+
+
+def _extract_top_rows_limit(top_rows: object) -> int | None:
+    """``reportMetadata.topRows`` から ``rowLimit`` の正の整数を取り出す。
+
+    dict 以外 / rowLimit が無い / 0 以下 / bool のときは ``None`` 。 文字列は
+    数字だけなら int に変換、 それ以外は ``None`` 。
+    """
+    if not isinstance(top_rows, dict):
+        return None
+    row_limit = top_rows.get("rowLimit")
+    if isinstance(row_limit, bool):
+        return None
+    if isinstance(row_limit, int) and row_limit > 0:
+        return row_limit
+    if isinstance(row_limit, str) and row_limit.isdigit() and int(row_limit) > 0:
+        return int(row_limit)
+    return None

@@ -56,11 +56,47 @@ class _FakeClient:
         *,
         get_table: object | None = None,
         get_error: BaseException | None = None,
+        request_responses: list[tuple[str, tuple[object, dict[str, str]]]] | None = None,
+        request_errors: list[tuple[str, BaseException]] | None = None,
     ) -> None:
         self._object_describes = object_describes or {}
         self._errors = errors or {}
         self.report = _ReportStub(describe, get_table=get_table, get_error=get_error)
         self.describe_object_calls: list[str] = []
+        # ``client.request("GET", path, ...)`` を受け取るスタブ。 ``path``
+        # 完全一致した順に返す。 ``request_errors`` も同じ ``path`` の
+        # 順に対応。 どちらかが空なら ``(None, {})`` / 例外なしで動く
+        self._request_responses = request_responses or []
+        self._request_errors = request_errors or {}
+        # 順序消費用のカーソル
+        self._request_index = 0
+        self.request_calls: list[tuple[str, str]] = []
+
+    def data_path(self, path: str) -> str:
+        # テストではバージョン前置換はせず、 パスをそのまま返す
+        return path
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: object = None,
+        component: str = "other",
+        headers: dict[str, str] | None = None,
+        data: str | None = None,
+    ) -> tuple[object, dict[str, str]]:
+        self.request_calls.append((method, path))
+        if path in self._request_errors:
+            raise self._request_errors[path]
+        if self._request_index < len(self._request_responses):
+            entry = self._request_responses[self._request_index]
+            self._request_index += 1
+            response_path, payload = entry
+            assert response_path == path, (
+                f"path mismatch: expected {response_path!r}, got {path!r}"
+            )
+            return payload
+        return None, {}
 
     def describe_object(self, name: str) -> dict:
         self.describe_object_calls.append(name)
@@ -109,6 +145,7 @@ def _settings(tmp_path: Path, related_max: int = 40, related_depth: int = 1) -> 
         related_depth=related_depth,
         credential_prefix="",
         row_limit=True,
+        soql_count=True,
         pii_keywords=("name", "電話"),
         pii_person_objects=("Contact",),
         similar_column_similarity=0.8,

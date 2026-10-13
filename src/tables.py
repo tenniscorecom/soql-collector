@@ -108,6 +108,7 @@ SURVEY_COLUMNS: tuple[str, ...] = (
     "取得できなかった項目数",
     "警告数",
     "SOQL状態",
+    "件数チェック",
 )
 
 # SOQL シートの列名
@@ -116,6 +117,9 @@ SOQL_COLUMNS: tuple[str, ...] = (
     "概要",
     "主オブジェクト",
     "状態",
+    "件数チェック",
+    "レポート件数",
+    "SOQL件数",
     "SOQL",
     "作れなかった部分",
     "要確認",
@@ -495,10 +499,17 @@ def _survey_pii_display(record: object) -> tuple[str, str]:
 
 
 def soql_status_for_record(record: object) -> str:
-    """record から ``build_soql`` を呼んで ``status`` を返すヘルパー。
+    """record の ``soql_draft`` から組み立て状態の文字列を返すヘルパー。
+
+    ``record.soql_draft`` があればそれを使い （ ``_fetch_one`` で組み立てて
+    record に持たせた結果を 2 回作らない ）。 無ければ ``build_soql(record)`` に
+    縮退する（ 古い record や単品テスト用のスタブを想定 ）。
 
     エラー時は空文字。 一覧シートの ``SOQL状態`` 列で使う。
     """
+    draft = getattr(record, "soql_draft", None)
+    if draft is not None:
+        return getattr(draft, "status", "")
     try:
         return soql_builder.build_soql(record).status
     except Exception:  # どんな例外でも表は壊さない
@@ -506,25 +517,54 @@ def soql_status_for_record(record: object) -> str:
         return ""
 
 
+def _count_check_display(record: object) -> tuple[str, str, str]:
+    """``record.count_check`` から ``件数チェック / レポート件数 / SOQL件数``
+    の 3 セル表示用文字列を作る。
+
+    - ``件数チェック`` は ``count_check.status`` （ ``一致`` / ``不一致`` /
+      ``確認できず`` / ``未実施`` ） と理由。 ``count_check`` が無いときは空
+    - ``レポート件数`` / ``SOQL件数`` は ``count_check.report_count`` /
+      ``count_check.soql_count`` の値。 ``None`` のときは ``-``
+    """
+    count_check = getattr(record, "count_check", None)
+    if count_check is None:
+        return "", "", ""
+    status = getattr(count_check, "status", "") or ""
+    reason = getattr(count_check, "reason", None) or ""
+    report_count = getattr(count_check, "report_count", None)
+    soql_count = getattr(count_check, "soql_count", None)
+    status_text = status if not reason else f"{status}（{reason}）"
+    report_count_text = str(report_count) if report_count is not None else "-"
+    soql_count_text = str(soql_count) if soql_count is not None else "-"
+    return status_text, report_count_text, soql_count_text
+
+
 def _build_soql_sheet_rows_from_records(records: Sequence[object]) -> list[dict[str, str]]:
     """全 record から ``SOQL`` シートの行を作る。 ``build_soql`` の戻り値を
     列ごとに展開する。
 
     ``作れなかった部分`` / ``要確認`` は改行区切りで 1 セルにまとめる ( Excel
-    で 1 行の折り返しが効くように ) 。
+    で 1 行の折り返しが効くように ) 。 ``件数チェック`` の列は record の
+    ``count_check`` から作る（ 件数だけ, 行データは載せない ）。
     """
     rows: list[dict[str, str]] = []
     for record in records:
-        draft = soql_builder.build_soql(record)
+        draft = getattr(record, "soql_draft", None)
+        if draft is None:
+            draft = soql_builder.build_soql(record)
+        status_text, report_count_text, soql_count_text = _count_check_display(record)
         rows.append(
             {
                 "管理番号": getattr(record, "key", ""),
                 "概要": getattr(record, "summary", ""),
                 "主オブジェクト": getattr(record, "main_object", "") or "(不明)",
-                "状態": draft.status,
-                "SOQL": draft.soql,
-                "作れなかった部分": "\n".join(draft.missing),
-                "要確認": "\n".join(draft.checks),
+                "状態": getattr(draft, "status", ""),
+                "件数チェック": status_text,
+                "レポート件数": report_count_text,
+                "SOQL件数": soql_count_text,
+                "SOQL": getattr(draft, "soql", ""),
+                "作れなかった部分": "\n".join(getattr(draft, "missing", ()) or ()),
+                "要確認": "\n".join(getattr(draft, "checks", ()) or ()),
             }
         )
     return rows
@@ -561,6 +601,7 @@ def _build_survey_table_rows_from_records(
             integration = ""
         # 取得できなかった項目数: 該当 record に紐付く件数の合計
         unresolved_count = unresolved_counts.get(key, 0)
+        count_status_text, _, _ = _count_check_display(record)
         rows.append(
             {
                 "管理番号": key,
@@ -580,6 +621,7 @@ def _build_survey_table_rows_from_records(
                 "取得できなかった項目数": str(unresolved_count),
                 "警告数": str(len(warnings)),
                 "SOQL状態": soql_status_for_record(record),
+                "件数チェック": count_status_text,
             }
         )
     return rows

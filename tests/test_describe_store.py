@@ -110,6 +110,7 @@ def _settings(tmp_path: Path) -> Settings:
         related_depth=1,
         credential_prefix="",
         row_limit=False,  # 2000 件チェックは行わない （ API を呼ばない ）
+        soql_count=False,  # 件数チェックも行わない （ API を呼ばない ）
         pii_keywords=("name",),
         pii_person_objects=("Contact",),
         similar_column_similarity=0.8,
