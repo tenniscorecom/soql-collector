@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from comken.core.table import Table
 from comken.exceptions import CSVError
 from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
@@ -1623,4 +1624,4 @@ def _write_csv(path: Path, columns: Sequence[str], rows: list[dict[str, str]]) -
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     with CSV(path, columns=list(columns)) as csv:
-        csv.replace(rows)
+        csv.replace(Table(list(columns), rows))
