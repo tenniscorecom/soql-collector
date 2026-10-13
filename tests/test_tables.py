@@ -27,7 +27,6 @@ from src.tables import (
     SHEET_RELATED,
     SHEET_RESOLVED,
     SHEET_SIMILAR,
-    SHEET_SOQL,
     SHEET_UNRESOLVED,
     SHEET_WARNING,
     SIMILAR_COLUMNS,
@@ -194,7 +193,10 @@ def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
             result[sheet_name] = []
             continue
         result[sheet_name] = [
-            {header: ("" if value is None else value) for header, value in zip(headers, row, strict=False)}
+            {
+                header: ("" if value is None else value)
+                for header, value in zip(headers, row, strict=False)
+            }
             for row in rows_iter
         ]
     workbook.close()
@@ -253,7 +255,6 @@ def test_sheet_names_in_order(tmp_path: Path) -> None:
 
     assert sheet_names == [
         SHEET_OVERVIEW,
-        SHEET_SOQL,
         SHEET_UNRESOLVED,
         SHEET_RESOLVED,
         SHEET_CONDITION,
@@ -499,9 +500,7 @@ def test_resolved_display_name_majority(tmp_path: Path) -> None:
     record_1001 = _make_record("1001", main_object="Opportunity")
     record_1002 = _make_record("1002", main_object="Opportunity")
     new_column_map = [
-        {**col, "表示名": "取引先"}
-        if col["対応フィールドAPI名"] == "AccountId"
-        else col
+        {**col, "表示名": "取引先"} if col["対応フィールドAPI名"] == "AccountId" else col
         for col in record_1002.column_map
     ]
     record_1002 = dataclasses.replace(record_1002, column_map=new_column_map)
@@ -525,17 +524,13 @@ def test_resolved_display_name_tie_break_by_smallest_key(tmp_path: Path) -> None
     # 1001 で 「 別名A 」 1002 で 「 別名B 」 → 同数。 1001 を採用
     record_1001 = _make_record("1001", main_object="Opportunity")
     new_columns_1001 = [
-        {**col, "表示名": "別名A"}
-        if col["対応フィールドAPI名"] == "AccountId"
-        else col
+        {**col, "表示名": "別名A"} if col["対応フィールドAPI名"] == "AccountId" else col
         for col in record_1001.column_map
     ]
     record_1001 = dataclasses.replace(record_1001, column_map=new_columns_1001)
     record_1002 = _make_record("1002", main_object="Opportunity")
     new_columns_1002 = [
-        {**col, "表示名": "別名B"}
-        if col["対応フィールドAPI名"] == "AccountId"
-        else col
+        {**col, "表示名": "別名B"} if col["対応フィールドAPI名"] == "AccountId" else col
         for col in record_1002.column_map
     ]
     record_1002 = dataclasses.replace(record_1002, column_map=new_columns_1002)
@@ -659,10 +654,7 @@ def test_column_names_csv_fails_on_old_header(tmp_path: Path) -> None:
     output.mkdir()
 
     existing_path = output / COLUMN_NAMES_CSV_NAME
-    old_format = (
-        "﻿管理番号,概要,SOQL列名,表示名,備考\r\n"
-        "1001,テスト,AccountId,取引先名,\r\n"
-    )
+    old_format = "﻿管理番号,概要,SOQL列名,表示名,備考\r\n1001,テスト,AccountId,取引先名,\r\n"
     existing_path.write_bytes(old_format.encode("utf-8"))
     before = existing_path.read_bytes()
 

@@ -116,55 +116,22 @@ def test_load_settings_ignores_objects_section(tmp_path: Path) -> None:
     assert not hasattr(settings, "objects_org_id")
 
 
-# ── [CHECKS] SOQL_COUNT ────────────────────────────────────────────
+# ── [CHECKS] SOQL_COUNT は無視する ────────────────────────────────
 
 
-def test_load_settings_soql_count_default_disabled(tmp_path: Path) -> None:
-    """``[CHECKS] SOQL_COUNT`` が無いとき既定の ``×``（ False ）。"""
-    master_path = tmp_path / "master.xlsx"
-    _write_ini(tmp_path, f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n")
-
-    settings = load_settings(tmp_path)
-
-    assert settings.soql_count is False
-
-
-def test_load_settings_soql_count_disabled(tmp_path: Path) -> None:
-    """``[CHECKS] SOQL_COUNT = ×`` で False。"""
+def test_load_settings_ignores_soql_count_legacy(tmp_path: Path) -> None:
+    """``[CHECKS] SOQL_COUNT`` が旧 config.ini に残っていても無視する
+    （ SOQL の件数チェックは 2026-10-14 に撤去 ）。
+    """
     master_path = tmp_path / "master.xlsx"
     _write_ini(
         tmp_path,
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n"
-        "[CHECKS]\nSOQL_COUNT = ×\n",
+        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[CHECKS]\nSOQL_COUNT = ○\n",
     )
 
+    # エラーにならず読み込める。 古い ``[CHECKS] SOQL_COUNT`` の値は
+    # ``Settings`` には載らない （ soql_count フィールド自体がないため ）。
     settings = load_settings(tmp_path)
 
-    assert settings.soql_count is False
-
-
-def test_load_settings_soql_count_explicit_enabled(tmp_path: Path) -> None:
-    """``[CHECKS] SOQL_COUNT = ○`` で True。"""
-    master_path = tmp_path / "master.xlsx"
-    _write_ini(
-        tmp_path,
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n"
-        "[CHECKS]\nSOQL_COUNT = ○\n",
-    )
-
-    settings = load_settings(tmp_path)
-
-    assert settings.soql_count is True
-
-
-def test_load_settings_soql_count_invalid_raises(tmp_path: Path) -> None:
-    """``[CHECKS] SOQL_COUNT`` が ``○`` / ``×`` 以外ならエラー。"""
-    master_path = tmp_path / "master.xlsx"
-    _write_ini(
-        tmp_path,
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n"
-        "[CHECKS]\nSOQL_COUNT = foo\n",
-    )
-
-    with pytest.raises(ConfigKeyNotFoundError):
-        load_settings(tmp_path)
+    assert settings.master_xlsx_path == master_path
+    assert not hasattr(settings, "soql_count")

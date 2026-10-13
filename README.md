@@ -9,34 +9,29 @@ Salesforce のレポート describe（レポート本体 + 主オブジェクト
 どのレポートを取るかは管理表の「有効」列が `○` のものすべて。 個別に取りたい
 ときは、その行だけ `○` にして、ほかを `×` にします。
 
-調査機能として、 各レポートについて次の 5 つを機械的に判定して xlsx に出します
+調査機能として、 各レポートについて次の 4 つを機械的に判定して xlsx に出します
 （ **判定は目安** で、 最終判断は人が行う。 曖昧なものは 「 要確認 」 / 「 判定不可 」 に倒す ）：
 
 1. **似たレポートをまとめられるか** （ 同一 / 条件のみ違い / 列のみ違い / 近い ）
 2. **2000 件を超えているか** （ 超えている / 超えていない / 判定不可 / 未実施 ）
 3. **個人情報を含むか** （ あり / 要確認 / なし ）
-4. **SOQL を組み立てられるか** （ 作成済み / 要確認 / 一部作れず / 作れず ）
-5. **SOQL の件数とレポートの総件数が一致するか** （ 一致 / 不一致 / 確認できず /
-   未実施 ） — 件数だけ突き合わせて条件を機械で見つける。 **不一致・確認できず
-   のものだけ人が見る。 件数が一致しても列の中身までは保証しない。**
+4. **取得できなかった項目は何か** （ 項目 / オブジェクト ）
 
 **レポートの行データ**（ 個人情報を含みうる ） は **メモリ上で件数を数えるだけ** で、
-CSV / ログ / 警告 / 例外メッセージには絶対に出さない。 件数チェックでも
-明細は取らない （ `?includeDetails=false` + `SELECT COUNT()` ） 。
+CSV / ログ / 警告 / 例外メッセージには絶対に出さない。
 
-**SOQL はツールが自動で組み立てる** （ `src/soql_builder.py` ）。 取れる部分は
-SOQL として出力し、 取れない部分は 「 作れなかった部分 」 と 「 要確認 」 に分けて
-記録する。 本番で実行する前に **必ず人が確認** する ( 自動で全部が取れるわけでは
-ない。 条件を狭めるか分割実行を検討する )。
+**SOQL はこのツールでは組み立てない** （ 2026-10-14 撤去 ）。 人が ``SOQL調査.xlsx``
+の ``一覧`` / ``条件`` / ``集計`` / ``項目の対応`` / ``項目一覧`` / ``関連``
+シートを AI に渡すなどして組み立て、 **必ず人が確認してから実行する** 。
 
 ## セットアップ
 
 1. Python 3.11 以上を用意する
-2. `config.ini.example` を `config.ini` にコピーし、 `[FILES] MASTER_XLSX_PATH`
-   / `OUTPUT_DIR` / `DESCRIBE_CSV_PATH` / `COLUMN_MAP_CSV_PATH`、
-   `[LIMITS] RELATED_MAX` / `[LIMITS] RELATED_DEPTH`、
-   `[SF] CREDENTIAL_PREFIX`、 必要に応じて `[CHECKS] ROW_LIMIT` /
-   `[CHECKS] SOQL_COUNT` / `[PII] KEYWORDS` / `[PII] OBJECTS` /
+2. `config.ini.example` を `config.ini` にコピーし， `[FILES] MASTER_XLSX_PATH`
+   / `OUTPUT_DIR` / `DESCRIBE_CSV_PATH` / `COLUMN_MAP_CSV_PATH`，
+   `[LIMITS] RELATED_MAX` / `[LIMITS] RELATED_DEPTH`，
+   `[SF] CREDENTIAL_PREFIX`， 必要に応じて `[CHECKS] ROW_LIMIT` /
+   `[PII] KEYWORDS` / `[PII] OBJECTS` /
    `[SIMILAR] COLUMN_SIMILARITY` を書き換える （詳細は
    [docs/使い方.md](docs/使い方.md)）
 3. comken の親（既定 `F:\dev`）を `PYTHONPATH` に含める。 `実行.bat` を
@@ -75,7 +70,7 @@ python -m trial.fetch_one_report <レポートのURL> [管理番号]
 
 | ファイル | 中身 |
 |---|---|
-| `SOQL調査.xlsx` | 人が見る 1 冊のブック。 毎回その回の結果で丸ごと作り直す。 シートは 「 一覧 」 「 SOQL 」 「 取得できなかった項目 」 「 項目の対応 」 「 条件 」 「 集計 」 「 似たレポート 」 「 警告 」 「 項目一覧 」 「 関連 」 の 10 枚 |
+| `SOQL調査.xlsx` | 人が見る 1 冊のブック。 毎回その回の結果で丸ごと作り直す。 シートは 「 一覧 」 「 取得できなかった項目 」 「 項目の対応 」 「 条件 」 「 集計 」 「 似たレポート 」 「 警告 」 「 項目一覧 」 「 関連 」 の 9 枚 |
 | `列名の対応.csv` | 全レポート分を **積み上げる** ダウンローダー用 CSV。 `主オブジェクト, SOQL列名, 表示名, 備考, 更新日` の 5 列。 その回に取れた (主オブジェクト, SOQL列名) の行は今回の内容で入れ替わり、 他は残る |
 
 加えて、 `[FILES] DESCRIBE_CSV_PATH` （ 既定 `./data/項目定義.csv` ） に
@@ -99,13 +94,13 @@ WARNING としてログに出る。
   ファイルに混ざっても取り違えない
 
 `record` にはレポート describe を **slim した** 形が入る（許可リスト外の
-キー名は含まれない）。 `report` の `reportMetadata` は SOQL 組立に必要な
-21 キーだけを**そのまま**残し、 `reportExtendedMetadata` は 3 キーだけを
-**そのまま**残します。 各オブジェクトは `name` / `label` / `custom` /
-`fields` の 4 キーだけ、 各項目は `name` / `label` / `type` / `custom` /
-`referenceTo` / `relationshipName` / `picklist` / `picklistTotal` の 8 キー
-だけが `record.objects` に入ります。 `picklist` には `active` な値だけが
-最大 30 件入り、 `picklistTotal` に active な選択肢の総数が入ります。
+キー名は含まれない）。 `report` の `reportMetadata` は条件・集計・グルーピング
+・並び順など機械判定に必要な 21 キーだけを**そのまま**残し、 `reportExtendedMetadata`
+は 3 キーだけを**そのまま**残します。 各オブジェクトは `name` / `label` /
+`custom` / `fields` の 4 キーだけ、 各項目は `name` / `label` / `type` /
+`custom` / `referenceTo` / `relationshipName` / `picklist` / `picklistTotal`
+の 8 キーだけが `record.objects` に入ります。 `picklist` には `active` な
+値だけが最大 30 件入り、 `picklistTotal` に active な選択肢の総数が入ります。
 許可リストでレポート describe から落としたキー名は `warnings` に
 「レポート定義の中で使わなかったキー: ...」 という 1 行で出るので、
 最初の実行で「必要なものを間違って落としていないか」を確認できます。

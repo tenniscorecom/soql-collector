@@ -119,7 +119,10 @@ def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
             result[sheet_name] = []
             continue
         result[sheet_name] = [
-            {header: ("" if value is None else value) for header, value in zip(headers, row, strict=False)}
+            {
+                header: ("" if value is None else value)
+                for header, value in zip(headers, row, strict=False)
+            }
             for row in rows_iter
         ]
     workbook.close()
@@ -204,7 +207,6 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
         related_depth=1,
         credential_prefix="",
         row_limit=True,
-        soql_count=False,
         pii_keywords=pii.DEFAULT_KEYWORDS,
         pii_person_objects=pii.DEFAULT_PERSON_OBJECTS,
         similar_column_similarity=0.8,
@@ -319,7 +321,6 @@ def test_e2e_single_record_no_similar_sheet(tmp_path: Path) -> None:
         related_depth=1,
         credential_prefix="",
         row_limit=True,
-        soql_count=False,
         pii_keywords=pii.DEFAULT_KEYWORDS,
         pii_person_objects=pii.DEFAULT_PERSON_OBJECTS,
         similar_column_similarity=0.8,
@@ -371,7 +372,6 @@ def test_e2e_resolved_correspondence_has_pii_columns(tmp_path: Path) -> None:
         related_depth=1,
         credential_prefix="",
         row_limit=True,
-        soql_count=False,
         pii_keywords=pii.DEFAULT_KEYWORDS,
         pii_person_objects=pii.DEFAULT_PERSON_OBJECTS,
         similar_column_similarity=0.8,

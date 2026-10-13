@@ -78,7 +78,6 @@ def _make_settings(tmp_path: Path, master: Path) -> Any:
         related_depth=1,
         credential_prefix="",
         row_limit=True,
-        soql_count=False,
         pii_keywords=("name", "電話"),
         pii_person_objects=("Contact",),
         similar_column_similarity=0.8,

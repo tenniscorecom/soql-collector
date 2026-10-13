@@ -92,9 +92,7 @@ class _FakeClient:
             entry = self._request_responses[self._request_index]
             self._request_index += 1
             response_path, payload = entry
-            assert response_path == path, (
-                f"path mismatch: expected {response_path!r}, got {path!r}"
-            )
+            assert response_path == path, f"path mismatch: expected {response_path!r}, got {path!r}"
             return payload
         return None, {}
 
@@ -145,7 +143,6 @@ def _settings(tmp_path: Path, related_max: int = 40, related_depth: int = 1) -> 
         related_depth=related_depth,
         credential_prefix="",
         row_limit=True,
-        soql_count=True,
         pii_keywords=("name", "電話"),
         pii_person_objects=("Contact",),
         similar_column_similarity=0.8,
@@ -1435,13 +1432,9 @@ def test_fetch_object_cached_calls_only_once(tmp_path: Path) -> None:
     store = DescribeStore.empty(tmp_path / "describe.csv")
     org = "example.my.salesforce.com"
     warnings1: list[str] = []
-    assert (
-        _fetch_object_cached(client, org, "Account", store, warnings1) is not None
-    )
+    assert _fetch_object_cached(client, org, "Account", store, warnings1) is not None
     warnings2: list[str] = []
-    assert (
-        _fetch_object_cached(client, org, "Account", store, warnings2) is not None
-    )
+    assert _fetch_object_cached(client, org, "Account", store, warnings2) is not None
     # 2 回目は client.describe_object が呼ばれないので calls には 1 件のみ
     assert client.describe_object_calls.count("Account") == 1
     assert warnings2 == []
@@ -2295,16 +2288,12 @@ def test_run_fetch_emits_each_outcome_warning_once_at_warning_level(
     """
     caplog.set_level(logging.WARNING)
 
-    main = _main_describe(
-        "Opportunity", fields_map={"AccountId": ["Account"], "OwnerId": ["User"]}
-    )
+    main = _main_describe("Opportunity", fields_map={"AccountId": ["Account"], "OwnerId": ["User"]})
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata(),
         object_describes={"Opportunity": main, "Account": _main_describe("Account")},
-        errors={
-            "User": SalesforceRequestError("GET", "/sobjects/User/describe", 404, "Not Found")
-        },
+        errors={"User": SalesforceRequestError("GET", "/sobjects/User/describe", 404, "Not Found")},
     )
     site_for, _ = _site_for(client)
 

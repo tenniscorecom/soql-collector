@@ -23,6 +23,10 @@ CSV を組み立てる。
 
 ``run_fetch`` が ``Record`` を 1 件も作れなかったときは ``SOQL調査.xlsx``
 は作らず、 ``列名の対応.csv`` も何もしない （ 既存もそのまま ） 。
+
+**SOQL はこのツールでは組み立てない** （ 2026-10-14 撤去 ）。 人は
+``SOQL調査.xlsx`` の ``一覧`` ``条件`` ``集計`` ``項目の対応`` ``項目一覧``
+``関連`` シートを AI に渡すなどして組み立てる。
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
 from openpyxl.utils import get_column_letter
 
-from src import pii, similar, soql_builder
+from src import pii, similar
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +70,6 @@ COLUMN_NAMES_CSV_NAME = "列名の対応.csv"
 
 # シート名 （ 表示順 ）
 SHEET_OVERVIEW = "一覧"
-SHEET_SOQL = "SOQL"
 SHEET_UNRESOLVED = "取得できなかった項目"
 SHEET_RESOLVED = "項目の対応"
 SHEET_CONDITION = "条件"
@@ -78,7 +81,6 @@ SHEET_RELATED = "関連"
 
 SHEET_NAMES_IN_ORDER: tuple[str, ...] = (
     SHEET_OVERVIEW,
-    SHEET_SOQL,
     SHEET_UNRESOLVED,
     SHEET_RESOLVED,
     SHEET_CONDITION,
@@ -107,22 +109,6 @@ SURVEY_COLUMNS: tuple[str, ...] = (
     "統合の見込み",
     "取得できなかった項目数",
     "警告数",
-    "SOQL状態",
-    "件数チェック",
-)
-
-# SOQL シートの列名
-SOQL_COLUMNS: tuple[str, ...] = (
-    "管理番号",
-    "概要",
-    "主オブジェクト",
-    "状態",
-    "件数チェック",
-    "レポート件数",
-    "SOQL件数",
-    "SOQL",
-    "作れなかった部分",
-    "要確認",
 )
 
 # 取得できなかった項目シートの列名
@@ -354,7 +340,6 @@ def run_tables(
     warning_rows = _build_warning_table_rows_from_records(sorted_records)
     field_rows = _build_field_table_rows_from_records(sorted_records)
     related_rows = _build_related_table_rows_from_records(sorted_records)
-    soql_rows = _build_soql_sheet_rows_from_records(sorted_records)
 
     wrote: list[Path] = []
 
@@ -363,7 +348,6 @@ def run_tables(
         _write_xlsx(
             xlsx_path,
             survey=survey_rows,
-            soql=soql_rows,
             unresolved=unresolved_rows,
             resolved=resolved_rows,
             condition=condition_rows,
@@ -375,12 +359,11 @@ def run_tables(
         )
         wrote.append(xlsx_path)
         logger.info(
-            "Excel を書き出し: %s（ 一覧=%d / SOQL=%d / 取得できなかった項目=%d / "
+            "Excel を書き出し: %s（ 一覧=%d / 取得できなかった項目=%d / "
             "項目の対応=%d / 条件=%d / 集計=%d / 似たレポート=%d / "
             "警告=%d / 項目一覧=%d / 関連=%d ）",
             xlsx_path,
             len(survey_rows),
-            len(soql_rows),
             len(unresolved_rows),
             len(resolved_rows),
             len(condition_rows),
@@ -499,75 +482,13 @@ def _survey_pii_display(record: object) -> tuple[str, str]:
 
 
 def soql_status_for_record(record: object) -> str:
-    """record の ``soql_draft`` から組み立て状態の文字列を返すヘルパー。
+    """``None`` 固定 （ SOQL 自動組み立てを撤去したため、状態は出さない ）。
 
-    ``record.soql_draft`` があればそれを使い （ ``_fetch_one`` で組み立てて
-    record に持たせた結果を 2 回作らない ）。 無ければ ``build_soql(record)`` に
-    縮退する（ 古い record や単品テスト用のスタブを想定 ）。
-
-    エラー時は空文字。 一覧シートの ``SOQL状態`` 列で使う。
+    旧コードで使われていたヘルパー。 ``SURVEY_COLUMNS`` にはもう ``SOQL状態``
+    列が無く、 呼ばれないが ``getattr`` 系のテストや古い呼び出しが残った場合
+    に ``AttributeError`` で全体を落とさないために残している。
     """
-    draft = getattr(record, "soql_draft", None)
-    if draft is not None:
-        return getattr(draft, "status", "")
-    try:
-        return soql_builder.build_soql(record).status
-    except Exception:  # どんな例外でも表は壊さない
-        logger.exception("SOQL 状態の取得に失敗: key=%s", getattr(record, "key", ""))
-        return ""
-
-
-def _count_check_display(record: object) -> tuple[str, str, str]:
-    """``record.count_check`` から ``件数チェック / レポート件数 / SOQL件数``
-    の 3 セル表示用文字列を作る。
-
-    - ``件数チェック`` は ``count_check.status`` （ ``一致`` / ``不一致`` /
-      ``確認できず`` / ``未実施`` ） と理由。 ``count_check`` が無いときは空
-    - ``レポート件数`` / ``SOQL件数`` は ``count_check.report_count`` /
-      ``count_check.soql_count`` の値。 ``None`` のときは ``-``
-    """
-    count_check = getattr(record, "count_check", None)
-    if count_check is None:
-        return "", "", ""
-    status = getattr(count_check, "status", "") or ""
-    reason = getattr(count_check, "reason", None) or ""
-    report_count = getattr(count_check, "report_count", None)
-    soql_count = getattr(count_check, "soql_count", None)
-    status_text = status if not reason else f"{status}（{reason}）"
-    report_count_text = str(report_count) if report_count is not None else "-"
-    soql_count_text = str(soql_count) if soql_count is not None else "-"
-    return status_text, report_count_text, soql_count_text
-
-
-def _build_soql_sheet_rows_from_records(records: Sequence[object]) -> list[dict[str, str]]:
-    """全 record から ``SOQL`` シートの行を作る。 ``build_soql`` の戻り値を
-    列ごとに展開する。
-
-    ``作れなかった部分`` / ``要確認`` は改行区切りで 1 セルにまとめる ( Excel
-    で 1 行の折り返しが効くように ) 。 ``件数チェック`` の列は record の
-    ``count_check`` から作る（ 件数だけ, 行データは載せない ）。
-    """
-    rows: list[dict[str, str]] = []
-    for record in records:
-        draft = getattr(record, "soql_draft", None)
-        if draft is None:
-            draft = soql_builder.build_soql(record)
-        status_text, report_count_text, soql_count_text = _count_check_display(record)
-        rows.append(
-            {
-                "管理番号": getattr(record, "key", ""),
-                "概要": getattr(record, "summary", ""),
-                "主オブジェクト": getattr(record, "main_object", "") or "(不明)",
-                "状態": getattr(draft, "status", ""),
-                "件数チェック": status_text,
-                "レポート件数": report_count_text,
-                "SOQL件数": soql_count_text,
-                "SOQL": getattr(draft, "soql", ""),
-                "作れなかった部分": "\n".join(getattr(draft, "missing", ()) or ()),
-                "要確認": "\n".join(getattr(draft, "checks", ()) or ()),
-            }
-        )
-    return rows
+    return ""
 
 
 def _build_survey_table_rows_from_records(
@@ -601,7 +522,6 @@ def _build_survey_table_rows_from_records(
             integration = ""
         # 取得できなかった項目数: 該当 record に紐付く件数の合計
         unresolved_count = unresolved_counts.get(key, 0)
-        count_status_text, _, _ = _count_check_display(record)
         rows.append(
             {
                 "管理番号": key,
@@ -620,8 +540,6 @@ def _build_survey_table_rows_from_records(
                 "統合の見込み": integration,
                 "取得できなかった項目数": str(unresolved_count),
                 "警告数": str(len(warnings)),
-                "SOQL状態": soql_status_for_record(record),
-                "件数チェック": count_status_text,
             }
         )
     return rows
@@ -1507,10 +1425,7 @@ def _merge_column_names_csv(
     if not new_keys:
         merged = list(existing_rows)
     else:
-        new_pairs = {
-            (row.get("主オブジェクト", ""), row.get("SOQL列名", ""))
-            for row in new_rows
-        }
+        new_pairs = {(row.get("主オブジェクト", ""), row.get("SOQL列名", "")) for row in new_rows}
         kept_old_rows = [
             row
             for row in existing_rows
@@ -1523,9 +1438,7 @@ def _merge_column_names_csv(
         merged = kept_old_rows + list(new_rows)
 
     # 主オブジェクト → SOQL列名 の安定ソート
-    merged.sort(
-        key=lambda row: (row.get("主オブジェクト", ""), row.get("SOQL列名", ""))
-    )
+    merged.sort(key=lambda row: (row.get("主オブジェクト", ""), row.get("SOQL列名", "")))
 
     _write_csv(path, COLUMN_NAMES_COLUMNS, merged)
 
@@ -1537,7 +1450,6 @@ def _write_xlsx(
     path: Path,
     *,
     survey: list[dict[str, str]],
-    soql: list[dict[str, str]],
     unresolved: list[dict[str, str]],
     resolved: list[dict[str, str]],
     condition: list[dict[str, str]],
@@ -1551,7 +1463,7 @@ def _write_xlsx(
 
     毎回丸ごと作り直すため、 既存ファイルがあれば消す。 comken の ``Excel``
     は新規ファイルを開くときに既定の ``Sheet`` を作る。 一覧シートは新規
-    ブックの既定シートを改名し、 残り 9 枚は ``create_sheet`` で追加する
+    ブックの既定シートを改名し、 残り 8 枚は ``create_sheet`` で追加する
     ( openpyxl のシート順 = 表示順 ) 。
     """
     if path.exists():
@@ -1560,7 +1472,6 @@ def _write_xlsx(
 
     payload: dict[str, tuple[tuple[str, ...], list[dict[str, str]]]] = {
         SHEET_OVERVIEW: (SURVEY_COLUMNS, survey),
-        SHEET_SOQL: (SOQL_COLUMNS, soql),
         SHEET_UNRESOLVED: (UNRESOLVED_COLUMNS, unresolved),
         SHEET_RESOLVED: (RESOLVED_COLUMNS, resolved),
         SHEET_CONDITION: (CONDITION_COLUMNS, condition),

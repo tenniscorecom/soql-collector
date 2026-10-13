@@ -274,7 +274,9 @@ def test_apply_overrides_auto_unknown_with_csv_typed_value() -> None:
             "備考": "対応フィールドなし",
         }
     ]
-    objects = {"Opportunity": _make_object_describe("Opportunity", [{"name": "Name", "type": "string"}])}
+    objects = {
+        "Opportunity": _make_object_describe("Opportunity", [{"name": "Name", "type": "string"}])
+    }
     existing = {
         ("opportunity", "Opp.Name"): ColumnMapRow(
             main_object="Opportunity",
@@ -871,9 +873,7 @@ def test_merge_and_write_creates_initial_rows(tmp_path: Path) -> None:
     assert by_key[("Opportunity", "Opp.Unknown")]["メモ"] == "対応フィールドなし"
 
 
-def test_merge_and_write_overwrites_existing_when_auto_resolved(
-    tmp_path: Path, caplog
-) -> None:
+def test_merge_and_write_overwrites_existing_when_auto_resolved(tmp_path: Path, caplog) -> None:
     """**自動で取れる列は自動の結果で上書きされる** 。 既存の値と違っていれば
     置き換えの WARNING が出て、 メモは空に戻る。 表示名は毎回レポートの
     表示名で書き換わる。
@@ -1221,14 +1221,18 @@ def test_load_settings_default_column_map_csv_path(tmp_path: Path) -> None:
     assert settings.column_map_csv_path == (tmp_path / "data" / "列の対応.csv").resolve()
 
 
-def test_load_settings_soql_count_default_disabled(tmp_path: Path) -> None:
-    """``[CHECKS] SOQL_COUNT`` が無いとき既定の ``×``（ False ）。"""
-    from src.settings import load_settings
+def test_load_settings_ignores_soql_count_legacy(tmp_path: Path) -> None:
+    """``[CHECKS] SOQL_COUNT`` が旧 config.ini に残っていても無視する
+    （ SOQL の件数チェックは 2026-10-14 に撤去 ）。
+    """
+    from src.settings import Settings, load_settings
 
     master_path = tmp_path / "master.xlsx"
     (tmp_path / "config.ini").write_text(
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n",
+        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[CHECKS]\nSOQL_COUNT = ○\n",
         encoding="utf-8",
     )
     settings = load_settings(tmp_path)
-    assert settings.soql_count is False
+    assert settings.master_xlsx_path == master_path
+    assert not hasattr(settings, "soql_count")
+    assert isinstance(settings, Settings)

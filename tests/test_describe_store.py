@@ -110,7 +110,6 @@ def _settings(tmp_path: Path) -> Settings:
         related_depth=1,
         credential_prefix="",
         row_limit=False,  # 2000 件チェックは行わない （ API を呼ばない ）
-        soql_count=False,  # 件数チェックも行わない （ API を呼ばない ）
         pii_keywords=("name",),
         pii_person_objects=("Contact",),
         similar_column_similarity=0.8,
@@ -190,7 +189,9 @@ def test_describe_csv_roundtrip_preserves_slim_output() -> None:
     変えない」要件の中心。
     """
     original = _opportunity_describe()
-    rows = describe_to_csv_rows("example.my.salesforce.com", "Opportunity", original, "2025-01-01T00:00:00+00:00")
+    rows = describe_to_csv_rows(
+        "example.my.salesforce.com", "Opportunity", original, "2025-01-01T00:00:00+00:00"
+    )
     # 1 オブジェクト 2 項目で 2 行
     assert len(rows) == 2
     restored = csv_rows_to_describe(rows)
@@ -220,7 +221,9 @@ def test_describe_csv_roundtrip_with_reference_field(tmp_path: Path) -> None:
             },
         ],
     }
-    rows = describe_to_csv_rows("example.my.salesforce.com", "Task", original, "2025-01-01T00:00:00+00:00")
+    rows = describe_to_csv_rows(
+        "example.my.salesforce.com", "Task", original, "2025-01-01T00:00:00+00:00"
+    )
     path = tmp_path / "describe.csv"
     with open(path, "w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(DESCRIBE_CSV_COLUMNS))
@@ -717,7 +720,9 @@ def test_existing_csv_with_wrong_header_aborts(tmp_path: Path) -> None:
     # ``run_fetch`` の中で ``upsert_object_rows`` が呼ばれると CSVError になるが、
     # このテストでは直接 ``upsert_object_rows`` を試して失敗を確かめる
     with pytest.raises(CSVError):
-        upsert_object_rows(path, "example.my.salesforce.com", "Opportunity", _opportunity_describe())
+        upsert_object_rows(
+            path, "example.my.salesforce.com", "Opportunity", _opportunity_describe()
+        )
     # ファイルの内容は変わっていない
     assert path.read_text(encoding="utf-8-sig") == "wrong,header\nfoo,bar\n"
 
