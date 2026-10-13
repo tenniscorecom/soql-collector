@@ -1,9 +1,10 @@
-"""通し（ e2e ） テスト: ``run_fetch`` → ``run_tables`` → 出力 CSV の検証。
+"""通し（ e2e ） テスト: ``run_fetch`` → ``run_tables`` → ``SOQL調査.xlsx``
+と ``列名の対応.csv`` の検証。
 
 脳内スクラッチパッドの再現シナリオ （ Task / Account / User の偽 describe
 と、 列 SUBJECT / ACCOUNT.NAME / OWNER.NAME、 絞り込み 2 件、 組立式
 "1 OR 2"、 並び順、 topRows を持つレポート） を ``run_fetch`` から
-``run_tables`` まで通して動かし、 出力 CSV の内容を厳密に確かめる。
+``run_tables`` まで通して動かし、 xlsx のシートと csv の中身を厳密に確かめる。
 
 ネットワークには出ない。 ``site_for`` を偽のクライアントに差し替える。
 """
@@ -14,7 +15,7 @@ import csv
 import dataclasses
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.table import Table as XlsxTable
 from openpyxl.worksheet.table import TableStyleInfo
 
@@ -109,6 +110,29 @@ class _FakeSite:
 
     def __exit__(self, *args: object) -> None:
         return None
+
+
+def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
+    """xlsx を ``{シート名: [行 dict, ...]}`` で読む。
+
+    空セルは ``None`` ではなく空文字として扱う。
+    """
+    workbook = load_workbook(path)
+    result: dict[str, list[dict[str, str]]] = {}
+    for sheet_name in workbook.sheetnames:
+        sheet = workbook[sheet_name]
+        rows_iter = sheet.iter_rows(values_only=True)
+        try:
+            headers = list(next(rows_iter))
+        except StopIteration:
+            result[sheet_name] = []
+            continue
+        result[sheet_name] = [
+            {header: ("" if value is None else value) for header, value in zip(headers, row, strict=False)}
+            for row in rows_iter
+        ]
+    workbook.close()
+    return result
 
 
 def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -228,14 +252,15 @@ def _run_e2e(tmp_path: Path) -> Path:
 
 
 def test_e2e_condition_table_項目_is_resolved(tmp_path: Path) -> None:
-    """条件表の ``絞り込み`` 行で ``項目`` が column_map から解決されて埋まる。
+    """条件シートの ``絞り込み`` 行で ``項目`` が column_map から解決されて埋まる。
 
     - ``SUBJECT`` → ``Subject``
     - ``ACCOUNT.NAME`` → ``What.Name`` （ 関連経由 ）
     """
     output_dir = _run_e2e(tmp_path)
 
-    _, rows = _read_csv(output_dir / "条件表.csv")
+    sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
+    rows = sheets["条件"]
     by_col: dict[str, dict[str, str]] = {}
     for row in rows:
         if row["種別"] == "絞り込み":
@@ -255,13 +280,15 @@ def test_e2e_condition_table_項目_is_resolved(tmp_path: Path) -> None:
 
 
 def test_e2e_aggregate_table_sort_by_and_top_rows(tmp_path: Path) -> None:
-    """集計表の ``並び順`` は ``sortColumn`` を読んで ``名前`` / ``内容`` に分け、
-    条件表の ``上位N`` は dict を ``"N件 direction"`` の形に整形する。
+    """集計シートの ``並び順`` は ``sortColumn`` を読んで ``名前`` / ``内容`` に分け、
+    条件シートの ``上位N`` は dict を ``"N件 direction"`` の形に整形する。
     """
     output_dir = _run_e2e(tmp_path)
 
-    # 集計表: 並び順 / 形式
-    _, agg_rows = _read_csv(output_dir / "集計表.csv")
+    sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
+
+    # 集計シート: 並び順 / 形式
+    agg_rows = sheets["集計"]
     agg_by_kind: dict[str, list[dict[str, str]]] = {}
     for row in agg_rows:
         agg_by_kind.setdefault(row["種別"], []).append(row)
@@ -275,8 +302,8 @@ def test_e2e_aggregate_table_sort_by_and_top_rows(tmp_path: Path) -> None:
     fmt_row = agg_by_kind["形式"][0]
     assert fmt_row["内容"] == "TABULAR"
 
-    # 条件表: 上位N
-    _, cond_rows = _read_csv(output_dir / "条件表.csv")
+    # 条件シート: 上位N
+    cond_rows = sheets["条件"]
     cond_by_kind: dict[str, list[dict[str, str]]] = {}
     for row in cond_rows:
         cond_by_kind.setdefault(row["種別"], []).append(row)
@@ -289,7 +316,7 @@ def test_e2e_aggregate_table_sort_by_and_top_rows(tmp_path: Path) -> None:
 
 
 def test_e2e_field_table_段_is_filled(tmp_path: Path) -> None:
-    """項目表の ``段`` は ``relations`` と ``main_object`` から埋まる。
+    """項目一覧シートの ``段`` は ``relations`` と ``main_object`` から埋まる。
 
     - ``Task`` → 0 （ 主オブジェクト ）
     - ``Account`` → 1 （ Task.WhatId の参照先 ）
@@ -297,7 +324,8 @@ def test_e2e_field_table_段_is_filled(tmp_path: Path) -> None:
     """
     output_dir = _run_e2e(tmp_path)
 
-    _, rows = _read_csv(output_dir / "項目表.csv")
+    sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
+    rows = sheets["項目一覧"]
     by_obj: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         by_obj.setdefault(row["オブジェクト"], []).append(row)
@@ -308,12 +336,13 @@ def test_e2e_field_table_段_is_filled(tmp_path: Path) -> None:
 
 
 def test_e2e_related_table(tmp_path: Path) -> None:
-    """関連表は ``Task → Account / User`` と自己参照・ 子からの参照を
+    """関連シートは ``Task → Account / User`` と自己参照・ 子からの参照を
     全部載せる。
     """
     output_dir = _run_e2e(tmp_path)
 
-    _, rows = _read_csv(output_dir / "関連表.csv")
+    sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
+    rows = sheets["関連"]
     by_pair: dict[tuple[str, str, str], dict[str, str]] = {}
     for row in rows:
         key = (
@@ -338,41 +367,29 @@ def test_e2e_related_table(tmp_path: Path) -> None:
 
 
 def test_e2e_column_names_csv(tmp_path: Path) -> None:
-    """``列名の対応.csv`` は解決できた列だけが出る。"""
+    """``列名の対応.csv`` は解決できた列だけが出る ( 管理番号列を持たない)。 """
     output_dir = _run_e2e(tmp_path)
 
-    _, rows = _read_csv(output_dir / "列名の対応.csv")
+    columns, rows = _read_csv(output_dir / "列名の対応.csv")
+    assert "管理番号" not in columns
+    assert "概要" not in columns
     soql_names = {row["SOQL列名"] for row in rows}
     assert soql_names == {"Subject", "What.Name", "Owner.Name"}
     # (不明) は出ない
     for row in rows:
         assert row["SOQL列名"] != "(不明)"
-    # 管理番号と概要が埋まる
-    for row in rows:
-        assert row["管理番号"] == "1001"
-        assert row["概要"] == "テスト"
 
 
-def test_e2e_column_names_txt_full_text(tmp_path: Path) -> None:
-    """``列名の対応_1001.txt`` の全文を厳密に検証する。
-
-    期待する 4 スペースインデント、 ヘッダ、 dict 本文、 末尾の ``}`` まで
-    そのまま一致するかを見る。
-    """
+def test_e2e_column_names_xlsx_resolved_correspondence(tmp_path: Path) -> None:
+    """``項目の対応`` シートにも同じ解決済み列が出る。"""
     output_dir = _run_e2e(tmp_path)
 
-    text = (output_dir / "列名の対応_1001.txt").read_text(encoding="utf-8")
-    expected = (
-        "# 管理番号: 1001\n"
-        "# 概要: テスト\n"
-        "# レポートID: 00O000000000001\n"
-        "COLUMN_NAMES = {\n"
-        '    "Subject": "件名",\n'
-        '    "What.Name": "取引先名",\n'
-        '    "Owner.Name": "氏名",\n'
-        "}\n"
-    )
-    assert text == expected
+    sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
+    rows = sheets["項目の対応"]
+    soql_names = {row["SOQL列名"] for row in rows}
+    assert soql_names == {"Subject", "What.Name", "Owner.Name"}
+    # 主オブジェクト=Task で集約
+    assert all(row["主オブジェクト"] == "Task" for row in rows)
 
 
 # ── 集計表 / 条件表の行が「読める文字列」 になる網羅テスト ──────────────
@@ -380,7 +397,7 @@ def test_e2e_column_names_txt_full_text(tmp_path: Path) -> None:
 
 def test_e2e_full_aggregate_table_all_kinds_are_human_readable(tmp_path: Path) -> None:
     """``groupingsDown`` / ``aggregates`` / ``buckets`` / ``customSummaryFormula``
-    を持つレポートでも、 集計表の ``内容`` / ``名前`` が Python repr ではなく
+    を持つレポートでも、 集計シートの ``内容`` / ``名前`` が Python repr ではなく
     人が読める文字列になる。
     """
     from src.fetch import run_fetch
@@ -437,7 +454,8 @@ def test_e2e_full_aggregate_table_all_kinds_are_human_readable(tmp_path: Path) -
     outcomes = run_fetch(settings, [entry], site_for=_site_for(client))
     run_tables(settings.output_dir, [o.record for o in outcomes if o.record])
 
-    _, rows = _read_csv(settings.output_dir / "集計表.csv")
+    sheets = _read_xlsx(settings.output_dir / "SOQL調査.xlsx")
+    rows = sheets["集計"]
     by_kind: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         by_kind.setdefault(row["種別"], []).append(row)
@@ -471,7 +489,7 @@ def test_e2e_full_aggregate_table_all_kinds_are_human_readable(tmp_path: Path) -
 
 def test_e2e_full_condition_table_all_kinds_are_human_readable(tmp_path: Path) -> None:
     """``standardDateFilter`` / ``standardFilters`` / ``crossFilters`` /
-    ``topRows`` を持つレポートでも、 条件表の ``値`` が Python repr では
+    ``topRows`` を持つレポートでも、 条件シートの ``値`` が Python repr では
     なく人が読める文字列になる。
     """
     from src.fetch import run_fetch
@@ -529,7 +547,8 @@ def test_e2e_full_condition_table_all_kinds_are_human_readable(tmp_path: Path) -
     outcomes = run_fetch(settings, [entry], site_for=_site_for(client))
     run_tables(settings.output_dir, [o.record for o in outcomes if o.record])
 
-    _, rows = _read_csv(settings.output_dir / "条件表.csv")
+    sheets = _read_xlsx(settings.output_dir / "SOQL調査.xlsx")
+    rows = sheets["条件"]
     by_kind: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         by_kind.setdefault(row["種別"], []).append(row)

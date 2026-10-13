@@ -3,7 +3,7 @@
 管理表を使わず、 コマンドライン引数で 1 件のレポート URL を指定して取る。
 本体 (``src/``) の ``run_fetch`` と ``run_tables`` をそのまま呼ぶ薄い例で、
 ``output_dir`` だけ ``output/single/`` に差し替えて、 本体の ``output/`` や
-全体の ``対応表.csv`` を汚さないようにする。
+全体の ``列名の対応.csv`` を汚さないようにする。
 
 ``trial/`` は **名前空間パッケージ** （ ``__init__.py`` を **置かない** ） として
 配布し、 ``python -m trial.fetch_one_report`` でそのまま動かせる。
@@ -12,8 +12,8 @@
     python -m trial.fetch_one_report <レポートのURL> [管理番号]
 
 ``管理番号`` を省略すると ``sample``。 出力は ``output/single/`` 配下に
-``対応表_{管理番号}.csv`` / ``列名の対応_{管理番号}.txt`` を含む 8 種類の CSV
-（ 取れたとき ） 。
+``SOQL調査.xlsx`` と ``列名の対応.csv`` が書かれる （ 取れたとき ） 。
+per-ID の CSV は作らない。
 """
 
 from __future__ import annotations

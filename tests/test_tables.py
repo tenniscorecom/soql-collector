@@ -1,30 +1,42 @@
-"""``tables`` のテスト。 ``ReportRecord`` を直接作って、 CSV の中身を厳密に
-確かめる （ ネットワークには出ない ）。
+"""``tables`` のテスト。 ``ReportRecord`` を直接作って、 ``SOQL調査.xlsx`` と
+``列名の対応.csv`` の中身を厳密に確かめる ( ネットワークには出ない ) 。
 """
 
 from __future__ import annotations
 
 import csv
 import dataclasses
-import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from openpyxl import load_workbook
 
 from src.fetch import ReportRecord
 from src.tables import (
-    AGGREGATE_TABLE_COLUMNS,
+    AGGREGATE_COLUMNS,
     COLUMN_NAMES_COLUMNS,
-    CONDITION_TABLE_COLUMNS,
-    CORRESPONDENCE_COLUMNS,
-    FIELD_TABLE_COLUMNS,
-    RELATED_TABLE_COLUMNS,
-    WARNING_TABLE_COLUMNS,
-    TableOutcome,
+    COLUMN_NAMES_CSV_NAME,
+    CONDITION_COLUMNS,
+    FIELD_COLUMNS,
+    RELATED_COLUMNS,
+    SHEET_AGGREGATE,
+    SHEET_CONDITION,
+    SHEET_FIELDS,
+    SHEET_OVERVIEW,
+    SHEET_RELATED,
+    SHEET_RESOLVED,
+    SHEET_SIMILAR,
+    SHEET_UNRESOLVED,
+    SHEET_WARNING,
+    SIMILAR_COLUMNS,
+    SURVEY_COLUMNS,
+    WARNING_COLUMNS,
+    XLSX_NAME,
     run_tables,
 )
 
-# ── ヘルパー ────────────────────────────────────────────────────────────────
+# ── ヘルパー ─────────────────────────────────────────────────────────────
 
 
 def _make_record(
@@ -34,6 +46,7 @@ def _make_record(
     summary: str | None = None,
     report_id: str = "00O000000000001",
     url: str = "https://example.my.salesforce.com/lightning/r/Report/00O000000000001/view",
+    warnings: tuple[str, ...] = (),
 ) -> ReportRecord:
     """典型的な ``ReportRecord`` を作る。
 
@@ -159,8 +172,32 @@ def _make_record(
         objects=objects,
         relations=(),
         column_map=column_map,
-        warnings=(),
+        warnings=warnings,
     )
+
+
+def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
+    """``SOQL調査.xlsx`` を ``{シート名: [行 dict, ...]}`` で読む。
+
+    空セルは ``None`` ではなく空文字として扱う ( テストで ``in`` や ``==`` を
+    使えるようにするため ) 。
+    """
+    workbook = load_workbook(path)
+    result: dict[str, list[dict[str, str]]] = {}
+    for sheet_name in workbook.sheetnames:
+        sheet = workbook[sheet_name]
+        rows_iter = sheet.iter_rows(values_only=True)
+        try:
+            headers = list(next(rows_iter))
+        except StopIteration:
+            result[sheet_name] = []
+            continue
+        result[sheet_name] = [
+            {header: ("" if value is None else value) for header, value in zip(headers, row, strict=False)}
+            for row in rows_iter
+        ]
+    workbook.close()
+    return result
 
 
 def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -172,90 +209,110 @@ def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     return columns, rows
 
 
-# ── 対応表（ per-ID ） ─────────────────────────────────────────────────────────
+# ── xlsx の出力ファイル構成 ───────────────────────────────────────────────
 
 
-def test_correspondence_per_id_csv_basic(tmp_path: Path) -> None:
-    """参照項目には ``参照先オブジェクト`` と ``リレーション名`` が埋まる。"""
+def test_output_files_are_only_xlsx_and_column_names_csv(tmp_path: Path) -> None:
+    """出力フォルダには ``SOQL調査.xlsx`` と ``列名の対応.csv`` だけができる。"""
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001", main_object="Opportunity")
 
-    outcome: TableOutcome = run_tables(output, [record], only_keys=["1001"])
-    assert isinstance(outcome, TableOutcome)
+    run_tables(output, [record])
 
-    assert (output / "対応表_1001.csv").exists()
-    columns, rows = _read_csv(output / "対応表_1001.csv")
-    assert columns == list(CORRESPONDENCE_COLUMNS)
-    assert len(rows) == 5
-
-    # 1 行目: AccountId（ referenceTo=[Account], relationshipName=Account）
-    row = rows[0]
-    assert row["管理番号"] == "1001"
-    assert row["レポートID"] == "00O000000000001"
-    assert row["レポートタイプ"] == "Opportunity"
-    assert row["主オブジェクト"] == "Opportunity"
-    assert row["列キー"] == "Opp.Account"
-    assert row["表示名"] == "取引先名"
-    assert row["所属オブジェクト"] == "Opportunity"
-    assert row["対応フィールドAPI名"] == "AccountId"
-    assert row["型"] == "reference"
-    assert row["参照先オブジェクト"] == "Account"
-    assert row["リレーション名"] == "Account"
-
-    # 2 行目: WhoId （ ポリモーフィック。 ``referenceTo`` は ``|`` 区切り ）
-    row = rows[1]
-    assert row["対応フィールドAPI名"] == "WhoId"
-    assert row["参照先オブジェクト"] == "Contact|Lead"
-    assert row["リレーション名"] == ""
-
-    # 3 行目: Custom__c （ picklist。 referenceTo / relationshipName は空 ）
-    row = rows[2]
-    assert row["対応フィールドAPI名"] == "Custom__c"
-    assert row["参照先オブジェクト"] == ""
-    assert row["リレーション名"] == ""
-
-    # 4 行目: Name （ 参照無し ）
-    row = rows[3]
-    assert row["対応フィールドAPI名"] == "Name"
-    assert row["参照先オブジェクト"] == ""
-    assert row["リレーション名"] == ""
-
-    # 5 行目: (不明) （ 対応フィールドが取れなかった列 ）
-    row = rows[4]
-    assert row["対応フィールドAPI名"] == "(不明)"
-    assert row["所属オブジェクト"] == ""
-    assert row["参照先オブジェクト"] == ""
-    assert row["リレーション名"] == ""
+    files = sorted(p.name for p in output.iterdir() if p.is_file())
+    assert files == sorted([COLUMN_NAMES_CSV_NAME, XLSX_NAME])
 
 
-def test_correspondence_main_object_null(tmp_path: Path) -> None:
-    """主オブジェクトが ``None`` のときは ``主オブジェクト`` 列が ``(不明)`` になり、
-    参照先とリレーション名の列は空のまま。
-    """
+def test_empty_records_writes_only_column_names_csv(tmp_path: Path) -> None:
+    """``record`` が無いと ``SOQL調査.xlsx`` は作らず、 ``列名の対応.csv`` も何もしない。"""
     output = tmp_path / "output"
     output.mkdir()
-    record = _make_record("1001", main_object=None)
 
-    run_tables(output, [record], only_keys=["1001"])
+    run_tables(output, [])
 
-    _, rows = _read_csv(output / "対応表_1001.csv")
-    assert len(rows) == 5
-    for row in rows:
-        assert row["主オブジェクト"] == "(不明)"
-        assert row["参照先オブジェクト"] == ""
-        assert row["リレーション名"] == ""
+    assert not (output / XLSX_NAME).exists()
+    assert not (output / COLUMN_NAMES_CSV_NAME).exists()
+
+
+# ── シート構成 ─────────────────────────────────────────────────────────────
+
+
+def test_sheet_names_in_order(tmp_path: Path) -> None:
+    """xlsx のシート名と順番が指定通り。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001")
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    sheet_names = workbook.sheetnames
+    workbook.close()
+
+    assert sheet_names == [
+        SHEET_OVERVIEW,
+        SHEET_UNRESOLVED,
+        SHEET_RESOLVED,
+        SHEET_CONDITION,
+        SHEET_AGGREGATE,
+        SHEET_SIMILAR,
+        SHEET_WARNING,
+        SHEET_FIELDS,
+        SHEET_RELATED,
+    ]
+
+
+# ── 一覧シート ────────────────────────────────────────────────────────────
+
+
+def test_survey_basic(tmp_path: Path) -> None:
+    """一覧シートに 1 レポート 1 行が出る。 取得できなかった項目数と警告数も出る。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    overview = sheets[SHEET_OVERVIEW]
+    assert len(overview) == 1
+    row = overview[0]
+    assert row["管理番号"] == "1001"
+    assert row["主オブジェクト"] == "Opportunity"
+    assert row["レポートタイプ"] == "Opportunity"
+    assert row["形式"] == "TABULAR"
+    assert row["取得できなかった項目数"] == "1"
+    assert row["警告数"] == "0"
+    assert list(row.keys()) == list(SURVEY_COLUMNS)
+
+
+def test_survey_includes_warning_and_unresolved_counts(tmp_path: Path) -> None:
+    """警告と取得できなかった項目があると、 一覧シートに 件数が出る。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record(
+        "1001",
+        main_object="Opportunity",
+        warnings=(
+            "オブジェクト Account の describe に失敗（HTTP 500: サーバーエラー）",
+            "上限超過",
+        ),
+    )
+
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    row = sheets[SHEET_OVERVIEW][0]
+    assert row["取得できなかった項目数"] == "2"  # (不明) 列 1 + Account describe 失敗 1
+    assert row["警告数"] == "2"
 
 
 def test_survey_main_object_unknown(tmp_path: Path) -> None:
-    """調査表: record の ``main_object`` が ``None`` のときは ``主オブジェクト``
-    列を ``(不明)`` にする。 ``objects`` dict の先頭キーで誤って補完しない。
-    """
+    """主オブジェクトが ``None`` のときは ``主オブジェクト`` 列が ``(不明)`` になる。"""
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001", main_object=None)
-    # 主オブジェクトが取れなくても objects には 取れたオブジェクトが入る
-    # ことが実運用上あるが、 それでも ``主オブジェクト`` は ``(不明)`` のまま
     record.objects["RelatedOnly__c"] = {
         "name": "RelatedOnly__c",
         "label": "関連のみ",
@@ -265,517 +322,380 @@ def test_survey_main_object_unknown(tmp_path: Path) -> None:
 
     run_tables(output, [record])
 
-    _, survey_rows = _read_csv(output / "調査表.csv")
-    assert len(survey_rows) == 1
-    survey_row = survey_rows[0]
-    # record.main_object = None だが objects に何か入ってるので、
-    # 旧実装だと先頭キー (``RelatedOnly__c``) で補完されてしまう。 新実装は
-    # ``(不明)`` を入れる
-    assert survey_row["主オブジェクト"] == "(不明)"
-    assert survey_row["管理番号"] == "1001"
+    sheets = _read_xlsx(output / XLSX_NAME)
+    row = sheets[SHEET_OVERVIEW][0]
+    assert row["主オブジェクト"] == "(不明)"
+    assert row["管理番号"] == "1001"
 
 
-def test_correspondence_writes_csv_with_utf8_bom_and_crlf(tmp_path: Path) -> None:
-    """CSV が UTF-8 BOM + CRLF で書かれていることをバイト列で確認する。
-    なぜ: Excel で開ける形式にしておく必要があるため。
-    """
+# ── 取得できなかった項目シート ─────────────────────────────────────────────
+
+
+def test_unresolved_dedup_by_key_reason(tmp_path: Path) -> None:
+    """同じ ``(主オブジェクト, 列キー, 理由)`` が 2 レポートに出ても 1 行、 件数 2。"""
     output = tmp_path / "output"
     output.mkdir()
-    record = _make_record("1001")
+    record_1001 = _make_record("1001", main_object="Opportunity")
+    record_1002 = _make_record("1002", main_object="Opportunity")
 
-    run_tables(output, [record], only_keys=["1001"])
+    run_tables(output, [record_1001, record_1002])
 
-    path = output / "対応表_1001.csv"
-    raw = path.read_bytes()
-    assert raw.startswith(b"\xef\xbb\xbf"), "BOM が無い"
-    assert b"\r\n" in raw
-    assert b"\n\r" not in raw.replace(b"\r\n", b"")
+    sheets = _read_xlsx(output / XLSX_NAME)
+    unresolved = sheets[SHEET_UNRESOLVED]
+    # 1 件にまとめられている
+    opp_unknown_rows = [r for r in unresolved if r["列キー"] == "Opp.Unknown"]
+    assert len(opp_unknown_rows) == 1
+    assert opp_unknown_rows[0]["件数"] == "2"
+    assert opp_unknown_rows[0]["管理番号"] == "1001|1002"
+    assert opp_unknown_rows[0]["種別"] == "項目"
+    assert opp_unknown_rows[0]["主オブジェクト"] == "Opportunity"
+    assert opp_unknown_rows[0]["理由"] == "表示名一致せず"
 
 
-def test_correspondence_uses_atomic_write(tmp_path: Path) -> None:
-    """CSV 書き込みが ``comken.core.files.atomic_write`` 経由である
-    （ 途中で失敗したら既存 CSV が壊れない ） ことを、 ``atomic_write`` を
-    パッチして例外を上げて確かめる。
-    """
-    import comken.toolbox.csv.file as csv_file_mod
-
+def test_unresolved_describe_failure_goes_to_unresolved_sheet(tmp_path: Path) -> None:
+    """describe 失敗は警告シートではなく取得できなかった項目シートに出る。"""
     output = tmp_path / "output"
     output.mkdir()
-
-    # 既存の CSV を置いておき、 途中で例外が上がっても壊れないことを確かめる
-    existing = output / "対応表_1001.csv"
-    existing.write_text("既存\nそのまま\n", encoding="utf-8")
-
-    real_atomic = csv_file_mod.atomic_write
-    called = {"count": 0}
-
-    def broken_atomic_write(path: Path) -> object:
-        called["count"] += 1
-        raise OSError("爆発")
-
-    csv_file_mod.atomic_write = broken_atomic_write  # type: ignore[assignment]
-    try:
-        record = _make_record("1001")
-        with pytest.raises(OSError):
-            run_tables(output, [record], only_keys=["1001"])
-    finally:
-        csv_file_mod.atomic_write = real_atomic  # type: ignore[assignment]
-
-    # ``atomic_write`` が必ず通っている （ ``CSV._write`` の中で呼ばれる ）
-    assert called["count"] >= 1
-    # 既存 CSV は残っている（上書きされていない）
-    assert existing.read_text(encoding="utf-8") == "既存\nそのまま\n"
-
-
-# ── 対応表（ 全体 ） ─────────────────────────────────────────────────────────
-
-
-def test_overall_correspondence_concatenates_and_sorts(tmp_path: Path) -> None:
-    """全 record の ``対応表.csv`` は、 管理番号の昇順で連結される。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record_1002 = _make_record("1002")
-    record_1001 = _make_record("1001")
-    record_1003 = _make_record("1003")
-
-    run_tables(output, [record_1002, record_1001, record_1003])
-
-    _, rows = _read_csv(output / "対応表.csv")
-    keys = [row["管理番号"] for row in rows]
-    assert keys == ["1001"] * 5 + ["1002"] * 5 + ["1003"] * 5
-
-
-# ── 項目表 ─────────────────────────────────────────────────────────────────
-
-
-def test_field_table_dedups_same_object_across_records(tmp_path: Path) -> None:
-    """同じオブジェクトが複数の record に出ても、 項目表では 1 回だけにする。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record_1 = _make_record("1001", main_object="Opportunity")
-    record_2 = _make_record("1002", main_object="Opportunity")
-
-    run_tables(output, [record_1, record_2])
-
-    _, rows = _read_csv(output / "項目表.csv")
-    object_rows = [row for row in rows if row["オブジェクト"] == "Opportunity"]
-    assert len(object_rows) == 4
-    field_names = {row["項目API名"] for row in object_rows}
-    assert field_names == {"AccountId", "WhoId", "Custom__c", "Name"}
-
-
-def test_field_table_picklist_active_only_and_truncated(tmp_path: Path) -> None:
-    """``picklist`` （ active な ``value`` だけの配列） を ``|`` 区切りにする。
-    ``picklistTotal`` が 30 を超えるとき末尾に ``…`` を 1 個足して切る。
-    ``custom=True`` は ``○``、 ``custom=False`` は空。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-
-    picklist = [f"V{i}" for i in range(31)]
-    record = _make_record("1001", main_object="Opportunity")
-    # Custom__c を 31 件の ``picklist`` 配列に差し替え
-    for field in record.objects["Opportunity"]["fields"]:
-        if field["name"] == "Custom__c":
-            field["picklist"] = picklist
-            field["picklistTotal"] = 31
-            break
-
-    run_tables(output, [record], only_keys=["1001"])
-
-    _, rows = _read_csv(output / "項目表.csv")
-    custom_row = next(row for row in rows if row["項目API名"] == "Custom__c")
-    choices = custom_row["選択肢"].split("|")
-    assert len(choices) == 31
-    assert choices[-1] == "…"
-    assert choices[0] == "V0"
-    assert choices[29] == "V29"
-    assert custom_row["カスタム"] == "○"
-
-    name_row = next(row for row in rows if row["項目API名"] == "Name")
-    assert name_row["カスタム"] == ""
-    assert name_row["選択肢"] == ""
-
-
-def test_field_table_picklist_total_at_boundary(tmp_path: Path) -> None:
-    """``picklistTotal`` の境界値: 30 ちょうどなら ``…`` は付かず、
-    31 なら ``…`` が 1 個付く。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-
-    record.objects["Opportunity"]["fields"].append(
-        {
-            "name": "Picked__c",
-            "label": "ちょうど30",
-            "type": "picklist",
-            "custom": True,
-            "referenceTo": [],
-            "relationshipName": None,
-            "picklist": [f"V{i}" for i in range(30)],
-            "picklistTotal": 30,
-        }
-    )
-    run_tables(output, [record], only_keys=["1001"])
-
-    _, rows = _read_csv(output / "項目表.csv")
-    row = next(r for r in rows if r["項目API名"] == "Picked__c")
-    choices = row["選択肢"].split("|")
-    assert len(choices) == 30
-    assert "…" not in row["選択肢"]
-    assert choices[0] == "V0"
-    assert choices[29] == "V29"
-
-
-def test_field_table_picklist_total_exceeds_list_size(tmp_path: Path) -> None:
-    """``picklist`` が 30 個に絞られていても ``picklistTotal`` が 31 以上なら
-    末尾に ``…`` が 1 個付く。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.objects["Opportunity"]["fields"].append(
-        {
-            "name": "BigPick__c",
-            "label": "大きい選択肢",
-            "picklist": [f"V{i}" for i in range(30)],
-            "picklistTotal": 50,
-        }
-    )
-    run_tables(output, [record], only_keys=["1001"])
-
-    _, rows = _read_csv(output / "項目表.csv")
-    row = next(r for r in rows if r["項目API名"] == "BigPick__c")
-    choices = row["選択肢"].split("|")
-    assert len(choices) == 31
-    assert choices[-1] == "…"
-    assert choices[0] == "V0"
-
-
-def test_field_table_polymorphic_reference_and_relationship(tmp_path: Path) -> None:
-    """ポリモーフィックな参照項目は ``参照先オブジェクト`` を ``|`` 区切りで出す。
-    ``relationshipName`` が無いときは空のまま。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-
-    run_tables(output, [record], only_keys=["1001"])
-
-    _, rows = _read_csv(output / "項目表.csv")
-    who_row = next(row for row in rows if row["項目API名"] == "WhoId")
-    assert who_row["参照先オブジェクト"] == "Contact|Lead"
-    assert who_row["リレーション名"] == ""
-
-    account_row = next(row for row in rows if row["項目API名"] == "AccountId")
-    assert account_row["参照先オブジェクト"] == "Account"
-    assert account_row["リレーション名"] == "Account"
-
-
-def test_field_table_columns_and_sort(tmp_path: Path) -> None:
-    """項目表の列順・オブジェクト名の昇順ソートを確かめる。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    record_a = _make_record("1001", main_object="Account")
-    record_a.objects["Account"]["label"] = "取引先"
-    record_a.objects["Account"]["fields"] = [
-        {"name": "Name", "label": "取引先名", "type": "string"}
-    ]
-    record_o = _make_record("1002", main_object="Opportunity")
-    record_o.objects["Opportunity"]["label"] = "商談"
-    record_o.objects["Opportunity"]["fields"] = [
-        {"name": "Name", "label": "商談名", "type": "string"}
-    ]
-    run_tables(output, [record_a, record_o])
-
-    columns, rows = _read_csv(output / "項目表.csv")
-    assert columns == list(FIELD_TABLE_COLUMNS)
-    assert columns[1] == "段"
-    objects = [row["オブジェクト"] for row in rows]
-    assert objects == ["Account", "Opportunity"]
-
-
-# ── ファイル単位の挙動 ─────────────────────────────────────────────────────
-
-
-def test_empty_records_writes_empty_csvs(tmp_path: Path) -> None:
-    """``records`` が空のときは CSV は見出しだけになる。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    outcome = run_tables(output, [])
-
-    correspondence_path = output / "対応表.csv"
-    field_path = output / "項目表.csv"
-    related_path = output / "関連表.csv"
-    condition_path = output / "条件表.csv"
-    aggregate_path = output / "集計表.csv"
-    warning_path = output / "警告表.csv"
-    column_names_path = output / "列名の対応.csv"
-    survey_path = output / "調査表.csv"
-    assert correspondence_path.exists()
-    assert field_path.exists()
-    assert related_path.exists()
-    assert condition_path.exists()
-    assert aggregate_path.exists()
-    assert warning_path.exists()
-    assert column_names_path.exists()
-    assert survey_path.exists()
-
-    _, corr_rows = _read_csv(correspondence_path)
-    _, field_rows = _read_csv(field_path)
-    _, related_rows = _read_csv(related_path)
-    assert corr_rows == []
-    assert field_rows == []
-    assert related_rows == []
-
-    # per-ID CSV は無い
-    assert list(output.glob("対応表_*.csv")) == []
-    # 類似レポートは該当なしで書かれない
-    assert not (output / "類似レポート.csv").exists()
-
-    # 全 CSV が書かれたパスの集合 （ 順序は実装都合 ）
-    expected = {
-        correspondence_path,
-        field_path,
-        related_path,
-        condition_path,
-        aggregate_path,
-        warning_path,
-        column_names_path,
-        survey_path,
-    }
-    assert set(outcome.wrote) == expected
-    assert outcome.skipped == ()
-
-
-def test_only_keys_filters_per_id_csv(tmp_path: Path) -> None:
-    """``only_keys`` を指定すると、 per-ID CSV はその管理番号だけ作られる。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record_1001 = _make_record("1001")
-    record_1002 = _make_record("1002")
-    record_1003 = _make_record("1003")
-
-    run_tables(output, [record_1001, record_1002, record_1003], only_keys=["1001", "1003"])
-
-    # per-ID CSV は 1001 / 1003 だけ
-    per_id = sorted(p.name for p in output.glob("対応表_*.csv"))
-    assert per_id == ["対応表_1001.csv", "対応表_1003.csv"]
-
-    # per-ID の txt も同様
-    per_id_txt = sorted(p.name for p in output.glob("列名の対応_*.txt"))
-    assert per_id_txt == ["列名の対応_1001.txt", "列名の対応_1003.txt"]
-
-    # 全体対応表には 3 つぶん全ての行
-    _, corr_rows = _read_csv(output / "対応表.csv")
-    keys = {row["管理番号"] for row in corr_rows}
-    assert keys == {"1001", "1002", "1003"}
-
-    # 項目表にも 3 つぶん全ての Opportunity
-    _, rows = _read_csv(output / "項目表.csv")
-    assert any(row["オブジェクト"] == "Opportunity" for row in rows)
-
-
-def test_output_dir_missing_does_not_raise(tmp_path: Path) -> None:
-    """``output_dir`` が存在しないときは例外を出さず、 フォルダを作ってからの
-    空 CSV （ 見出しのみ ） を書く。
-    """
-    output = tmp_path / "missing"  # 存在しない
-    assert not output.exists()
-
-    outcome = run_tables(output, [])
-
-    assert output.exists()
-    correspondence_path = output / "対応表.csv"
-    field_path = output / "項目表.csv"
-    assert correspondence_path.exists()
-    assert field_path.exists()
-    _, corr_rows = _read_csv(correspondence_path)
-    _, field_rows = _read_csv(field_path)
-    assert corr_rows == []
-    assert field_rows == []
-    assert outcome.skipped == ()
-
-
-# ── ログの出し方 ───────────────────────────────────────────────────────────
-
-
-def test_tables_logs_counts(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """``tables`` は CSV のパスだけをログに書き、 describe の中身は出さない。
-    なぜ: ログに機微な情報が混ざらないことを保証するため。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001")
-
-    with caplog.at_level(logging.INFO):
-        run_tables(output, [record], only_keys=["1001"])
-
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("対応表_1001.csv" in m for m in messages)
-    assert any("対応表.csv" in m for m in messages)
-    assert any("項目表.csv" in m for m in messages)
-    # describe の中身 （ "AccountId" / "Custom__c" など ） はログに含まれない
-    for field_token in ("AccountId", "WhoId", "Custom__c", "商談名"):
-        for message in messages:
-            assert field_token not in message, (
-                f"describe の中身 {field_token!r} が漏れています: {message}"
-            )
-
-
-# ── 関連表 ──────────────────────────────────────────────────────────────
-
-
-def _make_record_with_relations(key: str, main: str, related_entries: list[dict]) -> ReportRecord:
-    """関係を ``relations`` に持つ ``ReportRecord`` を作る （ 関連表用 ） 。"""
-    record = _make_record(key, main_object=main)
-
-    objects: dict[str, dict] = dict(record.objects)
-    objects["Account"] = {
-        "name": "Account",
-        "label": "取引先",
-        "custom": False,
-        "fields": [{"name": "Name", "label": "取引先名", "type": "string"}],
-    }
-    objects["User"] = {
-        "name": "User",
-        "label": "ユーザ",
-        "custom": False,
-        "fields": [{"name": "Alias", "label": "別名", "type": "string"}],
-    }
-
-    from src.fetch import RelationRecord
-
-    relations = tuple(
-        RelationRecord(
-            parent=entry["親"],
-            field=entry["参照項目"],
-            relationship_name=entry["リレーション名"],
-            child=entry["子"],
-            depth=entry["段"],
-        )
-        for entry in related_entries
-    )
-
-    return ReportRecord(
-        key=record.key,
-        summary=record.summary,
-        report_id=record.report_id,
-        url=record.url,
-        main_object=record.main_object,
-        report=record.report,
-        objects=objects,
-        relations=relations,
-        column_map=record.column_map,
-        warnings=record.warnings,
-    )
-
-
-def test_related_table_one_row_per_edge(tmp_path: Path) -> None:
-    """``relations`` の各エントリが 1 行ずつ ``関連表.csv`` に乗る。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record_with_relations(
+    record = _make_record(
         "1001",
-        "Task",
-        [
-            {
-                "親": "Task",
-                "参照項目": "WhatId",
-                "リレーション名": "WhatId",
-                "子": "Account",
-                "段": 1,
-            },
-            {
-                "親": "Account",
-                "参照項目": "OwnerId",
-                "リレーション名": "OwnerId",
-                "子": "User",
-                "段": 2,
-            },
-        ],
+        main_object="Opportunity",
+        warnings=("オブジェクト Account の describe に失敗（HTTP 500: エラー）",),
     )
 
     run_tables(output, [record])
 
-    columns, rows = _read_csv(output / "関連表.csv")
-    assert columns == list(RELATED_TABLE_COLUMNS)
-    assert rows == [
+    sheets = _read_xlsx(output / XLSX_NAME)
+    unresolved = sheets[SHEET_UNRESOLVED]
+    obj_rows = [r for r in unresolved if r["種別"] == "オブジェクト"]
+    assert len(obj_rows) == 1
+    assert obj_rows[0]["主オブジェクト"] == "Account"
+    assert "HTTP 500" in obj_rows[0]["理由"]
+    # 警告シートには describe 失敗が出ていない
+    warning_rows = sheets[SHEET_WARNING]
+    assert all("describe に失敗" not in r["警告"] for r in warning_rows)
+
+
+def test_unresolved_dedup_object_by_name_and_reason(tmp_path: Path) -> None:
+    """同じオブジェクトで同じ理由の describe 失敗は 1 行、 件数 2。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record_1001 = _make_record(
+        "1001",
+        warnings=("オブジェクト Account の describe に失敗（HTTP 500: エラー）",),
+    )
+    record_1002 = _make_record(
+        "1002",
+        warnings=("オブジェクト Account の describe に失敗（HTTP 500: エラー）",),
+    )
+
+    run_tables(output, [record_1001, record_1002])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    unresolved = sheets[SHEET_UNRESOLVED]
+    obj_rows = [r for r in unresolved if r["種別"] == "オブジェクト"]
+    assert len(obj_rows) == 1
+    assert obj_rows[0]["主オブジェクト"] == "Account"
+    assert obj_rows[0]["件数"] == "2"
+    assert obj_rows[0]["管理番号"] == "1001|1002"
+
+
+def test_unresolved_duplicate_label_in_same_report(tmp_path: Path) -> None:
+    """同じレポート内で表示名がぶつかっているものは、 理由が 「 同じレポート内で表示名が重複 」 で出る。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+    # Name と同じ表示名 「 商談名 」 を持つ列を足す ( 別のフィールド )
+    record.column_map.append(
         {
-            "管理番号": "1001",
-            "親オブジェクト": "Task",
-            "参照項目API名": "WhatId",
-            "リレーション名": "WhatId",
-            "子オブジェクト": "Account",
-            "段": "1",
-        },
-        {
-            "管理番号": "1001",
-            "親オブジェクト": "Account",
-            "参照項目API名": "OwnerId",
-            "リレーション名": "OwnerId",
-            "子オブジェクト": "User",
-            "段": "2",
-        },
+            "列キー": "Opp.OtherName",
+            "表示名": "商談名",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "OtherName__c",
+            "型": "string",
+            "参照先オブジェクト": "",
+            "リレーション名": "",
+            "備考": "",
+        }
+    )
+
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    unresolved = sheets[SHEET_UNRESOLVED]
+    dup_rows = [r for r in unresolved if r["理由"] == "同じレポート内で表示名が重複"]
+    assert len(dup_rows) == 2  # Opp.Name と Opp.OtherName が両方
+    keys = {r["列キー"] for r in dup_rows}
+    assert keys == {"Opp.Name", "Opp.OtherName"}
+
+
+def test_unresolved_sorted_by_count_then_kind(tmp_path: Path) -> None:
+    """並びは 件数 ( 降順 ) → 種別 → 主オブジェクト → 列キー。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record_1001 = _make_record(
+        "1001",
+        warnings=("オブジェクト Account の describe に失敗（HTTP 500: エラー）",),
+    )
+    record_1002 = _make_record(
+        "1002",
+        warnings=("オブジェクト Account の describe に失敗（HTTP 500: エラー）",),
+    )
+
+    run_tables(output, [record_1001, record_1002])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    unresolved = sheets[SHEET_UNRESOLVED]
+    # describe 失敗が件数 2 で先頭
+    counts = [int(r["件数"]) for r in unresolved]
+    assert counts == sorted(counts, reverse=True)
+    # 種別 「 オブジェクト 」 は 「 項目 」 より前
+    kinds = [r["種別"] for r in unresolved]
+    if "オブジェクト" in kinds and "項目" in kinds:
+        assert kinds.index("オブジェクト") < kinds.index("項目")
+
+
+# ── 項目の対応シート ──────────────────────────────────────────────────────
+
+
+def test_resolved_correspondence_dedup_by_main_and_field(tmp_path: Path) -> None:
+    """同じ ``(主オブジェクト, SOQL列名)`` は 1 行。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record_1001 = _make_record("1001", main_object="Opportunity")
+    record_1002 = _make_record("1002", main_object="Opportunity")
+
+    run_tables(output, [record_1001, record_1002])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    resolved = sheets[SHEET_RESOLVED]
+    # (Opportunity, AccountId) は 1 行
+    account_rows = [r for r in resolved if r["SOQL列名"] == "AccountId"]
+    assert len(account_rows) == 1
+    assert account_rows[0]["主オブジェクト"] == "Opportunity"
+    assert account_rows[0]["使っているレポート数"] == "2"
+    assert account_rows[0]["管理番号"] == "1001|1002"
+
+
+def test_resolved_excludes_unknown_fields(tmp_path: Path) -> None:
+    """``(不明)`` のフィールドは 項目の対応 シートに出ない ( 取得できなかった項目シート ) 。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001")
+
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    resolved = sheets[SHEET_RESOLVED]
+    assert all(r["SOQL列名"] != "(不明)" for r in resolved)
+
+
+def test_resolved_display_name_majority(tmp_path: Path) -> None:
+    """表示名は最多 ( 同数なら管理番号の小さいレポートのもの ) 。 別名は 備考に 「 別の表示名あり 」 。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    # 1001 と 1003 で 「 取引先名 」 、 1002 で 「 取引先 」 を使う
+    record_1001 = _make_record("1001", main_object="Opportunity")
+    record_1002 = _make_record("1002", main_object="Opportunity")
+    new_column_map = [
+        {**col, "表示名": "取引先"}
+        if col["対応フィールドAPI名"] == "AccountId"
+        else col
+        for col in record_1002.column_map
     ]
+    record_1002 = dataclasses.replace(record_1002, column_map=new_column_map)
+    record_1003 = _make_record("1003", main_object="Opportunity")
+
+    run_tables(output, [record_1001, record_1002, record_1003])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    resolved = sheets[SHEET_RESOLVED]
+    account_rows = [r for r in resolved if r["SOQL列名"] == "AccountId"]
+    assert len(account_rows) == 1
+    # 「 取引先名 」 が 2 件、 「 取引先 」 が 1 件 → 最多は 「 取引先名 」
+    assert account_rows[0]["表示名"] == "取引先名"
+    assert "別の表示名あり: 取引先（1002）" in account_rows[0]["備考"]
 
 
-def test_related_table_orders_by_management_key(tmp_path: Path) -> None:
-    """``関連表.csv`` は「 管理番号 → 段 → 親の出現順 」 で並ぶ。"""
+def test_resolved_display_name_tie_break_by_smallest_key(tmp_path: Path) -> None:
+    """同数のときは管理番号の小さいレポートの表示名を選ぶ。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    # 1001 で 「 別名A 」 1002 で 「 別名B 」 → 同数。 1001 を採用
+    record_1001 = _make_record("1001", main_object="Opportunity")
+    new_columns_1001 = [
+        {**col, "表示名": "別名A"}
+        if col["対応フィールドAPI名"] == "AccountId"
+        else col
+        for col in record_1001.column_map
+    ]
+    record_1001 = dataclasses.replace(record_1001, column_map=new_columns_1001)
+    record_1002 = _make_record("1002", main_object="Opportunity")
+    new_columns_1002 = [
+        {**col, "表示名": "別名B"}
+        if col["対応フィールドAPI名"] == "AccountId"
+        else col
+        for col in record_1002.column_map
+    ]
+    record_1002 = dataclasses.replace(record_1002, column_map=new_columns_1002)
+
+    run_tables(output, [record_1001, record_1002])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    resolved = sheets[SHEET_RESOLVED]
+    account_rows = [r for r in resolved if r["SOQL列名"] == "AccountId"]
+    assert len(account_rows) == 1
+    assert account_rows[0]["表示名"] == "別名A"  # 1001 の表示名 ( tie → smallest 管理番号 )
+    assert "別の表示名あり: 別名B（1002）" in account_rows[0]["備考"]
+
+
+# ── 列名の対応.csv ──────────────────────────────────────────────────────
+
+
+def test_column_names_csv_new_schema(tmp_path: Path) -> None:
+    """``列名の対応.csv`` は新しい見出しで出力される。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001")
+
+    run_tables(output, [record])
+
+    columns, rows = _read_csv(output / COLUMN_NAMES_CSV_NAME)
+    assert columns == list(COLUMN_NAMES_COLUMNS)
+    # (不明) は除く
+    assert all(r["SOQL列名"] != "(不明)" for r in rows)
+    # 4 件
+    assert len(rows) == 4
+    soql_names = {r["SOQL列名"] for r in rows}
+    assert soql_names == {"AccountId", "WhoId", "Custom__c", "Name"}
+
+
+def test_column_names_csv_updated_date(tmp_path: Path) -> None:
+    """``更新日`` 列が ``YYYY-MM-DD`` で埋まる。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001")
+
+    run_tables(output, [record])
+
+    _, rows = _read_csv(output / COLUMN_NAMES_CSV_NAME)
+    assert all(r["更新日"] == datetime.now(tz=UTC).astimezone().date().isoformat() for r in rows)
+
+
+def test_column_names_csv_no_management_key_column(tmp_path: Path) -> None:
+    """``列名の対応.csv`` には管理番号の列が無い ( 1 行 = (主, SOQL) ) 。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001")
+
+    run_tables(output, [record])
+
+    columns, _ = _read_csv(output / COLUMN_NAMES_CSV_NAME)
+    assert "管理番号" not in columns
+
+
+# ── 列名の対応.csv のマージ ────────────────────────────────────────────────
+
+
+def test_column_names_csv_merges_when_other_object_kept(tmp_path: Path) -> None:
+    """既存ファイルで別の主オブジェクトの行はそのまま残り、 今回の行は置き換わる。"""
     output = tmp_path / "output"
     output.mkdir()
 
-    record_1001 = _make_record_with_relations(
-        "1001",
-        "Task",
-        [
-            {
-                "親": "Task",
-                "参照項目": "WhatId",
-                "リレーション名": "WhatId",
-                "子": "Account",
-                "段": 1,
-            },
-            {
-                "親": "Account",
-                "参照項目": "OwnerId",
-                "リレーション名": "OwnerId",
-                "子": "User",
-                "段": 2,
-            },
-        ],
-    )
-    record_1003 = _make_record_with_relations(
-        "1003",
-        "Opportunity",
-        [
-            {
-                "親": "Opportunity",
-                "参照項目": "AccountId",
-                "リレーション名": "Account",
-                "子": "Account",
-                "段": 1,
-            },
-        ],
+    # 事前に別オブジェクトの行を入れておく
+    existing_path = output / COLUMN_NAMES_CSV_NAME
+    existing_path.write_bytes(
+        "﻿主オブジェクト,SOQL列名,表示名,備考,更新日\r\n"
+        "Case,Case.AccountId,取引先ID,,2025-01-01\r\n".encode()
     )
 
-    run_tables(output, [record_1001, record_1003])
+    record = _make_record("1001", main_object="Opportunity")
 
-    _, rows = _read_csv(output / "関連表.csv")
-    keys = [row["管理番号"] for row in rows]
-    assert keys == ["1001", "1001", "1003"]
+    run_tables(output, [record])
+
+    _, rows = _read_csv(existing_path)
+    soql_pairs = {(r["主オブジェクト"], r["SOQL列名"]) for r in rows}
+    # Case.AccountId は残る
+    assert ("Case", "Case.AccountId") in soql_pairs
+    # Opportunity 側の AccountId 等も入る
+    assert ("Opportunity", "AccountId") in soql_pairs
+    assert ("Opportunity", "WhoId") in soql_pairs
+    # 並びは 主 → SOQL
+    keys_in_order = [(r["主オブジェクト"], r["SOQL列名"]) for r in rows]
+    assert keys_in_order == sorted(keys_in_order)
+    # 既存ファイルの Case.AccountId はそのまま
+    case_row = next(r for r in rows if r["主オブジェクト"] == "Case")
+    assert case_row["更新日"] == "2025-01-01"
 
 
-# ── 条件表 ──────────────────────────────────────────────────────────────
+def test_column_names_csv_replaces_seen_rows(tmp_path: Path) -> None:
+    """既存ファイルと同じ (主, SOQL) は今回の内容で置き換わる ( 更新日が変わる ) 。"""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    existing_path = output / COLUMN_NAMES_CSV_NAME
+    existing_path.write_bytes(
+        "﻿主オブジェクト,SOQL列名,表示名,備考,更新日\r\n"
+        "Opportunity,AccountId,古い表示名,古い備考,2025-01-01\r\n".encode()
+    )
+
+    record = _make_record("1001", main_object="Opportunity")
+
+    run_tables(output, [record])
+
+    _, rows = _read_csv(existing_path)
+    account_row = next(r for r in rows if r["SOQL列名"] == "AccountId")
+    assert account_row["主オブジェクト"] == "Opportunity"
+    assert account_row["表示名"] == "取引先名"  # 新しい表示名
+    assert account_row["更新日"] == datetime.now(tz=UTC).astimezone().date().isoformat()
 
 
-def test_condition_table_basic(tmp_path: Path) -> None:
-    """``reportFilters`` / ``standardDateFilter`` / ``crossFilters`` / ``topRows`` が
-    1 行ずつ展開される。 ``reportBooleanFilter`` は 1 行にそのまま入る。
-    """
+def test_column_names_csv_fails_on_old_header(tmp_path: Path) -> None:
+    """旧形式の見出しを持つ既存ファイルは CSVError、 既存ファイルは変更されない。"""
+    from comken.exceptions import CSVError
+
+    output = tmp_path / "output"
+    output.mkdir()
+
+    existing_path = output / COLUMN_NAMES_CSV_NAME
+    old_format = (
+        "﻿管理番号,概要,SOQL列名,表示名,備考\r\n"
+        "1001,テスト,AccountId,取引先名,\r\n"
+    )
+    existing_path.write_bytes(old_format.encode("utf-8"))
+    before = existing_path.read_bytes()
+
+    record = _make_record("1001", main_object="Opportunity")
+
+    with pytest.raises(CSVError):
+        run_tables(output, [record])
+
+    # 既存ファイルは変更されない
+    assert existing_path.read_bytes() == before
+
+
+def test_column_names_csv_keeps_old_when_no_records(tmp_path: Path) -> None:
+    """record が無いときは CSV を何もしない。"""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    existing_path = output / COLUMN_NAMES_CSV_NAME
+    existing_path.write_bytes(
+        "﻿主オブジェクト,SOQL列名,表示名,備考,更新日\r\n"
+        "Case,Case.AccountId,取引先ID,,2025-01-01\r\n".encode()
+    )
+    before = existing_path.read_bytes()
+
+    run_tables(output, [])
+
+    # CSV はそのまま
+    assert existing_path.read_bytes() == before
+
+
+# ── 条件 / 集計 / 警告 / 項目一覧 / 関連 / 似たレポート ─────────────
+
+
+def test_condition_basic(tmp_path: Path) -> None:
+    """条件シートに 絞り込み・組立式・日付・クロス・上位N が 1 行ずつ出る。"""
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001", main_object="Opportunity")
@@ -803,44 +723,38 @@ def test_condition_table_basic(tmp_path: Path) -> None:
 
     run_tables(output, [record])
 
-    _, rows = _read_csv(output / "条件表.csv")
+    sheets = _read_xlsx(output / XLSX_NAME)
+    condition = sheets[SHEET_CONDITION]
     by_kind: dict[str, list[dict[str, str]]] = {}
-    for row in rows:
+    for row in condition:
         by_kind.setdefault(row["種別"], []).append(row)
 
-    # 絞り込みは 2 行
     assert len(by_kind["絞り込み"]) == 2
-    assert {row["列キー"] for row in by_kind["絞り込み"]} == {"Opp.Amount", "Opp.StageName"}
-    assert "組立式" in by_kind
+    assert {r["列キー"] for r in by_kind["絞り込み"]} == {"Opp.Amount", "Opp.StageName"}
     assert by_kind["組立式"][0]["値"] == "1 AND 2"
-    assert "日付" in by_kind
     assert by_kind["日付"][0]["列キー"] == "Opp.CloseDate"
-    assert "クロス" in by_kind
     assert "WITH" in by_kind["クロス"][0]["値"]
-    assert "上位N" in by_kind
     assert by_kind["上位N"][0]["値"] == "10"
 
 
-def test_condition_table_columns_match(tmp_path: Path) -> None:
-    """条件表の列順を確かめる。"""
+def test_condition_columns_match(tmp_path: Path) -> None:
+    """条件シートの列順を確かめる。"""
     output = tmp_path / "output"
     output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
+    record = _make_record("1001")
     record.report["reportMetadata"]["reportFilters"] = [
         {"column": "X", "operator": "equals", "value": "y"}
     ]
 
     run_tables(output, [record])
 
-    columns, _ = _read_csv(output / "条件表.csv")
-    assert columns == list(CONDITION_TABLE_COLUMNS)
+    sheets = _read_xlsx(output / XLSX_NAME)
+    headers = list(sheets[SHEET_CONDITION][0].keys())
+    assert headers == list(CONDITION_COLUMNS)
 
 
-# ── 集計表 ──────────────────────────────────────────────────────────────
-
-
-def test_aggregate_table_basic(tmp_path: Path) -> None:
-    """グルーピング・集計・並び順が 1 行ずつ展開される。"""
+def test_aggregate_basic(tmp_path: Path) -> None:
+    """集計シートに グルーピング・集計・並び順が出る。"""
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001", main_object="Opportunity")
@@ -852,542 +766,105 @@ def test_aggregate_table_basic(tmp_path: Path) -> None:
 
     run_tables(output, [record])
 
-    _, rows = _read_csv(output / "集計表.csv")
-    by_kind = {row["種別"]: row for row in rows}
-
-    assert "形式" in by_kind
+    sheets = _read_xlsx(output / XLSX_NAME)
+    aggregate = sheets[SHEET_AGGREGATE]
+    by_kind = {r["種別"]: r for r in aggregate}
     assert by_kind["形式"]["内容"] == "TABULAR"
-    assert "グルーピング(行)" in by_kind
     assert by_kind["グルーピング(行)"]["名前"] == "Opp.StageName"
-    assert "集計" in by_kind
     assert by_kind["集計"]["名前"] == "s!Opp.Amount"
-    assert "並び順" in by_kind
     assert by_kind["並び順"]["名前"] == "Opp.Name"
 
 
-def test_aggregate_table_columns_match(tmp_path: Path) -> None:
-    """集計表の列順を確かめる。"""
+def test_aggregate_columns_match(tmp_path: Path) -> None:
+    """集計シートの列順。"""
     output = tmp_path / "output"
     output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
+    record = _make_record("1001")
 
     run_tables(output, [record])
 
-    columns, _ = _read_csv(output / "集計表.csv")
-    assert columns == list(AGGREGATE_TABLE_COLUMNS)
+    sheets = _read_xlsx(output / XLSX_NAME)
+    headers = list(sheets[SHEET_AGGREGATE][0].keys())
+    assert headers == list(AGGREGATE_COLUMNS)
 
 
-# ── 警告表 ──────────────────────────────────────────────────────────────
-
-
-def test_warning_table_collects_record_warnings(tmp_path: Path) -> None:
-    """``record.warnings`` が 1 行ずつ警告表に入る。"""
+def test_warning_excludes_describe_failures(tmp_path: Path) -> None:
+    """警告シートには describe 失敗以外の警告が出る。"""
     output = tmp_path / "output"
     output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record_warned = ReportRecord(
-        key=record.key,
-        summary=record.summary,
-        report_id=record.report_id,
-        url=record.url,
-        main_object=record.main_object,
-        report=record.report,
-        objects=record.objects,
-        relations=record.relations,
-        column_map=record.column_map,
-        warnings=("警告 A", "警告 B"),
-    )
-
-    run_tables(output, [record_warned])
-
-    columns, rows = _read_csv(output / "警告表.csv")
-    assert columns == list(WARNING_TABLE_COLUMNS)
-    assert {row["警告"] for row in rows} == {"警告 A", "警告 B"}
-
-
-# ── 列名の対応 ───────────────────────────────────────────────────────────
-
-
-def test_column_names_csv_resolved_only(tmp_path: Path) -> None:
-    """``列名の対応.csv`` は ``(不明)`` を除外し、 解決できた列だけ出す。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-
-    run_tables(output, [record])
-
-    columns, rows = _read_csv(output / "列名の対応.csv")
-    assert columns == list(COLUMN_NAMES_COLUMNS)
-    # (不明) は除く
-    assert all(row["SOQL列名"] != "(不明)" for row in rows)
-    # 解決できた 4 件
-    assert len(rows) == 4
-    assert {row["SOQL列名"] for row in rows} == {"AccountId", "WhoId", "Custom__c", "Name"}
-
-
-def test_column_names_csv_marks_duplicate_label(tmp_path: Path) -> None:
-    """同じ表示名が複数の列にあると、 備考に「表示名が重複」 が付く。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.column_map.append(
-        {
-            "列キー": "Opp.Dup",
-            "表示名": "商談名",
-            "所属オブジェクト": "Opportunity",
-            "対応フィールドAPI名": "OtherField__c",
-            "型": "string",
-            "参照先オブジェクト": "",
-            "リレーション名": "",
-            "備考": "",
-        }
+    record = _make_record(
+        "1001",
+        warnings=(
+            "オブジェクト Account の describe に失敗（HTTP 500: エラー）",
+            "上限超過",
+        ),
     )
 
     run_tables(output, [record])
 
-    _, rows = _read_csv(output / "列名の対応.csv")
-    dup_rows = [row for row in rows if row["表示名"] == "商談名"]
-    assert len(dup_rows) == 2
-    assert all(row["備考"] == "表示名が重複" for row in dup_rows)
+    sheets = _read_xlsx(output / XLSX_NAME)
+    warning = sheets[SHEET_WARNING]
+    assert len(warning) == 1
+    assert warning[0]["警告"] == "上限超過"
 
 
-def test_column_names_txt_format(tmp_path: Path) -> None:
-    """``列名の対応_{管理番号}.txt`` は ``COLUMN_NAMES = {`` で始まり、
-    解決できなかった列が ``# 未対応: ...`` のコメント行で末尾に並ぶ。
-    """
+def test_warning_columns_match(tmp_path: Path) -> None:
+    """警告シートの列順。"""
     output = tmp_path / "output"
     output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-
-    run_tables(output, [record], only_keys=["1001"])
-
-    path = output / "列名の対応_1001.txt"
-    text = path.read_text(encoding="utf-8")
-    assert text.startswith("# 管理番号: 1001\n")
-    assert "COLUMN_NAMES = {\n" in text
-    assert '    "AccountId": "取引先名",\n' in text
-    # (不明) 列はコメント行に
-    assert "# 未対応: Opp.Unknown" in text
-    assert text.rstrip().endswith("}")
-
-
-# ── 列名の対応.csv のマージ（ 既存ファイルを残して今回分だけ入れ替える ） ──
-
-
-def test_column_names_csv_merges_existing_when_key_refetched(tmp_path: Path) -> None:
-    """A・B を書いたあと A だけ取り直すと、 B の行はそのまま残り A の行は
-    今回の内容で入れ替わる。
-
-    なぜ: ダウンローダーがこの CSV を管理番号で引いて使う。 1 件だけ
-    取り直したときに他の管理番号の対応が消えないことを保証する。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record_a_v1 = _make_record("1001", main_object="Opportunity")
-    record_b = _make_record("1002", main_object="Opportunity")
-
-    # 1 回目: 1001 / 1002 の両方
-    run_tables(output, [record_a_v1, record_b], only_keys=["1001", "1002"])
-    columns, rows = _read_csv(output / "列名の対応.csv")
-    assert columns == list(COLUMN_NAMES_COLUMNS)
-    assert {row["管理番号"] for row in rows} == {"1001", "1002"}
-    # 1001 の Old 状態の AccountId が含まれる
-    old_soql_names = {row["SOQL列名"] for row in rows if row["管理番号"] == "1001"}
-    assert old_soql_names == {"AccountId", "WhoId", "Custom__c", "Name"}
-
-    # 2 回目: 1001 だけ取り直し。 1001 は column_map を 2 件に減らす。
-    record_a_v2 = _make_record("1001", main_object="Opportunity")
-    reduced_columns = [
-        col
-        for col in record_a_v2.column_map
-        if col.get("対応フィールドAPI名") in {"AccountId", "Name"}
-    ]
-    record_a_v2 = dataclasses.replace(record_a_v2, column_map=reduced_columns)
-    run_tables(output, [record_a_v2], only_keys=["1001"])
-
-    _, rows = _read_csv(output / "列名の対応.csv")
-    by_key: dict[str, list[dict[str, str]]] = {}
-    for row in rows:
-        by_key.setdefault(row["管理番号"], []).append(row)
-
-    # 1001 は新しい 2 件だけ
-    a_rows = by_key["1001"]
-    assert {row["SOQL列名"] for row in a_rows} == {"AccountId", "Name"}
-    # 1002 はそのまま残っている
-    b_rows = by_key["1002"]
-    assert {row["SOQL列名"] for row in b_rows} == {"AccountId", "WhoId", "Custom__c", "Name"}
-    # 管理番号昇順
-    assert list(by_key.keys()) == ["1001", "1002"]
-
-
-def test_column_names_csv_drops_rows_when_refetch_has_no_resolvable_columns(
-    tmp_path: Path,
-) -> None:
-    """A・B を書いたあと A を 「 対応できる列が 0 件 」 の record で
-    取り直すと、 A の古い行が全部消える （ 1002 はそのまま残る ） 。
-
-    なぜ: 「 今回取得に成功した管理番号 」 は record ごとに決まる。
-    A は取得に成功したが column_map が全部 ``"(不明)"`` で対応できる列が
-    無い場合でも、 A は 「 取れた管理番号 」 として古い行を消す。 ``new_rows``
-    側に行が無いことをもって 「 取れなかった 」 扱いにはしない。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record_a = _make_record("1001", main_object="Opportunity")
-    record_b = _make_record("1002", main_object="Opportunity")
-
-    # 1 回目: 1001 / 1002 の両方とも 4 件ずつ
-    run_tables(output, [record_a, record_b], only_keys=["1001", "1002"])
-    _, rows_before = _read_csv(output / "列名の対応.csv")
-    assert {row["管理番号"] for row in rows_before} == {"1001", "1002"}
-
-    # 2 回目: 1001 を 「 対応できる列 0 件 」 の record で取り直し
-    record_a_empty = _make_record("1001", main_object="Opportunity")
-    # 全列を ``対応フィールドAPI名 = "(不明)"`` に上書きし、
-    # ``_build_column_names_rows_from_records`` が 0 行を返す状態を作る
-    empty_columns: list[dict[str, str]] = []
-    for col in record_a_empty.column_map:
-        new_col = dict(col)
-        new_col["対応フィールドAPI名"] = "(不明)"
-        empty_columns.append(new_col)
-    record_a_empty = dataclasses.replace(record_a_empty, column_map=empty_columns)
-    run_tables(output, [record_a_empty], only_keys=["1001"])
-
-    _, rows_after = _read_csv(output / "列名の対応.csv")
-    # 1001 の古い行が消え、 1002 の行はそのまま残る
-    assert {row["管理番号"] for row in rows_after} == {"1002"}
-    assert {row["SOQL列名"] for row in rows_after} == {
-        "AccountId",
-        "WhoId",
-        "Custom__c",
-        "Name",
-    }
-
-
-def test_column_names_csv_keeps_old_rows_when_refetch_missing(tmp_path: Path) -> None:
-    """A・B を書いたあと A を取り直すときに A が record ごと無い
-    （ 取得失敗 ） ときは、 A の古い行が残る。
-
-    なぜ: 今回の結果が無い管理番号は古い情報をそのまま使うため。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record_a = _make_record("1001", main_object="Opportunity")
-    record_b = _make_record("1002", main_object="Opportunity")
-
-    run_tables(output, [record_a, record_b], only_keys=["1001", "1002"])
-    _, rows_before = _read_csv(output / "列名の対応.csv")
-    assert {row["管理番号"] for row in rows_before} == {"1001", "1002"}
-
-    # 2 回目: records が空 （ A・B どちらも失敗 ） → 古い行をそのまま残す
-    run_tables(output, [], only_keys=[])
-
-    _, rows_after = _read_csv(output / "列名の対応.csv")
-    assert rows_after == rows_before
-
-
-def test_column_names_csv_fails_on_header_mismatch(tmp_path: Path) -> None:
-    """既存ファイルの見出しが ``COLUMN_NAMES_COLUMNS`` と違うときは
-    ``CSVError`` を上げ、 既存ファイルの中身を変えない。
-
-    なぜ: 黙って上書きすると別形式だったのに今回の結果で上書きされて
-    しまう事故を防ぐため。 既存ファイルは退避してから再実行する流れに
-    誘導する。
-    """
-    from comken.exceptions import CSVError
-
-    output = tmp_path / "output"
-    output.mkdir()
-    path = output / "列名の対応.csv"
-    # 違う見出しで既存ファイルを置いておく
-    raw = (
-        "﻿"
-        "管理番号,概要,SOQL列名,表示名,備考,ExtraColumn\n"
-        "1001,テスト,AccountId,取引先名,\n"
-    )
-    path.write_bytes(raw.encode("utf-8"))
-    before = path.read_bytes()
-
-    record = _make_record("1001", main_object="Opportunity")
-
-    with pytest.raises(CSVError):
-        run_tables(output, [record], only_keys=["1001"])
-
-    # 既存ファイルの中身が変わっていないこと
-    assert path.read_bytes() == before
-
-
-def test_column_names_csv_fails_when_existing_csv_unreadable(tmp_path: Path) -> None:
-    """既存ファイルが CSV として読めない （ BOM だけ / 列数不一致 等 ）
-    ときも ``CSVError`` を上げ、 既存ファイルの中身を変えない。
-    """
-    from comken.exceptions import CSVError
-
-    output = tmp_path / "output"
-    output.mkdir()
-    path = output / "列名の対応.csv"
-    # BOM だけ（ 見出し無し ） の壊れたファイル
-    path.write_bytes(b"\xef\xbb\xbf")
-    before = path.read_bytes()
-
-    record = _make_record("1001", main_object="Opportunity")
-
-    with pytest.raises(CSVError):
-        run_tables(output, [record], only_keys=["1001"])
-
-    assert path.read_bytes() == before
-
-
-def test_column_names_csv_no_existing_writes_fresh(tmp_path: Path) -> None:
-    """既存ファイルが無いときは今までと同じく今回の結果だけ書く。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-
-    run_tables(output, [record], only_keys=["1001"])
-
-    columns, rows = _read_csv(output / "列名の対応.csv")
-    assert columns == list(COLUMN_NAMES_COLUMNS)
-    assert {row["管理番号"] for row in rows} == {"1001"}
-    assert {row["SOQL列名"] for row in rows} == {"AccountId", "WhoId", "Custom__c", "Name"}
-
-
-# ── 条件表: 項目列を対応表から埋める / 読める文字列への整形 ──────────────
-
-
-def test_condition_table_resolves_item_from_column_map(tmp_path: Path) -> None:
-    """``絞り込み`` の ``項目`` 列は ``column_map`` から解決した SOQL 名で埋まる。
-    解決できなかった列キー（ ``column_map`` に無いもの ） は空のまま。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["reportFilters"] = [
-        {"column": "Opp.Name", "operator": "contains", "value": "A"},
-        {"column": "Opp.Missing", "operator": "equals", "value": "B"},
-    ]
+    record = _make_record("1001", warnings=("警告 A",))
 
     run_tables(output, [record])
 
-    _, rows = _read_csv(output / "条件表.csv")
-    by_col: dict[str, dict[str, str]] = {}
-    for row in rows:
-        if row["種別"] == "絞り込み":
-            by_col[row["列キー"]] = row
-
-    assert by_col["Opp.Name"]["項目"] == "Name"
-    # 対応表に無い列キーは空のまま
-    assert by_col["Opp.Missing"]["項目"] == ""
+    sheets = _read_xlsx(output / XLSX_NAME)
+    headers = list(sheets[SHEET_WARNING][0].keys())
+    assert headers == list(WARNING_COLUMNS)
 
 
-def test_condition_table_top_rows_dict_is_human_readable(tmp_path: Path) -> None:
-    """``topRows`` が dict（ ``rowLimit`` と ``direction`` ） のとき、
-    そのまま ``str()`` せず ``"N件 direction"`` の形に整形する。
-    """
+def test_field_table_picklist_truncated(tmp_path: Path) -> None:
+    """項目一覧シートの ``選択肢`` 列が 30 件超で ``…`` 付き。"""
     output = tmp_path / "output"
     output.mkdir()
+
+    picklist = [f"V{i}" for i in range(31)]
     record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["topRows"] = {"rowLimit": 10, "direction": "Asc"}
+    for field in record.objects["Opportunity"]["fields"]:
+        if field["name"] == "Custom__c":
+            field["picklist"] = picklist
+            field["picklistTotal"] = 31
+            break
 
     run_tables(output, [record])
 
-    _, rows = _read_csv(output / "条件表.csv")
-    top_row = next(row for row in rows if row["種別"] == "上位N")
-    assert top_row["値"] == "10件 Asc"
+    sheets = _read_xlsx(output / XLSX_NAME)
+    field = sheets[SHEET_FIELDS]
+    custom_row = next(r for r in field if r["項目API名"] == "Custom__c")
+    choices = custom_row["選択肢"].split("|")
+    assert len(choices) == 31
+    assert choices[-1] == "…"
 
 
-def test_condition_table_top_rows_missing_keys_does_not_crash(tmp_path: Path) -> None:
-    """``topRows`` の dict が ``rowLimit`` / ``direction`` どちらか欠けていても
-    例外を上げず、 ある方だけ出力する。
-    """
+def test_field_columns_match(tmp_path: Path) -> None:
+    """項目一覧シートの列順。"""
     output = tmp_path / "output"
     output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
+    record = _make_record("1001")
 
-    # rowLimit のみ
-    record.report["reportMetadata"]["topRows"] = {"rowLimit": 5}
     run_tables(output, [record])
-    _, rows = _read_csv(output / "条件表.csv")
-    top_row = next(row for row in rows if row["種別"] == "上位N")
-    assert top_row["値"] == "5件"
 
-    # direction のみ
-    record.report["reportMetadata"]["topRows"] = {"direction": "Desc"}
-    run_tables(output, [record])
-    _, rows = _read_csv(output / "条件表.csv")
-    top_row = next(row for row in rows if row["種別"] == "上位N")
-    assert top_row["値"] == "Desc"
+    sheets = _read_xlsx(output / XLSX_NAME)
+    headers = list(sheets[SHEET_FIELDS][0].keys())
+    assert headers == list(FIELD_COLUMNS)
 
 
-def test_condition_table_cross_filters_criteria_list_is_json(tmp_path: Path) -> None:
-    """``crossFilters.criteria`` が dict のリストなら、 Python repr ではなく
-    JSON 文字列として整形する。
-    """
+def test_related_orders_by_key(tmp_path: Path) -> None:
+    """関連シートは 管理番号 → 段 → 親 の順。"""
     output = tmp_path / "output"
     output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["crossFilters"] = [
-        {
-            "primaryEntityField": "Opp.AccountId",
-            "operator": "WITH",
-            "relatedEntity": "OpportunityContactRole",
-            "relatedEntityJoinField": "OpportunityId",
-            "criteria": [{"column": "Role", "operator": "equals", "value": "X"}],
-        }
-    ]
 
-    run_tables(output, [record])
-
-    _, rows = _read_csv(output / "条件表.csv")
-    cross_row = next(row for row in rows if row["種別"] == "クロス")
-    # criteria は JSON 化され、 Python repr 特有の "['Role', 'equals']" は出ない
-    assert "['Role'" not in cross_row["値"]
-    assert '"Role"' in cross_row["値"]
-    assert "WITH" in cross_row["値"]
-
-
-def test_condition_table_standard_filters_is_json(tmp_path: Path) -> None:
-    """``standardFilters`` は dict のリストで来る。 ``str(dict)`` ではなく
-    JSON 文字列として整形する（ Python repr 対策 ）。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["standardFilters"] = [
-        {"name": "Account.Industry", "value": "Banking"}
-    ]
-
-    run_tables(output, [record])
-
-    _, rows = _read_csv(output / "条件表.csv")
-    std_row = next(row for row in rows if row["種別"] == "標準フィルタ")
-    # Python repr だと ``{'name': 'Account.Industry', ...}`` になる。
-    # JSON は ``"name": "Account.Industry", ...`` で、 キー側はダブル
-    # クォートで囲まれる。
-    assert "{'name'" not in std_row["値"]
-    assert '"name": "Account.Industry"' in std_row["値"]
-
-
-# ── 集計表: 読める文字列への整形 ────────────────────────────────────────
-
-
-def test_aggregate_table_groupings_down_with_date_granularity(tmp_path: Path) -> None:
-    """``groupingsDown`` が ``name`` / ``sortOrder`` / ``dateGranularity`` を持つ
-    とき、 ``dateGranularity`` があろうが ``sortOrder`` があろうが 1 行ずつ
-    展開される（ Python repr 化しない ）。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["groupingsDown"] = [
-        {
-            "name": "Opp.CloseDate",
-            "sortOrder": "Asc",
-            "dateGranularity": "FISCAL_QUARTER",
-        }
-    ]
-
-    run_tables(output, [record])
-
-    _, rows = _read_csv(output / "集計表.csv")
-    g_row = next(row for row in rows if row["種別"] == "グルーピング(行)")
-    assert g_row["名前"] == "Opp.CloseDate"
-    assert g_row["内容"] == "Asc"
-
-
-def test_aggregate_table_sort_by_uses_sort_column_key(tmp_path: Path) -> None:
-    """``sortBy`` はキー名 ``sortColumn`` / ``sortOrder`` （ Analytics API ）で
-    読む。 名前が空のまま落ちないこと。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["sortBy"] = [{"sortColumn": "SUBJECT", "sortOrder": "Asc"}]
-
-    run_tables(output, [record])
-
-    _, rows = _read_csv(output / "集計表.csv")
-    sort_row = next(row for row in rows if row["種別"] == "並び順")
-    assert sort_row["名前"] == "SUBJECT"
-    assert sort_row["内容"] == "Asc"
-
-
-def test_aggregate_table_buckets_uses_developer_name_and_label(tmp_path: Path) -> None:
-    """``buckets`` はキー名 ``developerName`` / ``label`` / ``bucketType``
-    （ Analytics API ）で読む。 Python repr ではなく人が読める文字列にする。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["buckets"] = [
-        {
-            "developerName": "AmountBucket",
-            "label": "金額帯",
-            "bucketType": "number",
-        }
-    ]
-
-    run_tables(output, [record])
-
-    _, rows = _read_csv(output / "集計表.csv")
-    b_row = next(row for row in rows if row["種別"] == "バケット")
-    assert b_row["名前"] == "AmountBucket"
-    assert "金額帯" in b_row["内容"]
-    assert "number" in b_row["内容"]
-
-
-def test_aggregate_table_custom_summary_formula(tmp_path: Path) -> None:
-    """``customSummaryFormula`` は ``formula`` / ``label`` の dict リストで
-    1 行ずつ展開される。 ラベルが ``内容`` に入る（ Python repr 化しない ）。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["customSummaryFormula"] = [
-        {"formula": "RowCount", "label": "件数", "dataType": "number"}
-    ]
-
-    run_tables(output, [record])
-
-    _, rows = _read_csv(output / "集計表.csv")
-    csf_row = next(row for row in rows if row["種別"] == "独自計算式")
-    assert csf_row["名前"] == "RowCount"
-    assert csf_row["内容"] == "件数"
-
-
-def test_aggregate_table_aggregates_is_list_of_strings(tmp_path: Path) -> None:
-    """``aggregates`` は文字列のリスト。 dict 混じりは無視して 1 行ずつ展開。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["aggregates"] = [
-        "s!Opp.Amount",
-        "n!Opp.RollUp",
-        {"name": "Bad"},  # dict は無視
-    ]
-
-    run_tables(output, [record])
-
-    _, rows = _read_csv(output / "集計表.csv")
-    agg_rows = [row for row in rows if row["種別"] == "集計"]
-    assert len(agg_rows) == 2
-    assert {row["名前"] for row in agg_rows} == {"s!Opp.Amount", "n!Opp.RollUp"}
-
-
-# ── 項目表: 段を relations から埋める ──────────────────────────────────
-
-
-def test_field_table_dan_filled_from_relations_and_main(tmp_path: Path) -> None:
-    """``項目表.csv`` の ``段`` は record の ``main_object`` （ 段 0 ） と
-    ``relations`` の ``段`` から埋める。 同じオブジェクトが複数の record
-    に出るときは最小の段を採用。
-    """
     from src.fetch import RelationRecord
 
-    output = tmp_path / "output"
-    output.mkdir()
-
-    objects_main = {
+    objects = {
         "Task": {
             "name": "Task",
             "label": "活動",
@@ -1401,14 +878,14 @@ def test_field_table_dan_filled_from_relations_and_main(tmp_path: Path) -> None:
             "fields": [{"name": "Name", "label": "取引先名", "type": "string"}],
         },
     }
-    record_1 = ReportRecord(
+    record_1001 = ReportRecord(
         key="1001",
         summary="テスト1",
         report_id="00O000000000001",
         url="https://example/r/Report/00O000000000001/view",
         main_object="Task",
         report={},
-        objects=objects_main,
+        objects=objects,
         relations=(
             RelationRecord(
                 parent="Task",
@@ -1422,54 +899,102 @@ def test_field_table_dan_filled_from_relations_and_main(tmp_path: Path) -> None:
         warnings=(),
     )
 
-    # 同じ Account が別 record の主オブジェクト として 段 0 で出るケース
-    objects_main2 = {
-        "Account": {
-            "name": "Account",
-            "label": "取引先",
-            "custom": False,
-            "fields": [{"name": "Name", "label": "取引先名", "type": "string"}],
-        },
-    }
-    record_2 = ReportRecord(
-        key="1002",
-        summary="テスト2",
-        report_id="00O000000000002",
-        url="https://example/r/Report/00O000000000002/view",
-        main_object="Account",
-        report={},
-        objects=objects_main2,
-        relations=(),
-        column_map=[],
-        warnings=(),
-    )
+    run_tables(output, [record_1001])
 
-    run_tables(output, [record_1, record_2])
-
-    _, rows = _read_csv(output / "項目表.csv")
-    by_obj: dict[str, list[dict[str, str]]] = {}
-    for row in rows:
-        by_obj.setdefault(row["オブジェクト"], []).append(row)
-    # Task は record_1 の主オブジェクトなので 段 0
-    assert all(row["段"] == "0" for row in by_obj["Task"])
-    # Account は record_1 では 段 1、 record_2 では 段 0。 最小の 0 を採用。
-    assert all(row["段"] == "0" for row in by_obj["Account"])
+    sheets = _read_xlsx(output / XLSX_NAME)
+    related = sheets[SHEET_RELATED]
+    assert related == [
+        {
+            "管理番号": "1001",
+            "親オブジェクト": "Task",
+            "参照項目API名": "WhatId",
+            "リレーション名": "What",
+            "子オブジェクト": "Account",
+            "段": "1",
+        }
+    ]
 
 
-# ── 既存テストで ``topRows="10"`` が壊れていないこと ────────────────────
-
-
-def test_condition_table_top_rows_string_passthrough(tmp_path: Path) -> None:
-    """``topRows`` が dict でない（ 文字列など ） ときは従来どおり ``str()``
-    する。 既存テスト ``topRows="10"`` の挙動を壊さない。
-    """
+def test_related_columns_match(tmp_path: Path) -> None:
+    """関連シートの列順。"""
     output = tmp_path / "output"
     output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["topRows"] = "10"
+
+    from src.fetch import RelationRecord
+
+    record = _make_record("1001")
+    record_main = dataclasses.replace(
+        record,
+        main_object="Task",
+        relations=(
+            RelationRecord(
+                parent="Task",
+                field="WhatId",
+                relationship_name="What",
+                child="Account",
+                depth=1,
+            ),
+        ),
+    )
+
+    run_tables(output, [record_main])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    headers = list(sheets[SHEET_RELATED][0].keys())
+    assert headers == list(RELATED_COLUMNS)
+
+
+def test_similar_sheet_has_only_header_when_no_groups(tmp_path: Path) -> None:
+    """似たレポートの該当が無いとシートは見出しだけになる。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001")
 
     run_tables(output, [record])
 
-    _, rows = _read_csv(output / "条件表.csv")
-    top_row = next(row for row in rows if row["種別"] == "上位N")
-    assert top_row["値"] == "10"
+    sheets = _read_xlsx(output / XLSX_NAME)
+    similar = sheets[SHEET_SIMILAR]
+    assert similar == []
+    # ヘッダー行だけ
+    workbook = load_workbook(output / XLSX_NAME)
+    similar_sheet = workbook[SHEET_SIMILAR]
+    headers = [cell.value for cell in similar_sheet[1]]
+    assert headers == list(SIMILAR_COLUMNS)
+    workbook.close()
+
+
+# ── 出力ディレクトリ未作成 ──────────────────────────────────────────────
+
+
+def test_output_dir_missing_does_not_raise(tmp_path: Path) -> None:
+    """``output_dir`` が無くても例外を出さない。"""
+    output = tmp_path / "missing"  # 存在しない
+    assert not output.exists()
+    record = _make_record("1001")
+
+    run_tables(output, [record])
+
+    assert output.exists()
+    assert (output / XLSX_NAME).exists()
+    assert (output / COLUMN_NAMES_CSV_NAME).exists()
+
+
+# ── PII 列は出力列のみ ────────────────────────────────────────────────
+
+
+def test_pii_only_for_output_columns(tmp_path: Path) -> None:
+    """絞り込みにだけ使う列は個人情報判定の対象外 ( 既存仕様を引き継ぐ ) 。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+    record.report["reportMetadata"]["reportFilters"] = [
+        {"column": "Opp.Missing", "operator": "equals", "value": "B"}
+    ]
+
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    resolved = sheets[SHEET_RESOLVED]
+    # Opp.Missing は (不明) のままなので resolved シートには載らない
+    soql_names = {r["SOQL列名"] for r in resolved}
+    assert "Opp.Missing" not in soql_names

@@ -1,5 +1,4 @@
 """``trial/`` の単品サンプルを fake client で検証する。
-
 実 Salesforce に繋がないよう、 ``site_for`` をテストで差し替えられる形にし、
 ``tmp_path`` 配下の ``config.ini`` + 空の管理表で ``load_settings`` を動かす。
 
@@ -14,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.table import Table as XlsxTable
 from openpyxl.worksheet.table import TableStyleInfo
 
@@ -27,7 +26,7 @@ DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 def _build_master(path: Path) -> None:
     """``load_settings`` が困らないよう ``MASTER_XLSX_PATH`` の指す xlsx を作る。
 
-    中身は空の ``PY_管理表`` 1 枚でよい（ 例題は管理表を読まない ）。
+    中身は空の ``PY_管理表`` 1 枚でよい （ 例題は管理表を読まない ）。
     """
     workbook = Workbook()
     active = workbook.active
@@ -152,9 +151,9 @@ def test_fetch_one_report_no_argv_exits_2() -> None:
     assert exc.value.code == 2
 
 
-def test_fetch_one_report_writes_csv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """URL と管理番号を渡すと ``output/single/対応表_{管理番号}.csv`` と
-    ``output/single/列名の対応_{管理番号}.txt`` が書かれる。 JSON は書かれない。"""
+def test_fetch_one_report_writes_xlsx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """URL と管理番号を渡すと ``output/single/SOQL調査.xlsx`` と
+    ``output/single/列名の対応.csv`` が書かれる。 JSON は書かれない。"""
     from trial import fetch_one_report
 
     master = tmp_path / "master.xlsx"
@@ -173,18 +172,26 @@ def test_fetch_one_report_writes_csv(tmp_path: Path, monkeypatch: pytest.MonkeyP
     )
 
     assert code == 0
-    assert (tmp_path / "output" / "single" / "対応表_1001.csv").exists()
-    assert (tmp_path / "output" / "single" / "列名の対応_1001.txt").exists()
+    assert (tmp_path / "output" / "single" / "SOQL調査.xlsx").exists()
+    assert (tmp_path / "output" / "single" / "列名の対応.csv").exists()
+    # per-id の csv / txt は作らない
+    assert not (tmp_path / "output" / "single" / "対応表_1001.csv").exists()
+    assert not (tmp_path / "output" / "single" / "列名の対応_1001.txt").exists()
     # JSON は書かれていない
     assert not (tmp_path / "output" / "single" / "1001.json").exists()
     # 本体 output には触らない
     assert not (tmp_path / "output" / "1001.csv").exists()
 
+    # xlsx の中身もざっくり確認
+    workbook = load_workbook(tmp_path / "output" / "single" / "SOQL調査.xlsx")
+    assert "一覧" in workbook.sheetnames
+    workbook.close()
+
 
 def test_fetch_one_report_default_key_is_sample(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """管理番号を省略すると既定 ``sample`` で書かれる。"""
+    """管理番号を省略すると既定 ``sample`` で xlsx が書かれる。"""
     from trial import fetch_one_report
 
     master = tmp_path / "master.xlsx"
@@ -203,7 +210,7 @@ def test_fetch_one_report_default_key_is_sample(
     )
 
     assert code == 0
-    assert (tmp_path / "output" / "single" / "対応表_sample.csv").exists()
+    assert (tmp_path / "output" / "single" / "SOQL調査.xlsx").exists()
 
 
 def test_fetch_one_report_failure_returns_1(

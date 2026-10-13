@@ -1,7 +1,6 @@
 """新機能の通し（ 統合 ） テスト。
-
-``run_fetch`` → ``run_tables`` まで通して、 調査表 / 類似レポート CSV の内容と
-既存 CSV への組み込みを検証する。 偽物の Salesforce クライアントで実 API には
+``run_fetch`` → ``run_tables`` まで通して、 ``SOQL調査.xlsx`` と
+``列名の対応.csv`` を検証する。 偽物の Salesforce クライアントで実 API には
 繋がない。
 """
 
@@ -9,6 +8,8 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+
+from openpyxl import load_workbook
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
@@ -88,6 +89,29 @@ def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     return columns, rows
 
 
+def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
+    """xlsx を ``{シート名: [行 dict, ...]}`` で読む。
+
+    空セルは ``None`` ではなく空文字として扱う。
+    """
+    workbook = load_workbook(path)
+    result: dict[str, list[dict[str, str]]] = {}
+    for sheet_name in workbook.sheetnames:
+        sheet = workbook[sheet_name]
+        rows_iter = sheet.iter_rows(values_only=True)
+        try:
+            headers = list(next(rows_iter))
+        except StopIteration:
+            result[sheet_name] = []
+            continue
+        result[sheet_name] = [
+            {header: ("" if value is None else value) for header, value in zip(headers, row, strict=False)}
+            for row in rows_iter
+        ]
+    workbook.close()
+    return result
+
+
 def _describe(
     report_type: str,
     columns: list[str],
@@ -147,12 +171,11 @@ class _Row:
 
 
 def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
-    """``run_fetch`` → ``run_tables`` で 調査表 と 類似レポート が出る。
+    """``run_fetch`` → ``run_tables`` で 一覧 と 似たレポート が出る。
 
     シナリオ:
     - 1001: 商談名と取引先責任者（ Contact.Email を持つ ） を出力。 get は 2000 行超
     - 1002: 1001 と同じ構造で 違う ID
-    - 1003: 違う形式のレポート
     """
     from src import pii
     from src.fetch import run_fetch
@@ -234,23 +257,14 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
         similar_threshold=settings.similar_column_similarity,
     )
 
-    # 既存 CSV が全てある
-    for name in [
-        "対応表.csv",
-        "項目表.csv",
-        "関連表.csv",
-        "条件表.csv",
-        "集計表.csv",
-        "警告表.csv",
-        "列名の対応.csv",
-        "調査表.csv",
-        "類似レポート.csv",
-    ]:
-        assert (output / name).exists(), f"{name} がない"
+    # xlsx が作られている
+    xlsx_path = output / "SOQL調査.xlsx"
+    assert xlsx_path.exists()
+    sheets = _read_xlsx(xlsx_path)
 
-    # 調査表: 1001 は 超えている、 1002 は 超えていない
-    _, survey_rows = _read_csv(output / "調査表.csv")
-    by_key = {row["管理番号"]: row for row in survey_rows}
+    # 一覧シート: 1001 は 超えている、 1002 は 超えていない
+    overview = sheets["一覧"]
+    by_key = {row["管理番号"]: row for row in overview}
     assert by_key["1001"]["2000件超"] == "超えている"
     assert by_key["1002"]["2000件超"] == "超えていない"
     assert by_key["1002"]["行数"] == "10"
@@ -260,20 +274,21 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
     # 該当列に 「 メール 」 が出る
     assert "メール" in by_key["1001"]["個人情報の該当列"]
 
-    # 類似レポート: 1001 と 1002 は 「 同一 」 で 1 グループ
-    _, similar_rows = _read_csv(output / "類似レポート.csv")
+    # 似たレポートシート: 1001 と 1002 は 「 同一 」 で 1 グループ
+    similar_rows = sheets["似たレポート"]
     assert len(similar_rows) == 2  # 基準 + 対象
-    # 区分 の確認
     categories = [row["区分"] for row in similar_rows]
     assert "基準" in categories
     assert "同一" in categories
-    # 見込み
     integrations = {row["統合の見込み"] for row in similar_rows}
     assert "1本にまとめられる" in integrations
 
+    # 列名の対応.csv も作られている
+    assert (output / "列名の対応.csv").exists()
 
-def test_e2e_single_record_no_similar_csv(tmp_path: Path) -> None:
-    """1 件だけのときは 類似レポート.csv は作らない。 調査表は作る。"""
+
+def test_e2e_single_record_no_similar_sheet(tmp_path: Path) -> None:
+    """1 件だけのときは 似たレポート シートは見出しだけ ( 1 冊全部できる )。"""
     from src import pii
     from src.fetch import run_fetch
     from src.master import MasterEntry
@@ -312,17 +327,22 @@ def test_e2e_single_record_no_similar_csv(tmp_path: Path) -> None:
         ),
         similar_threshold=settings.similar_column_similarity,
     )
-    assert (output / "調査表.csv").exists()
-    assert not (output / "類似レポート.csv").exists()
+    # xlsx はある ( 1 冊全部できる )
+    assert (output / "SOQL調査.xlsx").exists()
+    sheets = _read_xlsx(output / "SOQL調査.xlsx")
+    # 一覧シートに 1 行
+    assert len(sheets["一覧"]) == 1
+    # 似たレポートシートは該当なしでデータ行 0 ( 見出しは出る )
+    assert sheets["似たレポート"] == []
 
 
-def test_e2e_correspondence_has_pii_columns(tmp_path: Path) -> None:
-    """対応表に 個人情報 / 個人情報の根拠 列が加わっている。"""
+def test_e2e_resolved_correspondence_has_pii_columns(tmp_path: Path) -> None:
+    """``項目の対応`` シートに 個人情報 / 個人情報の根拠 列が加わっている。"""
     from src import pii
     from src.fetch import run_fetch
     from src.master import MasterEntry
     from src.settings import Settings
-    from src.tables import CORRESPONDENCE_COLUMNS, run_tables
+    from src.tables import RESOLVED_COLUMNS, run_tables
 
     settings = Settings(
         master_xlsx_path=tmp_path / "master.xlsx",
@@ -336,7 +356,10 @@ def test_e2e_correspondence_has_pii_columns(tmp_path: Path) -> None:
         similar_column_similarity=0.8,
     )
     client = _FakeClient(
-        describe=_describe("Opportunity", ["Contact.Email"]),
+        # 「 メール 」 ラベルが Contact.Email と一致する想定 ( 既存テストと同形 )
+        describe=_describe(
+            "Opportunity", ["Contact.Email"], column_labels={"Contact.Email": "メール"}
+        ),
         object_describes=_object_describes(),
     )
     entry = MasterEntry(
@@ -356,7 +379,7 @@ def test_e2e_correspondence_has_pii_columns(tmp_path: Path) -> None:
         ),
         similar_threshold=settings.similar_column_similarity,
     )
-    columns, _ = _read_csv(output / "対応表.csv")
-    assert "個人情報" in columns
-    assert "個人情報の根拠" in columns
-    assert CORRESPONDENCE_COLUMNS[-2:] == ("個人情報", "個人情報の根拠")
+
+    # RESOLVED_COLUMNS 定数で 個人情報 / 個人情報の根拠 の存在を保証
+    assert "個人情報" in RESOLVED_COLUMNS
+    assert "個人情報の根拠" in RESOLVED_COLUMNS
