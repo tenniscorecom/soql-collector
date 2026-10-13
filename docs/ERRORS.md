@@ -30,6 +30,7 @@ comken の例外は comken の `docs/ERRORS.md` を参照してください。 �
 | `[failed] 管理番号 N: Salesforce への接続でエラー（HTTP ...）: ...` | 接続時の HTTP エラー（ 認証以外 ） | ネットワークの状態を確認して再実行する |
 | `[failed] 管理番号 N: Salesforce エラー: ...` | comken の `SalesforceError` | メッセージに表示された指示に従う |
 | `python -m trial.fetch_one_report` を引数なしで実行して `終了コード 2` で「 the following arguments are required: url 」 が出る | argparse が使い方を出して `SystemExit(2)` を投げる | URL を渡す（ `python -m trial.fetch_one_report <URL> [管理番号]` ） |
+| `CSVError` で 「 既存の 列名の対応.csv の見出しが想定と違います 」 / 「 既存の 列名の対応.csv を読み込めません 」 と表示される | 既存ファイルが見出し違い・壊れているため上書きできない。 黙って上書きすると別形式だったのに今回の結果で上書きされてしまう事故を防ぐ | 既存ファイルを別名（ 例: `列名の対応.csv.bak` ） に退避してから再実行する |
 
 ---
 

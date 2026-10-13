@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import csv
+import dataclasses
 import logging
 from pathlib import Path
 
@@ -968,6 +969,187 @@ def test_column_names_txt_format(tmp_path: Path) -> None:
     # (不明) 列はコメント行に
     assert "# 未対応: Opp.Unknown" in text
     assert text.rstrip().endswith("}")
+
+
+# ── 列名の対応.csv のマージ（ 既存ファイルを残して今回分だけ入れ替える ） ──
+
+
+def test_column_names_csv_merges_existing_when_key_refetched(tmp_path: Path) -> None:
+    """A・B を書いたあと A だけ取り直すと、 B の行はそのまま残り A の行は
+    今回の内容で入れ替わる。
+
+    なぜ: ダウンローダーがこの CSV を管理番号で引いて使う。 1 件だけ
+    取り直したときに他の管理番号の対応が消えないことを保証する。
+    """
+    output = tmp_path / "output"
+    output.mkdir()
+    record_a_v1 = _make_record("1001", main_object="Opportunity")
+    record_b = _make_record("1002", main_object="Opportunity")
+
+    # 1 回目: 1001 / 1002 の両方
+    run_tables(output, [record_a_v1, record_b], only_keys=["1001", "1002"])
+    columns, rows = _read_csv(output / "列名の対応.csv")
+    assert columns == list(COLUMN_NAMES_COLUMNS)
+    assert {row["管理番号"] for row in rows} == {"1001", "1002"}
+    # 1001 の Old 状態の AccountId が含まれる
+    old_soql_names = {row["SOQL列名"] for row in rows if row["管理番号"] == "1001"}
+    assert old_soql_names == {"AccountId", "WhoId", "Custom__c", "Name"}
+
+    # 2 回目: 1001 だけ取り直し。 1001 は column_map を 2 件に減らす。
+    record_a_v2 = _make_record("1001", main_object="Opportunity")
+    reduced_columns = [
+        col
+        for col in record_a_v2.column_map
+        if col.get("対応フィールドAPI名") in {"AccountId", "Name"}
+    ]
+    record_a_v2 = dataclasses.replace(record_a_v2, column_map=reduced_columns)
+    run_tables(output, [record_a_v2], only_keys=["1001"])
+
+    _, rows = _read_csv(output / "列名の対応.csv")
+    by_key: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        by_key.setdefault(row["管理番号"], []).append(row)
+
+    # 1001 は新しい 2 件だけ
+    a_rows = by_key["1001"]
+    assert {row["SOQL列名"] for row in a_rows} == {"AccountId", "Name"}
+    # 1002 はそのまま残っている
+    b_rows = by_key["1002"]
+    assert {row["SOQL列名"] for row in b_rows} == {"AccountId", "WhoId", "Custom__c", "Name"}
+    # 管理番号昇順
+    assert list(by_key.keys()) == ["1001", "1002"]
+
+
+def test_column_names_csv_drops_rows_when_refetch_has_no_resolvable_columns(
+    tmp_path: Path,
+) -> None:
+    """A・B を書いたあと A を 「 対応できる列が 0 件 」 の record で
+    取り直すと、 A の古い行が全部消える （ 1002 はそのまま残る ） 。
+
+    なぜ: 「 今回取得に成功した管理番号 」 は record ごとに決まる。
+    A は取得に成功したが column_map が全部 ``"(不明)"`` で対応できる列が
+    無い場合でも、 A は 「 取れた管理番号 」 として古い行を消す。 ``new_rows``
+    側に行が無いことをもって 「 取れなかった 」 扱いにはしない。
+    """
+    output = tmp_path / "output"
+    output.mkdir()
+    record_a = _make_record("1001", main_object="Opportunity")
+    record_b = _make_record("1002", main_object="Opportunity")
+
+    # 1 回目: 1001 / 1002 の両方とも 4 件ずつ
+    run_tables(output, [record_a, record_b], only_keys=["1001", "1002"])
+    _, rows_before = _read_csv(output / "列名の対応.csv")
+    assert {row["管理番号"] for row in rows_before} == {"1001", "1002"}
+
+    # 2 回目: 1001 を 「 対応できる列 0 件 」 の record で取り直し
+    record_a_empty = _make_record("1001", main_object="Opportunity")
+    # 全列を ``対応フィールドAPI名 = "(不明)"`` に上書きし、
+    # ``_build_column_names_rows_from_records`` が 0 行を返す状態を作る
+    empty_columns: list[dict[str, str]] = []
+    for col in record_a_empty.column_map:
+        new_col = dict(col)
+        new_col["対応フィールドAPI名"] = "(不明)"
+        empty_columns.append(new_col)
+    record_a_empty = dataclasses.replace(record_a_empty, column_map=empty_columns)
+    run_tables(output, [record_a_empty], only_keys=["1001"])
+
+    _, rows_after = _read_csv(output / "列名の対応.csv")
+    # 1001 の古い行が消え、 1002 の行はそのまま残る
+    assert {row["管理番号"] for row in rows_after} == {"1002"}
+    assert {row["SOQL列名"] for row in rows_after} == {
+        "AccountId",
+        "WhoId",
+        "Custom__c",
+        "Name",
+    }
+
+
+def test_column_names_csv_keeps_old_rows_when_refetch_missing(tmp_path: Path) -> None:
+    """A・B を書いたあと A を取り直すときに A が record ごと無い
+    （ 取得失敗 ） ときは、 A の古い行が残る。
+
+    なぜ: 今回の結果が無い管理番号は古い情報をそのまま使うため。
+    """
+    output = tmp_path / "output"
+    output.mkdir()
+    record_a = _make_record("1001", main_object="Opportunity")
+    record_b = _make_record("1002", main_object="Opportunity")
+
+    run_tables(output, [record_a, record_b], only_keys=["1001", "1002"])
+    _, rows_before = _read_csv(output / "列名の対応.csv")
+    assert {row["管理番号"] for row in rows_before} == {"1001", "1002"}
+
+    # 2 回目: records が空 （ A・B どちらも失敗 ） → 古い行をそのまま残す
+    run_tables(output, [], only_keys=[])
+
+    _, rows_after = _read_csv(output / "列名の対応.csv")
+    assert rows_after == rows_before
+
+
+def test_column_names_csv_fails_on_header_mismatch(tmp_path: Path) -> None:
+    """既存ファイルの見出しが ``COLUMN_NAMES_COLUMNS`` と違うときは
+    ``CSVError`` を上げ、 既存ファイルの中身を変えない。
+
+    なぜ: 黙って上書きすると別形式だったのに今回の結果で上書きされて
+    しまう事故を防ぐため。 既存ファイルは退避してから再実行する流れに
+    誘導する。
+    """
+    from comken.exceptions import CSVError
+
+    output = tmp_path / "output"
+    output.mkdir()
+    path = output / "列名の対応.csv"
+    # 違う見出しで既存ファイルを置いておく
+    raw = (
+        "﻿"
+        "管理番号,概要,SOQL列名,表示名,備考,ExtraColumn\n"
+        "1001,テスト,AccountId,取引先名,\n"
+    )
+    path.write_bytes(raw.encode("utf-8"))
+    before = path.read_bytes()
+
+    record = _make_record("1001", main_object="Opportunity")
+
+    with pytest.raises(CSVError):
+        run_tables(output, [record], only_keys=["1001"])
+
+    # 既存ファイルの中身が変わっていないこと
+    assert path.read_bytes() == before
+
+
+def test_column_names_csv_fails_when_existing_csv_unreadable(tmp_path: Path) -> None:
+    """既存ファイルが CSV として読めない （ BOM だけ / 列数不一致 等 ）
+    ときも ``CSVError`` を上げ、 既存ファイルの中身を変えない。
+    """
+    from comken.exceptions import CSVError
+
+    output = tmp_path / "output"
+    output.mkdir()
+    path = output / "列名の対応.csv"
+    # BOM だけ（ 見出し無し ） の壊れたファイル
+    path.write_bytes(b"\xef\xbb\xbf")
+    before = path.read_bytes()
+
+    record = _make_record("1001", main_object="Opportunity")
+
+    with pytest.raises(CSVError):
+        run_tables(output, [record], only_keys=["1001"])
+
+    assert path.read_bytes() == before
+
+
+def test_column_names_csv_no_existing_writes_fresh(tmp_path: Path) -> None:
+    """既存ファイルが無いときは今までと同じく今回の結果だけ書く。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+
+    run_tables(output, [record], only_keys=["1001"])
+
+    columns, rows = _read_csv(output / "列名の対応.csv")
+    assert columns == list(COLUMN_NAMES_COLUMNS)
+    assert {row["管理番号"] for row in rows} == {"1001"}
+    assert {row["SOQL列名"] for row in rows} == {"AccountId", "WhoId", "Custom__c", "Name"}
 
 
 # ── 条件表: 項目列を対応表から埋める / 読める文字列への整形 ──────────────

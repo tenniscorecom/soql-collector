@@ -13,11 +13,14 @@
   1 行ずつ展開
 - ``警告表.csv`` … 主オブジェクト取得失敗・関連オブジェクト打ち切り・describe
   失敗・許可リスト外キー などの警告を集約
-- ``列名の対応.csv`` … ``COLUMN_NAMES`` 貼付用 CSV
-- ``列名の対応_{管理番号}.txt`` … 同じく貼付用 Python dict テキスト
+- ``列名の対応.csv`` … ダウンローダーが SOQL レポートの列名の置き換えに使う
+  CSV。 全レポート分を積み上げる。 その回に取れた管理番号の行だけ
+  入れ替わり、 他は残る
+- ``列名の対応_{管理番号}.txt`` … 同じく Python dict テキスト
 
 per-ID CSV は ``only_keys`` で絞った record だけ作る。 失敗した ID の
-CSV は作らず既存も消さない。 全体 CSV は ``records`` 全体から組み立てる。
+CSV は作らず既存も消さない。 全体 CSV は ``records`` 全体から組み立てる
+（ ``列名の対応.csv`` だけは既存のファイルとマージする ）。
 
 すべて UTF-8 BOM つき + CRLF。 comken の ``CSV`` クラス
 （ ``comken.toolbox.csv`` ） で書き出す。 新規ファイルは BOM 付き + CRLF
@@ -32,6 +35,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from comken.exceptions import CSVError
 from comken.toolbox.csv import CSV
 
 from src import pii, similar
@@ -198,6 +202,8 @@ def run_tables(
 
     Raises:
         FileNotFoundError: 投げない （ ``output_dir`` が無くても作る ）。
+        CSVError: 既存の ``列名の対応.csv`` が見出し違い・壊れているなどで
+            読み込めないとき。 既存ファイルは変更しない。
     """
     record_list = list(records)
     only_set = set(only_keys) if only_keys is not None else None
@@ -316,9 +322,18 @@ def run_tables(
     wrote.append(warning_path)
 
     # 列名の対応
+    # 全体ファイルは毎回丸ごと書き直すのではなく、 既存のファイルと今回取れた
+    # 行をマージする。 今回取得に成功した管理番号の行は今回の結果で入れ替え、
+    # それ以外の管理番号の行はそのまま残す（ ダウンローダーが管理番号で引ける
+    # 全レポート分の積み上げ表として使うため ）。 「 取得に成功した管理番号 」
+    # は record の ``key`` から作る。 対応できる列が 0 件の record も含めて
+    # 古い行を消す （ ``new_rows`` 側に行があるかではなく record が来たかで
+    # 決める ）。
     column_names_rows = _build_column_names_rows_from_records(sorted_records)
     column_names_path = output_dir / "列名の対応.csv"
-    _write_csv(column_names_path, COLUMN_NAMES_COLUMNS, column_names_rows)
+    _merge_column_names_csv(
+        column_names_path, column_names_rows, [getattr(r, "key", "") for r in sorted_records]
+    )
     wrote.append(column_names_path)
 
     # 似たレポートのグループ化（ 全体 ） 。 1 件や該当なしならファイルを作らない
@@ -1224,6 +1239,68 @@ def _build_column_names_text(
         lines.append("# 表示名が重複している列: " + ", ".join(sorted(set(duplicate_labels))))
     lines.append("}")
     return "\n".join(lines) + "\n"
+
+
+def _merge_column_names_csv(
+    path: Path,
+    new_rows: Sequence[dict[str, str]],
+    replaced_keys: Iterable[str],
+) -> None:
+    """``列名の対応.csv`` を既存ファイルと ``new_rows`` でマージして書き直す。
+
+    ``replaced_keys`` は 「 今回取得に成功した管理番号 」 の集合。 その管理番号
+    の行は、 既存側を捨てて新しい ``new_rows`` で置き換える（ 古い対応表で
+    消えていた列は消える、 対応できる列が 0 件なら行も全部消える ）。
+    ``replaced_keys`` に無い管理番号の行はそのまま残す。 並びは **管理番号
+    昇順** 。 同じ管理番号の中は、 既存ファイルは元の CSV の順、 ``new_rows``
+    は渡された順をそのまま使う。 既存ファイルが無いときは ``new_rows`` を
+    そのまま書く。
+
+    既存ファイルの見出しが ``COLUMN_NAMES_COLUMNS`` と違うとき、 もしくは
+    既存ファイルを CSV として読めないときは ``CSVError`` を上げる。 既存
+    ファイルは変更しない。
+
+    なぜ: ダウンローダーがこの CSV を管理番号で引いて使う。 実行のたびに今回
+    取れたレポートの行だけで丸ごと上書きすると、 管理表で 1 件だけ ○ にして
+    取り直したときに取り直さなかった管理番号の対応が消えてしまう。 そこで今回
+    取得に成功した管理番号の行だけ入れ替える （ 新たに取って 0 件になった
+    管理番号も、 古い行を消す ）。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing_rows: list[dict[str, str]] = []
+    if path.exists():
+        try:
+            with CSV(path) as csv:
+                table = csv.read()
+        except CSVError as exc:
+            # 読み込めない （ BOM だけ、 列数不一致、 文字化け 等 ） ときも
+            # 上書きせず失敗させる。
+            raise CSVError(
+                f"既存の {path.name} を読み込めません: {path}\n{exc}"
+                "\n対処: ファイルを別名に退避してから再実行してください。"
+            ) from exc
+        if list(table.columns) != list(COLUMN_NAMES_COLUMNS):
+            raise CSVError(
+                f"既存の {path.name} の見出しが想定と違います: {path}\n"
+                f"期待: {list(COLUMN_NAMES_COLUMNS)}\n"
+                f"実際: {list(table.columns)}"
+                "\n対処: ファイルを別名に退避してから再実行してください。"
+            )
+        existing_rows = [dict(row) for row in table.to_rows()]
+
+    # 今回取得に成功した管理番号。 既存側の同じ管理番号は捨てて ``new_rows`` で
+    # 置き換える。 ``new_rows`` 側に行が無いとき （ 対応できる列が 0 件の record ）
+    # でも、 「 取れた管理番号 」 として古い行は消す。
+    new_keys = set(replaced_keys)
+
+    kept_old_rows = [row for row in existing_rows if row.get("管理番号", "") not in new_keys]
+    merged: list[dict[str, str]] = kept_old_rows + list(new_rows)
+    # 管理番号昇順。 同じ管理番号の中は元の順（ 既存は元の CSV の順、 新規は
+    # ``new_rows`` の順 ） を保つために安定ソートを使う。
+    merged.sort(key=lambda row: row.get("管理番号", ""))
+
+    _write_csv(path, COLUMN_NAMES_COLUMNS, merged)
 
 
 # ── 共通ヘルパー ────────────────────────────────────────────────────────
