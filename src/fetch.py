@@ -82,7 +82,10 @@ _TableLike = Any
 # レポート access denied エラー（ 401 / 403 由来 ） のメッセージ接頭辞
 _REPORT_ACCESS_DENIED_PREFIX = "Salesforce のレポート API（Analytics API）へのアクセスが"
 
-# レポート形式エラー（ 集計 / マトリックス ） の文言マーカー
+# レポート形式エラー（ 結合レポート・明細の列が無いレポートなど、 取得できない形式 ）
+# の文言マーカー。 comken の ``_report_format_error`` の出力に含まれる 2 つの
+# 部分文字列。 集計 / サマリー / マトリックス形式は comken が取得するので、 こ
+# こに来るのは **取れない形式** だけになる
 _REPORT_FORMAT_MARKERS = ("このレポートは", "形式です")
 
 # 理由欄に出す例外メッセージの最大長（ 行データや機微情報を漏らさない ）
@@ -609,25 +612,21 @@ def _dropped_keys_warning_text(dropped: tuple[str, ...]) -> str | None:
     return "レポート定義の中で使わなかったキー: " + ", ".join(dropped)
 
 
-def _check_row_count(client: Any, report_id: str, metadata: dict[str, Any]) -> RowCheck:
+def _check_row_count(client: Any, report_id: str) -> RowCheck:
     """``client.report.get()`` を呼んで 2000 行チェックを行う。
+
+    comken の ``ReportAPI.get()`` は TABULAR だけでなく SUMMARY / MATRIX の
+    レポートも行を返すので、 describe の ``reportFormat`` に関わらず常に
+    ``get`` を呼ぶ。
 
     - ``SalesforceReportTruncatedError`` → ``超えている`` （ ``rows=None`` ）
     - 正常終了 → ``超えていない`` （ ``rows=len(table)`` ）
-    - 集計 / マトリックス形式（ describe で TABULAR 以外） → ``判定不可`` で
-      「集計/マトリックス形式のため判定できません」
+    - 形式エラー （ 結合レポート・明細の列が無いレポートなど ） → ``判定不可`` で
+      「この形式のレポートは取得できないため判定できません（結合レポート・明細の列が無いレポートなど）」
     - 401 / 403 由来の ``SalesforceError`` は呼び出し元に再送出（ レポート全体を
       失敗扱いにする ）
     - その他の例外 → ``判定不可`` で 例外名＋短い説明
     """
-    format_value = _report_format(metadata)
-    if format_value and format_value != "TABULAR":
-        return RowCheck(
-            status=ROW_CHECK_UNKNOWN,
-            rows=None,
-            reason="集計/マトリックス形式のため判定できません",
-        )
-
     try:
         table = client.report.get(report_id)
     except SalesforceReportTruncatedError:
@@ -641,7 +640,10 @@ def _check_row_count(client: Any, report_id: str, metadata: dict[str, Any]) -> R
             return RowCheck(
                 status=ROW_CHECK_UNKNOWN,
                 rows=None,
-                reason="集計/マトリックス形式のため判定できません",
+                reason=(
+                    "この形式のレポートは取得できないため判定できません"
+                    "（結合レポート・明細の列が無いレポートなど）"
+                ),
             )
         return RowCheck(
             status=ROW_CHECK_UNKNOWN,
@@ -687,7 +689,9 @@ def _is_report_access_denied(exc: SalesforceError) -> bool:
 
 
 def _is_report_format_error(exc: SalesforceError) -> bool:
-    """comken の ``_report_format_error`` （ 集計 / マトリックス ） を判定する。"""
+    """comken の ``_report_format_error`` （ 結合レポート・明細の列が無いレポートなど ）
+    を判定する。 集計 / サマリー / マトリックスは comken が取得するので、 ここに
+    来るのは **取れない形式** のときだけ。"""
     message = str(exc)
     return all(marker in message for marker in _REPORT_FORMAT_MARKERS)
 
@@ -895,7 +899,7 @@ def _fetch_one(
             # 2000 行チェック: ``row_limit`` が True のときだけ実行。
             # 401 / 403 のような致命エラーは外側の except に伝播させて ID 全体を
             # 失敗扱いにする。 その他のエラーは ``RowCheck`` に縮退する。
-            row_check = _check_row_count(client, report_id, metadata) if row_limit else None
+            row_check = _check_row_count(client, report_id) if row_limit else None
             _log_row_check(row_check)
 
             # 主オブジェクトの解決（ ``$`` / ``@`` を含むときは候補を

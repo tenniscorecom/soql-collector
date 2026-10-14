@@ -156,7 +156,7 @@ def test_truncated_marks_over() -> None:
         describe=_metadata(),
         get_error=SalesforceReportTruncatedError("00O", 2000),
     )
-    result = _check_row_count(client, "00O", _metadata())
+    result = _check_row_count(client, "00O")
     assert result.status == "超えている"
     assert result.rows is None
 
@@ -167,36 +167,77 @@ def test_normal_get_marks_under_with_count() -> None:
         describe=_metadata(),
         get_table=_Row(1234),
     )
-    result = _check_row_count(client, "00O", _metadata())
+    result = _check_row_count(client, "00O")
     assert result.status == "超えていない"
     assert result.rows == 1234
 
 
-def test_format_other_than_tabular_marks_unknown() -> None:
-    """describe で TABULAR 以外なら get を呼ばずに 判定不可。"""
-    client = _FakeClient(describe=_metadata("SUMMARY"))
-    result = _check_row_count(client, "00O", _metadata("SUMMARY"))
-    assert result.status == "判定不可"
-    assert "集計" in (result.reason or "")
-    assert client.report.get_calls == []
+def test_summary_format_calls_get_and_marks_under_with_count() -> None:
+    """SUMMARY 形式は ``get()`` を呼んで 2000 件チェックが回る（ comken が
+    サマリー形式も明細の行を返すようになったため ）。 正常終了なら ``超えていない``
+    と行数。
+    """
+    summary_metadata = _metadata("SUMMARY")
+    client = _FakeClient(describe=summary_metadata, get_table=_Row(42))
+    out = _check_row_count(client, "00O")
+    assert out.status == "超えていない"
+    assert out.rows == 42
+    assert client.report.get_calls == ["00O"]
+
+
+def test_matrix_format_calls_get_and_marks_over_when_truncated() -> None:
+    """MATRIX 形式も ``get()`` が呼ばれ、 切り捨てエラーなら ``超えている`` 。"""
+    matrix_metadata = _metadata("MATRIX")
+    client = _FakeClient(
+        describe=matrix_metadata,
+        get_error=SalesforceReportTruncatedError("00O", 2000),
+    )
+    out = _check_row_count(client, "00O")
+    assert out.status == "超えている"
+    assert client.report.get_calls == ["00O"]
 
 
 def test_format_error_from_get_marks_unknown() -> None:
-    """``get()`` が集計形式エラーを上げても 判定不可。"""
+    """``get()`` が取れない形式（ 結合レポート・明細の列が無いレポートなど ） の
+    エラーを上げたら 判定不可、 新しい文言が出る。
+    """
     err = SalesforceError(
-        "このレポートは SUMMARY 形式です: 00O\n取得できるのは明細（TABULAR）形式のレポートだけです。"
+        "このレポートは MULTI_BLOCK 形式です: 00O\n"
+        "取得できるのは明細（TABULAR）・サマリー（SUMMARY）・"
+        "マトリックス（MATRIX）形式のレポートだけです。\n"
+        "レポート形式を確認するか、SOQL（query）で取得してください。\n"
+        "対処: レポート形式を確認するか、管理者へ連絡してください。"
     )
-    client = _FakeClient(describe=_metadata("TABULAR"), get_error=err)
-    result = _check_row_count(client, "00O", _metadata("TABULAR"))
+    tabular_metadata = _metadata("TABULAR")
+    client = _FakeClient(describe=tabular_metadata, get_error=err)
+    result = _check_row_count(client, "00O")
     assert result.status == "判定不可"
-    assert "集計" in (result.reason or "")
+    assert "この形式のレポートは取得できないため判定できません" in (result.reason or "")
+    assert "結合レポート" in (result.reason or "")
+    assert client.report.get_calls == ["00O"]
+
+
+def test_format_error_for_no_detail_columns_marks_unknown() -> None:
+    """明細の列が無いサマリーレポートのエラーも 判定不可 （ 新しい文言 ）。"""
+    err = SalesforceError(
+        "このレポートは 明細の列が無い 形式です: 00O\n"
+        "取得できるのは明細（TABULAR）・サマリー（SUMMARY）・"
+        "マトリックス（MATRIX）形式のレポートだけです。\n"
+        "レポート形式を確認するか、SOQL（query）で取得してください。\n"
+        "対処: レポート形式を確認するか、管理者へ連絡してください。"
+    )
+    summary_metadata = _metadata("SUMMARY")
+    client = _FakeClient(describe=summary_metadata, get_error=err)
+    result = _check_row_count(client, "00O")
+    assert result.status == "判定不可"
+    assert "この形式のレポートは取得できないため判定できません" in (result.reason or "")
 
 
 def test_other_salesforce_error_marks_unknown_with_type_and_message() -> None:
     """その他の ``SalesforceError`` → 判定不可。 例外名と短い説明が出る。"""
     err = SalesforceError("何か問題がありました")
     client = _FakeClient(describe=_metadata(), get_error=err)
-    result = _check_row_count(client, "00O", _metadata())
+    result = _check_row_count(client, "00O")
     assert result.status == "判定不可"
     assert "SalesforceError" in (result.reason or "")
     assert "何か問題" in (result.reason or "")
@@ -210,7 +251,7 @@ def test_auth_error_propagates_so_report_fails() -> None:
     )
     client = _FakeClient(describe=_metadata(), get_error=access_denied)
     with pytest.raises(SalesforceError):
-        _check_row_count(client, "00O", _metadata())
+        _check_row_count(client, "00O")
 
 
 def test_generic_exception_marks_unknown() -> None:
@@ -219,7 +260,7 @@ def test_generic_exception_marks_unknown() -> None:
         describe=_metadata(),
         get_error=TimeoutError("connect timeout"),
     )
-    result = _check_row_count(client, "00O", _metadata())
+    result = _check_row_count(client, "00O")
     assert result.status == "判定不可"
     assert "TimeoutError" in (result.reason or "")
 
@@ -270,7 +311,7 @@ def test_row_data_never_leaks_to_output(tmp_path: Path, caplog: pytest.LogCaptur
 
     # _check_row_count 単体でログ / 例外に漏れない
     client = _FakeClient(describe=_metadata(), get_table=_TableWithSecret())
-    result = _check_row_count(client, "00O", _metadata())
+    result = _check_row_count(client, "00O")
     assert result.status == "超えていない"
     assert result.rows == 2
     assert SECRET_ROW_VALUE not in str(result.reason or "")
@@ -312,6 +353,6 @@ def test_salesforce_request_error_marks_unknown() -> None:
     """``SalesforceRequestError`` （ 401 / 403 以外 ） は 判定不可。"""
     err = SalesforceRequestError("GET", "/analytics/reports/00O", 500, "Server Error")
     client = _FakeClient(describe=_metadata(), get_error=err)
-    result = _check_row_count(client, "00O", _metadata())
+    result = _check_row_count(client, "00O")
     assert result.status == "判定不可"
     assert "500" in (result.reason or "")
