@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from comken.exceptions import SalesforceRequestError
 
+from src.column_map_csv import ColumnMapRow
+from src.describe_store import DescribeStore
 from src.fetch import (
     _fetch_object_cached,
     _slim_object,
@@ -2324,3 +2326,538 @@ def test_run_fetch_emits_each_outcome_warning_once_at_warning_level(
     assert len(duplicated) == 1, (
         f"同一 WARNING が複数回出た: {[r.getMessage() for r in duplicated]}"
     )
+
+
+# ── 列の対応.csv の経路補完 （ End-to-end ） ────────────────────────────────
+
+
+def _path_opp_with_account() -> dict:
+    """``Account.Owner.Name`` を辿れるよう ``relationshipName`` を ``Account``
+    / ``Owner`` にした Opportunity の describe。 _main_describe は
+    ``AccountId_Account`` の形を作るので、 このテスト専用に手で書く。
+    """
+    return {
+        "name": "Opportunity",
+        "fields": [
+            {
+                "name": "AccountId",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "Account",
+            },
+            {
+                "name": "Name",
+                "type": "string",
+                "label": "名前",
+            },
+        ],
+    }
+
+
+def _path_account_with_owner() -> dict:
+    """User への参照を持ち、 ``relationshipName = "Owner"`` な Account の describe。"""
+    return {
+        "name": "Account",
+        "fields": [
+            {
+                "name": "OwnerId",
+                "type": "reference",
+                "referenceTo": ["User"],
+                "relationshipName": "Owner",
+            },
+        ],
+    }
+
+
+def _path_owner_metadata() -> dict:
+    """``Account.Owner.Name`` （ 人が書いた ） を確認するためのメタデータ。
+
+    ``detailColumns = ["Opp.Account.Owner"]`` を使い、 自動では解決できず
+    ``(不明)`` のままになる。 そこに人が ``Account.Owner.Name`` を書いて、
+    経路の補完の振る舞いを見る。 ``detailColumnInfo`` の label は
+    ``column_key`` をそのまま表示名として流して使う （ 列キー→表示名の解決に
+    影響しないように ） 。
+    """
+    return {
+        "reportMetadata": {
+            "reportType": {"type": "Opportunity"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["Opp.Account.Owner"],
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {"Opp.Account.Owner": {"label": "所有者"}},
+        },
+    }
+
+
+def _path_owner_overrides() -> dict[tuple[str, str], ColumnMapRow]:
+    """人が ``列の対応.csv`` に書いた ``Account.Owner.Name``。"""
+    return {
+        ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Owner",
+            display_name="所有者",
+            soql_name="Account.Owner.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+
+
+def test_run_fetch_fetches_missing_object_along_user_path(tmp_path: Path) -> None:
+    """主オブジェクト Opportunity、 取得済みは Opportunity と Account だけ、 人が
+    ``Account.Owner.Name`` を書く → User を取りに行き （``describe_object`` が
+    User で 1 回だけ呼ばれる ） 、 型が付き、 WARNING なし、 record の
+    ``objects`` に User が入る
+    """
+    user_describe = _main_describe("User", [{"name": "Name", "type": "string"}])
+
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_path_owner_metadata(),
+        object_describes={
+            "Opportunity": _path_opp_with_account(),
+            "Account": _path_account_with_owner(),
+            "User": user_describe,
+        },
+    )
+    site_for, _ = _site_for(client)
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+
+    outcomes = run_fetch(
+        _settings(tmp_path),
+        [entry],
+        site_for=site_for,
+        describe_store=store,
+        column_map_overrides=_path_owner_overrides(),
+    )
+
+    assert outcomes[0].status == "ok"
+    record = outcomes[0].record
+    # User は ``describe_object`` を 1 回叩かれている
+    assert client.describe_object_calls.count("User") == 1
+    # User が ``record.objects`` にも入った
+    assert "User" in record.objects
+    # 型は string
+    row = next(r for r in record.column_map if r["列キー"] == "Opp.Account.Owner")
+    assert row["対応フィールドAPI名"] == "Account.Owner.Name"
+    assert row["型"] == "string"
+    # 「User の describe に失敗 」 系は出ない
+    assert not any("User の describe に失敗" in w for w in record.warnings)
+
+
+def test_run_fetch_caches_fetched_user_across_reports(tmp_path: Path) -> None:
+    """同じ実行で 2 本目のレポートが同じ経路 → User は Salesforce に再度問い合わせない
+
+    キャッシュは ``DescribeStore`` を介して行われる。 1 本目の Report で
+    User が API 取得 → store.memory_cache に入る → 2 本目では store.lookup
+    が即座に返し、 API を叩かない
+    """
+    user_describe = _main_describe("User", [{"name": "Name", "type": "string"}])
+
+    entry1 = MasterEntry(key="1001", summary="", url=f"{DOMAIN}/00O5g00000AAAAA/view", enabled=True)
+    entry2 = MasterEntry(key="1002", summary="", url=f"{DOMAIN}/00O5g00000BBBBB/view", enabled=True)
+    client = _FakeClient(
+        describe=_path_owner_metadata(),
+        object_describes={
+            "Opportunity": _path_opp_with_account(),
+            "Account": _path_account_with_owner(),
+            "User": user_describe,
+        },
+    )
+    site_for, _ = _site_for(client)
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+
+    outcomes = run_fetch(
+        _settings(tmp_path),
+        [entry1, entry2],
+        site_for=site_for,
+        describe_store=store,
+        column_map_overrides=_path_owner_overrides(),
+    )
+
+    # 2 件とも成功
+    assert outcomes[0].status == "ok"
+    assert outcomes[1].status == "ok"
+    # User は 1 回しか API を叩かれていない （ 共有ストアでキャッシュヒット ）
+    assert client.describe_object_calls.count("User") == 1
+
+
+def test_run_fetch_uses_describe_csv_cache_for_user(tmp_path: Path) -> None:
+    """``describe.csv`` （ ``DescribeStore.csv_index`` ） に User が既にあれば
+    Salesforce に問い合わせない。 ``_run_fetch`` の前に ``store.csv_index`` に
+    User の describe を入れて、 simulate する
+    """
+    user_describe = _main_describe("User", [{"name": "Name", "type": "string"}])
+
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_path_owner_metadata(),
+        object_describes={
+            "Opportunity": _path_opp_with_account(),
+            "Account": _path_account_with_owner(),
+            # User は object_describes に **入れない**。 CSV からの読みだけで
+            # 済ませるため
+        },
+    )
+    site_for, _ = _site_for(client)
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+    # pre-populate csv_index with User. キーは ``org_from_url`` で取り出される
+    # URL のホスト名 （ 小文字 ） とオブジェクト名を lower で揃える。
+    # ``DOMAIN`` のホストは ``example--sandbox.sandbox.my.salesforce.com``
+    from src.describe_store import org_from_url
+
+    org = org_from_url(entry.url)
+    store.csv_index[(org, "user")] = user_describe
+
+    outcomes = run_fetch(
+        _settings(tmp_path),
+        [entry],
+        site_for=site_for,
+        describe_store=store,
+        column_map_overrides=_path_owner_overrides(),
+    )
+
+    assert outcomes[0].status == "ok"
+    # User はキャッシュから返るので API は叩かれない
+    assert "User" not in client.describe_object_calls
+    # 型は引ける
+    row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.Account.Owner")
+    assert row["型"] == "string"
+
+
+def test_run_fetch_typo_in_path_warns_with_candidates(tmp_path: Path) -> None:
+    """``Account.Ownr.Name`` （ 打ち間違い ） → 「 Ownr が Account に見つかり
+    ません」 と候補 （ Owner など ） が WARNING に出る、 値は残る
+    """
+    account_describe = {
+        "name": "Account",
+        "fields": [
+            {
+                "name": "OwnerId",
+                "type": "reference",
+                "relationshipName": "Owner",
+                "referenceTo": ["User"],
+            },
+            {
+                "name": "Custom__c",
+                "type": "string",
+                "relationshipName": "CustomRel",
+                "referenceTo": ["User"],
+            },
+        ],
+    }
+
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_path_owner_metadata(),
+        object_describes={
+            "Opportunity": _path_opp_with_account(),
+            "Account": account_describe,
+        },
+    )
+    site_for, _ = _site_for(client)
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+
+    overrides = {
+        ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Owner",
+            display_name="所有者",
+            soql_name="Account.Ownr.Name",  # 打ち間違い
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+
+    outcomes = run_fetch(
+        _settings(tmp_path),
+        [entry],
+        site_for=site_for,
+        describe_store=store,
+        column_map_overrides=overrides,
+    )
+    assert outcomes[0].status == "ok"
+    record = outcomes[0].record
+    # 値は残っている
+    row = next(r for r in record.column_map if r["列キー"] == "Opp.Account.Owner")
+    assert row["対応フィールドAPI名"] == "Account.Ownr.Name"
+    assert row["型"] == ""
+    # 「たどれません」 文と候補が出 る
+    matching = [w for w in record.warnings if "「Ownr」が Account に見つかりません" in w]
+    assert len(matching) == 1
+    assert "Owner" in matching[0]
+    assert "CustomRel" in matching[0]
+
+
+def test_run_fetch_path_fetch_404_warns_and_record_ok(tmp_path: Path) -> None:
+    """経路上の参照先 （ User ） が ``describe_object`` で 404 → 「 参照先 User
+    の項目定義を取得できません 」 の WARNING、 値は残る、 そのレポートは成功
+    """
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_path_owner_metadata(),
+        object_describes={
+            "Opportunity": _path_opp_with_account(),
+            "Account": _path_account_with_owner(),
+        },
+        errors={"User": SalesforceRequestError("GET", "/sobjects/User/describe", 404, "Not Found")},
+    )
+    site_for, _ = _site_for(client)
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+
+    outcomes = run_fetch(
+        _settings(tmp_path),
+        [entry],
+        site_for=site_for,
+        describe_store=store,
+        column_map_overrides=_path_owner_overrides(),
+    )
+    assert outcomes[0].status == "ok"
+    record = outcomes[0].record
+    row = next(r for r in record.column_map if r["列キー"] == "Opp.Account.Owner")
+    # 値は残る
+    assert row["対応フィールドAPI名"] == "Account.Owner.Name"
+    assert row["型"] == ""
+    # 「参照先 User の項目定義を取得できません」 文
+    matching = [w for w in record.warnings if "参照先 User の項目定義を取得できません" in w]
+    assert len(matching) == 1
+
+
+def test_run_fetch_path_fetch_401_marks_report_failed(tmp_path: Path) -> None:
+    """経路上の参照先 （ User ） が ``describe_object`` で 401 → レポート全体が
+    失敗扱いになる。 record は None
+    """
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_path_owner_metadata(),
+        object_describes={
+            "Opportunity": _path_opp_with_account(),
+            "Account": _path_account_with_owner(),
+        },
+        errors={
+            "User": SalesforceRequestError("GET", "/sobjects/User/describe", 401, "Unauthorized")
+        },
+    )
+    site_for, _ = _site_for(client)
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+
+    outcomes = run_fetch(
+        _settings(tmp_path),
+        [entry],
+        site_for=site_for,
+        describe_store=store,
+        column_map_overrides=_path_owner_overrides(),
+    )
+
+    assert outcomes[0].status == "failed"
+    assert outcomes[0].record is None
+    assert "401" in (outcomes[0].error or "")
+
+
+def test_run_fetch_handles_polymorphic_what(tmp_path: Path) -> None:
+    """ポリモーフィック （ ``What.Name`` で What → Account / Opportunity ）:
+    取得済みの ``referenceTo`` の順に試して最初の候補の ``Name`` で型を引く
+    """
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "Opportunity"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["Opp.What"],
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {"Opp.What": {"label": "What"}},
+        },
+    }
+    opp_describe = {
+        "name": "Opportunity",
+        "fields": [
+            {
+                "name": "WhatId",
+                "type": "reference",
+                "relationshipName": "What",
+                "referenceTo": ["Account", "Opportunity"],
+            },
+        ],
+    }
+    account_describe = _main_describe("Account", [{"name": "Name", "type": "string"}])
+
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=metadata,
+        object_describes={
+            "Opportunity": opp_describe,
+            "Account": account_describe,
+            # 念のため Opportunity にも Name を置くが、 ポリモーフィックでは
+            # 先頭の Account が優先されることを確認するため
+            "Opportunity2": _main_describe("Opportunity", [{"name": "Name", "type": "string"}]),
+        },
+    )
+    site_for, _ = _site_for(client)
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+
+    overrides = {
+        ("opportunity", "Opp.What"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.What",
+            display_name="What",
+            soql_name="What.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+
+    outcomes = run_fetch(
+        _settings(tmp_path),
+        [entry],
+        site_for=site_for,
+        describe_store=store,
+        column_map_overrides=overrides,
+    )
+    assert outcomes[0].status == "ok"
+    row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.What")
+    # Account が先頭なので Account.Name で string が引ける
+    assert row["対応フィールドAPI名"] == "What.Name"
+    assert row["型"] == "string"
+
+
+def test_run_fetch_path_too_long_warns(tmp_path: Path) -> None:
+    """6 段以上なら 「 経路が長すぎます 」 WARNING で止める。 値は残る"""
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "Opportunity"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["Opp.A.B.C.D.E.F"],
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {"Opp.A.B.C.D.E.F": {"label": "deep"}},
+        },
+    }
+    opp_describe = _main_describe("Opportunity", [{"name": "Name", "type": "string"}])
+
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=metadata,
+        object_describes={"Opportunity": opp_describe},
+    )
+    site_for, _ = _site_for(client)
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+
+    overrides = {
+        ("opportunity", "Opp.A.B.C.D.E.F"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.A.B.C.D.E.F",
+            display_name="deep",
+            soql_name="A.B.C.D.E.F",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+
+    outcomes = run_fetch(
+        _settings(tmp_path),
+        [entry],
+        site_for=site_for,
+        describe_store=store,
+        column_map_overrides=overrides,
+    )
+    assert outcomes[0].status == "ok"
+    row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.A.B.C.D.E.F")
+    # 値が残り、 型は空
+    assert row["対応フィールドAPI名"] == "A.B.C.D.E.F"
+    assert row["型"] == ""
+    assert any("経路が長すぎます" in w for w in outcomes[0].record.warnings)
+
+
+def test_run_fetch_auto_resolved_does_not_call_fetcher(tmp_path: Path) -> None:
+    """自動で取れた列 （ 上書き対象でない ） では取りに行かない
+
+    自動で取れた列は列の対応.csv の値を見ないので、 fetcher は呼ばれない
+    """
+    metadata = _make_metadata(detail_column_labels={"Opp.Name": "名前"})
+    opp_describe = {
+        "name": "Opportunity",
+        "fields": [{"name": "Name", "label": "名前", "type": "string"}],
+    }
+
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=metadata,
+        object_describes={"Opportunity": opp_describe},
+    )
+    site_for, _ = _site_for(client)
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+
+    # ``Opp.Name`` は auto-resolved なので、 仮に違う CSV 値を入れても無視される
+    overrides = {
+        ("opportunity", "Opp.Name"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Name",
+            display_name="",
+            soql_name="Account.Owner.Name",  # 自動で取れた列には適用されない
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+
+    outcomes = run_fetch(
+        _settings(tmp_path),
+        [entry],
+        site_for=site_for,
+        describe_store=store,
+        column_map_overrides=overrides,
+    )
+    assert outcomes[0].status == "ok"
+    # 自動の Name がそのまま残っている
+    row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.Name")
+    assert row["対応フィールドAPI名"] == "Name"
+    # fetcher は呼ばれない (Account も User も API を叩かれない)
+    assert "Account" not in client.describe_object_calls
+    assert "User" not in client.describe_object_calls
+
+
+def test_run_fetch_no_fetcher_legacy_behavior(tmp_path: Path) -> None:
+    """``column_map_overrides`` が空のときは、 fetcher は使われず、 WARNING も
+    「 たどれません 」 は出ない （ 何も上書きしない ） 。 後方互換確認
+    """
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "Opportunity"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["Opp.Account.Owner"],
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {"Opp.Account.Owner": {"label": "所有者"}},
+        },
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=metadata,
+        # User はサーバ上は存在するが、 経路の補完は走らない
+        object_describes={
+            "Opportunity": _path_opp_with_account(),
+            "Account": _path_account_with_owner(),
+            "User": _main_describe("User", [{"name": "Name", "type": "string"}]),
+        },
+    )
+    site_for, _ = _site_for(client)
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+
+    # overrides 無し
+    outcomes = run_fetch(
+        _settings(tmp_path),
+        [entry],
+        site_for=site_for,
+        describe_store=store,
+    )
+    assert outcomes[0].status == "ok"
+    # fetcher は呼ばれない (apply_overrides の経路補完は走らない)
+    assert "User" not in client.describe_object_calls
+    # 列は自動が取れなかったまま (不明)
+    row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.Account.Owner")
+    assert row["対応フィールドAPI名"] in ("(不明)", "")

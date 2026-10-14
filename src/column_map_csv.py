@@ -156,12 +156,175 @@ def load_column_map(path: Path) -> dict[tuple[str, str], ColumnMapRow]:
 # ── column_map への上書き適用 ──────────────────────────────────────────
 
 
+def _walk_soql_path(
+    *,
+    main_object: str,
+    soql_name: str,
+    objects: dict[str, dict[str, Any]],
+    fetch_object: Callable[[str], dict[str, Any] | None] | None,
+    column_key: str,
+    warnings: list[str],
+) -> str:
+    """``soql_name`` （ ``Account.Owner.Name`` のようなドット記法 ） を
+    ``main_object`` から 1 段ずつたどり、 最後の項目の ``型`` を返す。
+
+    各段で項目を探す順は既存と同じ （ ``relationshipName`` 一致 →
+    ``name`` 一致 ）。 途中の段の参照先が ``objects`` に無いときは
+    ``fetch_object`` で取りに行く。 ポリモーフィック （ ``referenceTo`` が
+    複数 ） のときは ``referenceTo`` の順に、 ``objects`` に有るか
+    ``fetch_object`` で取れる最初のものを採用する。
+
+    段数は 5 段まで。 6 段以上なら 「 経路が長すぎます 」 WARNING を出す。
+
+    たどれなかったときの WARNING は 「 どこで切れたか 」 が分かる文にする。
+    ``warnings`` に追記する。 ``apply_overrides`` 側からは空文字が返る。
+
+    ``objects`` は ``fetch_object`` が追加したオブジェクトを **そのまま**
+    保持する。 同じ実行で同じオブジェクトが 2 度引かれることはない。
+    """
+    if not soql_name or not main_object:
+        return ""
+    parts = soql_name.split(".")
+    if len(parts) > 5:
+        warnings.append(
+            f"列の対応.csv の SOQL列名をたどれません: "
+            f"{main_object} / {column_key} / {soql_name}"
+            f" — 経路が長すぎます（5 段まで）"
+        )
+        return ""
+
+    current_object = main_object
+    for index, part in enumerate(parts):
+        describe = objects.get(current_object)
+        if not isinstance(describe, dict):
+            # main_object や途中の object が無い。 通常ここには来ない
+            warnings.append(
+                f"列の対応.csv の SOQL列名をたどれません: "
+                f"{main_object} / {column_key} / {soql_name}"
+                f" — {current_object} の項目定義が無いためたどれません"
+            )
+            return ""
+        fields_raw = describe.get("fields")
+        fields: list[Any] = fields_raw if isinstance(fields_raw, list) else []
+
+        matched: dict[str, Any] | None = None
+        # 優先順: relationshipName → name
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            relationship = field.get("relationshipName")
+            if isinstance(relationship, str) and relationship == part:
+                matched = field
+                break
+        if matched is None:
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                name = field.get("name")
+                if isinstance(name, str) and name == part:
+                    matched = field
+                    break
+
+        if matched is None:
+            candidates = _candidate_relationship_names(fields)
+            candidate_text = ", ".join(candidates) if candidates else "(なし)"
+            warnings.append(
+                f"列の対応.csv の SOQL列名をたどれません: "
+                f"{main_object} / {column_key} / {soql_name}"
+                f" — 「{part}」が {current_object} に見つかりません"
+                f"（リレーション名の候補: {candidate_text}）"
+            )
+            return ""
+
+        if index == len(parts) - 1:
+            field_type = matched.get("type")
+            return field_type if isinstance(field_type, str) else ""
+
+        # 次のオブジェクトを決める
+        reference_to_raw = matched.get("referenceTo")
+        reference_to: list[str] = (
+            [r for r in reference_to_raw if isinstance(r, str) and r]
+            if isinstance(reference_to_raw, list)
+            else []
+        )
+        relationship = matched.get("relationshipName")
+        is_polymorphic = len(reference_to) > 1
+
+        candidates_for_next: list[str] = []
+        if is_polymorphic:
+            # ポリモーフィックは ``referenceTo`` の順に試す
+            for ref in reference_to:
+                if ref not in candidates_for_next:
+                    candidates_for_next.append(ref)
+        else:
+            # 単一参照: 既存の挙動と同じ（ ``relationshipName`` が
+            # ``objects`` のキーと一致するならそれを優先、 無ければ
+            # ``referenceTo`` の最初の要素）
+            if (
+                isinstance(relationship, str)
+                and relationship
+                and relationship in objects
+                and not candidates_for_next
+            ):
+                candidates_for_next.append(relationship)
+            if not candidates_for_next:
+                for ref in reference_to:
+                    if ref not in candidates_for_next:
+                        candidates_for_next.append(ref)
+
+        next_object: str | None = None
+        for cand in candidates_for_next:
+            if cand in objects:
+                next_object = cand
+                break
+            if fetch_object is not None:
+                fetched = fetch_object(cand)
+                if isinstance(fetched, dict):
+                    objects[cand] = fetched
+                    next_object = cand
+                    break
+
+        if next_object is None:
+            target = candidates_for_next[0] if candidates_for_next else ""
+            target_text = target if target else "(対象不明)"
+            warnings.append(
+                f"列の対応.csv の SOQL列名をたどれません: "
+                f"{main_object} / {column_key} / {soql_name}"
+                f" — 参照先 {target_text} の項目定義を取得できません"
+            )
+            return ""
+
+        current_object = next_object
+
+    return ""
+
+
+def _candidate_relationship_names(fields: list[Any], limit: int = 10) -> list[str]:
+    """``fields`` の ``relationshipName`` を出現順で最大 ``limit`` 個返す。
+
+    候補が無い （ もしくは dict でない要素しかない ） ときは空 list。 WARNING
+    文の「リレーション名の候補: 」に使う。
+    """
+    candidates: list[str] = []
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        rn = field.get("relationshipName")
+        if isinstance(rn, str) and rn:
+            candidates.append(rn)
+            if len(candidates) >= limit:
+                break
+    return candidates
+
+
 def apply_overrides(
     column_map_rows: list[dict[str, str]],
     existing: dict[tuple[str, str], ColumnMapRow],
     main_object: str,
     objects: dict[str, dict[str, Any]],
     warnings: list[str],
+    *,
+    fetch_object: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> list[dict[str, str]]:
     """``column_map`` の各行に ``列の対応.csv`` の上書きを適用する。
 
@@ -176,8 +339,12 @@ def apply_overrides(
       記法をたどって引く
     - 自動が解決できたのに ``objects`` から型が引けないときは WARNING を
       出す （ CSV は見ていないので 「 打ち間違い？ 」 の警告は出さない ）
-    - 自動が解決できず CSV の値で上書きしたが型が引けないときは 「 打ち
-      間違い？ 」 WARNING を出す。 値はそのまま使う
+    - 自動が解決できず CSV の値で上書きしたが型が引けないときは 「 どこで
+      切れたか 」 を WARNING で出す。 値はそのまま使う
+    - ``fetch_object`` が与えられたときは、 辿っている経路上のオブジェクトが
+      ``objects`` に無いなら取得を試みる （ 既存の ``_fetch_object_cached`` と
+      同じ順序: メモリ → CSV → API ）。 取れたものは ``objects`` にそのまま
+      入る。 ``fetch_object=None`` なら経路の補完をせず、 古い挙動と同じになる
 
     鍵は **``column_map`` 行の ``所属オブジェクト`` ではなく** ``main_object``
     （ レポートの主オブジェクト ） を使う。 同じ ``Opp.Account.Name`` 列でも、
@@ -190,11 +357,16 @@ def apply_overrides(
         column_map_rows: ``build_column_map`` の戻り値。 1 行が dict の list。
             変更した dict のコピーを返すが、 元の list は触らない。
         existing: ``load_column_map()`` の戻り値。 空 dict でも可。
-        main_object: レポートの主オブジェクト名。 鍵と ``_resolve_soql_type``
-            の起点に使う。 ``column_map`` 行の ``所属オブジェクト`` は使わない。
+        main_object: レポートの主オブジェクト名。 鍵と SOQL の起点に使う。
+            ``column_map`` 行の ``所属オブジェクト`` は使わない。
         objects: ``record.objects`` 互換 （ ``name`` / ``fields`` を持つ dict
             の dict ）。 CSV には無い型引き当てに使う。 キーはオブジェクト名。
+            ``fetch_object`` で取得したオブジェクトはここにも加わる。
         warnings: 呼び出し側の warnings list。 そのまま追加する。
+        fetch_object: 辿っている経路上で参照先のオブジェクトを取りに行く関数。
+            名前を渡すと、 該当オブジェクトの describe 互換 dict を返す （ 取る
+            手段が無い / 失敗のときは ``None`` ）。 ``None`` を渡すと経路の
+            補完をせず、 ``objects`` にあるものだけで解決する （ 既存の挙動 ） 。
 
     Returns:
         新しい list （ 各 dict はコピー ）。 呼び出し側はこれを ``column_map``
@@ -222,19 +394,18 @@ def apply_overrides(
         new_row = dict(row)
         new_row["対応フィールドAPI名"] = override.soql_name
         # 型を describe から引く。 引けなければ空のまま（ 列の対応.csv の値を
-        # 消すのは禁止。 無い型情報は付けない ）
-        resolved_type = _resolve_soql_type(
+        # 消すのは禁止。 無い型情報は付けない ）。 たどれない理由は
+        # ``_walk_soql_path`` が ``warnings`` に追加する
+        resolved_type = _walk_soql_path(
             main_object=main_object,
             soql_name=override.soql_name,
             objects=objects,
+            fetch_object=fetch_object,
+            column_key=column_key,
+            warnings=warnings,
         )
         if resolved_type:
             new_row["型"] = resolved_type
-        else:
-            warnings.append(
-                "列の対応.csv の SOQL列名が項目定義に見つかりません"
-                f"（打ち間違い？）: {main_object} / {column_key} / {override.soql_name}"
-            )
         new_row["備考"] = OVERRIDE_MARKER
         new_rows.append(new_row)
     return new_rows
@@ -322,8 +493,7 @@ def merge_and_write(
             if previous and previous != soql_name:
                 # 人が入れた値を自動の結果で置き換えた
                 logger.warning(
-                    "列の対応.csv の手入力を自動の結果で置き換えました: "
-                    "%s / %s / %s → %s",
+                    "列の対応.csv の手入力を自動の結果で置き換えました: %s / %s / %s → %s",
                     row.main_object,
                     row.column_key,
                     previous,
@@ -375,74 +545,6 @@ def _write_column_map_csv(path: Path, rows: list[ColumnMapRow]) -> None:
     payload = [row.to_dict() for row in rows]
     with CSV(path, columns=list(COLUMN_MAP_CSV_COLUMNS)) as csv:
         csv.replace(Table(list(COLUMN_MAP_CSV_COLUMNS), payload))
-
-
-def _resolve_soql_type(
-    *,
-    main_object: str,
-    soql_name: str,
-    objects: dict[str, dict[str, Any]],
-) -> str:
-    """``soql_name`` （ ``Amount`` や ``Account.Name`` のようなドット記法 ） を、
-    ``main_object`` の describe から順にたどって最後の項目の ``型`` を返す。
-
-    ドット記法は関連項目。 中間の ``Account`` 段は次の優先順で探す:
-
-    1. ``relationshipName`` が ``part`` と一致する項目
-    2. ``name`` が ``part`` と一致する項目
-    3. ``referenceTo`` の最初の要素が ``objects`` のキーと一致するならそれ
-
-    合わなければ空文字を返す。
-    """
-    if not soql_name or not main_object:
-        return ""
-    parts = soql_name.split(".")
-    current_object = main_object
-    for index, part in enumerate(parts):
-        describe = objects.get(current_object)
-        if not isinstance(describe, dict):
-            return ""
-        fields = describe.get("fields")
-        if not isinstance(fields, list):
-            return ""
-        matched: dict[str, Any] | None = None
-        # 優先順: relationshipName → name
-        for field in fields:
-            if not isinstance(field, dict):
-                continue
-            relationship = field.get("relationshipName")
-            if isinstance(relationship, str) and relationship == part:
-                matched = field
-                break
-        if matched is None:
-            for field in fields:
-                if not isinstance(field, dict):
-                    continue
-                name = field.get("name")
-                if isinstance(name, str) and name == part:
-                    matched = field
-                    break
-        if matched is None:
-            return ""
-        if index == len(parts) - 1:
-            field_type = matched.get("type")
-            return field_type if isinstance(field_type, str) else ""
-        # 次のオブジェクト名を決める。 参照項目の ``relationshipName`` が
-        # ``objects`` のキーと一致するならそれ。 合わなければ ``referenceTo``
-        # の最初の要素
-        reference_to = matched.get("referenceTo")
-        next_object = ""
-        relationship = matched.get("relationshipName")
-        if isinstance(relationship, str) and relationship in objects:
-            next_object = relationship
-        elif isinstance(reference_to, list) and reference_to:
-            first = reference_to[0]
-            if isinstance(first, str):
-                next_object = first
-        if not next_object or next_object not in objects:
-            return ""
-        current_object = next_object
-    return ""
 
 
 def _normalize_key(main_object: str, column_key: str) -> tuple[str, str]:

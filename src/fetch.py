@@ -835,6 +835,12 @@ def _fetch_one(
     # 取り直し判定に使う。
     csv_used_keys: set[tuple[str, str]] = set()
 
+    # ``apply_overrides`` が使う slim 版のオブジェクト dict。 中で経路の
+    # 補完 （``_make_overrides_fetcher``） がオブジェクトを追加するので、
+    # 接続の中に同じ dict を入れて、 接続後も pii / record で参照できる
+    # よう関数スコープに置く
+    slim_objects: dict[str, dict[str, Any]] = {}
+
     try:
         with site_class() as client:
             try:
@@ -964,6 +970,32 @@ def _fetch_one(
                 # 残るケースは API 側でも解決できないので、 無限ループを避ける ）
                 # ※ 同じ実行の中で複数レポートがある場合は refresh_set で
                 #   同じ (org, object) を 1 度しか取り直さない
+
+            # slim_objects を作って、 人が ``列の対応.csv`` に入れた値で
+            # ``column_map`` を上書きする。 ``apply_overrides`` が
+            # ``Account.Owner.Name`` のような経路を辿るときに、 その経路上
+            # に無いオブジェクトは ``_make_overrides_fetcher`` で Salesforce
+            # から取る。 取れたオブジェクトは ``slim_objects`` と ``objects``
+            # の両方に加わる。 ``with`` の中に置くのは fetcher が
+            # ``client`` / ``store`` を掴むため。 401 / 403 は fetcher から
+            # 再送出されて外側の except で拾われ、 ID 全体が失敗扱いになる
+            slim_objects = {name: _slim_object(describe) for name, describe in objects.items()}
+            fetcher = _make_overrides_fetcher(
+                client=client,
+                org=org,
+                store=store,
+                objects=objects,
+                slim_objects=slim_objects,
+                csv_used_keys=csv_used_keys,
+            )
+            column_map = column_map_csv.apply_overrides(
+                column_map_rows=column_map,
+                existing=column_map_overrides,
+                main_object=main_object_name or "",
+                objects=slim_objects,
+                warnings=warnings,
+                fetch_object=fetcher,
+            )
     except SalesforceRequestError as exc:
         # 接続失敗・認証失敗・致命 HTTP
         return FetchOutcome(
@@ -993,22 +1025,9 @@ def _fetch_one(
     # ``_collect_related_objects`` （ 関連オブジェクトの収集 ） で
     # 原本の ``fields[].referenceTo`` / ``relationshipName`` を使うので、
     # ここでは別 dict にコピーして絞る（ 原本の dict は壊さない ）。
+    # ``slim_objects`` と ``column_map`` への上書き適用は ``with`` の中で
+    # 済んでいる （ その中で fetcher が経路上のオブジェクトを取りに行く ）
     slim_report = _slim_report(metadata)
-    slim_objects: dict[str, dict[str, Any]] = {
-        name: _slim_object(describe) for name, describe in objects.items()
-    }
-
-    # 人が ``列の対応.csv`` に入れた値で ``column_map`` を上書きする。
-    # ``slim_objects`` から ``Account.Name`` のようなドット記法の型を引く。
-    # 既存テストが ``column_map`` を ``dict`` として読むので、 各行を copy
-    # して新しい list にする
-    column_map = column_map_csv.apply_overrides(
-        column_map_rows=column_map,
-        existing=column_map_overrides,
-        main_object=main_object or "",
-        objects=slim_objects,
-        warnings=warnings,
-    )
 
     dropped_keys = _collect_dropped_keys(metadata)
     dropped_keys_warning = _dropped_keys_warning_text(dropped_keys)
@@ -1285,6 +1304,76 @@ def _related_ref_pairs(describe: dict[str, Any]) -> list[tuple[str, str, str]]:
                 continue
             triples.append((field_name, relationship_name, ref_name))
     return triples
+
+
+def _make_overrides_fetcher(
+    *,
+    client: Any,
+    org: str,
+    store: DescribeStore,
+    objects: dict[str, dict[str, Any]],
+    slim_objects: dict[str, dict[str, Any]],
+    csv_used_keys: set[tuple[str, str]],
+) -> Callable[[str], dict[str, Any] | None]:
+    """``apply_overrides`` に渡す fetcher を作る。
+
+    引数 ``name`` のオブジェクトを取りに行くが、 自前の WARNING は出さない
+    （ ``apply_overrides`` が 「 たどれません 」 文に整形して出す ）。 401
+    と 403 はそのまま上位へ送出 （ ``apply_overrides`` を経由して
+    ``_fetch_one`` の ``except`` で拾われ、 レポート全体が失敗扱いになる ） 。
+
+    取得順序は既存の ``_fetch_object_cached`` と同じ:
+
+    1. ``slim_objects`` に有ればそれを返す （ API を叩かない ）
+    2. ``DescribeStore`` （ メモリ → CSV ） を見る
+    3. 無ければ API を呼ぶ。 成功時はメモリと CSV に保存
+
+    取得結果は ``slim_objects[name]`` と ``objects[name]`` の両方に入る。
+    同じ実行で同じオブジェクトが 2 度引かれることはない （ 1 度目は
+    ``slim_objects`` からキャッシュヒット ）。
+    """
+
+    def fetcher(name: str) -> dict[str, Any] | None:
+        # 1) 既に経路の補完で取っていればそれを返す
+        if name in slim_objects:
+            return slim_objects[name]
+        # 2) ストアのキャッシュを引く
+        cached = store.lookup(org, name)
+        if cached is not None:
+            describe = cached.get("describe")
+            if isinstance(describe, dict):
+                slim = _slim_object(describe)
+                slim_objects[name] = slim
+                objects[name] = describe
+                # CSV から読んだものは取り直し候補に入れる
+                if cached.get("source") == "csv" and csv_used_keys is not None:
+                    csv_used_keys.add((org.lower(), name.strip().lower()))
+                return slim
+            # 失敗記録だけのエントリ （ describe が None ） は取りに行かない
+            return None
+        # 3) API 呼び出し
+        try:
+            describe = client.describe_object(name)
+        except SalesforceRequestError as exc:
+            if exc.status_code in FATAL_STATUS_CODES:
+                # 401 / 403 は上位へ送出してレポート全体を失敗扱いにする
+                raise
+            # その他: 失敗をメモリにだけ覚えて None を返す。 警告は
+            # ``apply_overrides`` 側で 「 たどれません 」 文に変換する
+            store.record_api_failure(org, name, f"HTTP {exc.status_code}: {exc.detail}")
+            return None
+        except ValueError as exc:
+            store.record_api_failure(org, name, str(exc))
+            return None
+        if not isinstance(describe, dict):
+            describe = {}
+        store.record_api_success(org, name, describe)
+        slim = _slim_object(describe)
+        slim_objects[name] = slim
+        objects[name] = describe
+        return slim
+
+    return fetcher
 
 
 def _fetch_object_cached(

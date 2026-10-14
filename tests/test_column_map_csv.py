@@ -329,8 +329,13 @@ def test_apply_overrides_warns_when_type_not_found(tmp_path: Path) -> None:
     # 上書きは適用される。 ただし ``型`` が引けないので空のまま
     assert result[0]["対応フィールドAPI名"] == "DoesNotExist"
     assert result[0]["型"] == ""
-    assert any("列の対応.csv の SOQL列名が項目定義に見つかりません" in w for w in warnings)
+    assert any("列の対応.csv の SOQL列名をたどれません" in w for w in warnings)
     assert any("Opportunity / Opp.Foo / DoesNotExist" in w for w in warnings)
+    # 「見つかりません」/「打ち間違い？」 ではない新形式の文。 「どこで切れた
+    # か」 が分かる候補リスト （Opportunity には参照無しなので （なし） ） も
+    # 含まれる
+    assert any("「DoesNotExist」が Opportunity に見つかりません" in w for w in warnings)
+    assert any("リレーション名の候補" in w for w in warnings)
 
 
 def test_apply_overrides_resolves_dot_notation_through_relationship(tmp_path: Path) -> None:
@@ -546,6 +551,683 @@ def test_apply_overrides_uses_main_object_as_key_when_owner_empty(tmp_path: Path
     result = apply_overrides(column_map, existing, "Opportunity", objects, warnings)
     assert result[0]["対応フィールドAPI名"] == "Amount"
     assert result[0]["備考"] == "列の対応.csv の値"
+
+
+# ── apply_overrides と fetch_object （ 経路の補完 ） ─────────────────────────
+
+
+class _RecordingFetcher:
+    """``fetch_object`` 互換の記録用フェイク。 名前を渡された順に覚えます。"""
+
+    def __init__(
+        self,
+        objects_to_return: dict[str, dict] | None = None,
+        fail_on: set[str] | None = None,
+    ) -> None:
+        self.objects_to_return = objects_to_return or {}
+        self.fail_on = fail_on or set()
+        self.calls: list[str] = []
+
+    def __call__(self, name: str) -> dict | None:
+        self.calls.append(name)
+        if name in self.fail_on:
+            return None
+        obj = self.objects_to_return.get(name)
+        if obj is None:
+            return None
+        return obj
+
+
+def test_apply_overrides_fetches_missing_intermediate_object() -> None:
+    """``Account.Owner.Name`` の User が ``objects`` に無いとき、 ``fetch_object``
+    で取りに行って型が付き、 WARNING は出ない。 取れたオブジェクトは呼び出し側
+    の ``objects`` にも加わる（ 戻り値の dict を破壊的に使う ）。
+    """
+    column_map = [
+        {
+            "列キー": "Opp.Account.Owner",
+            "表示名": "所有者",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "対応フィールドなし",
+        }
+    ]
+    objects = {
+        "Opportunity": _make_object_describe(
+            "Opportunity",
+            [
+                {
+                    "name": "AccountId",
+                    "type": "reference",
+                    "relationshipName": "Account",
+                    "referenceTo": ["Account"],
+                },
+            ],
+        ),
+        "Account": _make_object_describe(
+            "Account",
+            [
+                {
+                    "name": "OwnerId",
+                    "type": "reference",
+                    "relationshipName": "Owner",
+                    "referenceTo": ["User"],
+                },
+            ],
+        ),
+        # User は無い。 fetch_object で取りに行く
+    }
+    user_describe = _make_object_describe("User", [{"name": "Name", "type": "string"}])
+    fetcher = _RecordingFetcher(objects_to_return={"User": user_describe})
+    existing = {
+        ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Owner",
+            display_name="所有者",
+            soql_name="Account.Owner.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(
+        column_map, existing, "Opportunity", objects, warnings, fetch_object=fetcher
+    )
+    assert result[0]["対応フィールドAPI名"] == "Account.Owner.Name"
+    assert result[0]["型"] == "string"
+    assert warnings == []
+    # User が 1 回だけ取りに行かれた
+    assert fetcher.calls == ["User"]
+    # objects にも User が入った
+    assert "User" in objects
+    assert objects["User"] == user_describe
+
+
+def test_apply_overrides_caches_fetcher_within_apply_overrides_call() -> None:
+    """同じ実行内で同じオブジェクトは ``fetch_object`` を 2 度呼ばない （ 既に
+    ``objects`` に入っていればそちらを優先する ）。
+    """
+    column_map = [
+        {
+            "列キー": "Opp.Account.Owner",
+            "表示名": "所有者",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "",
+        },
+        {
+            "列キー": "Opp.Account.Owner2",
+            "表示名": "別所有者",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "",
+        },
+    ]
+    objects = {
+        "Opportunity": _make_object_describe(
+            "Opportunity",
+            [
+                {
+                    "name": "AccountId",
+                    "type": "reference",
+                    "relationshipName": "Account",
+                    "referenceTo": ["Account"],
+                },
+            ],
+        ),
+        "Account": _make_object_describe(
+            "Account",
+            [
+                {
+                    "name": "OwnerId",
+                    "type": "reference",
+                    "relationshipName": "Owner",
+                    "referenceTo": ["User"],
+                },
+            ],
+        ),
+    }
+    fetcher = _RecordingFetcher(
+        objects_to_return={
+            "User": _make_object_describe("User", [{"name": "Name", "type": "string"}])
+        }
+    )
+    existing = {
+        ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Owner",
+            display_name="",
+            soql_name="Account.Owner.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+        ("opportunity", "Opp.Account.Owner2"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Owner2",
+            display_name="",
+            soql_name="Account.Owner.Name",  # 同じ経路
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(
+        column_map, existing, "Opportunity", objects, warnings, fetch_object=fetcher
+    )
+    # User は 1 回しか取られない
+    assert fetcher.calls == ["User"]
+    # 両方とも型が引ける
+    assert all(row["型"] == "string" for row in result)
+
+
+def test_apply_overrides_uses_objects_cache_without_calling_fetcher() -> None:
+    """``objects`` に既に該当オブジェクトがあれば ``fetch_object`` を呼ばない
+    （ フェッチ機構を挟まずに型を引くだけ ）。
+    """
+    column_map = [
+        {
+            "列キー": "Opp.Account.Owner",
+            "表示名": "所有者",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "",
+        }
+    ]
+    objects = {
+        "Opportunity": _make_object_describe(
+            "Opportunity",
+            [
+                {
+                    "name": "AccountId",
+                    "type": "reference",
+                    "relationshipName": "Account",
+                    "referenceTo": ["Account"],
+                },
+            ],
+        ),
+        "Account": _make_object_describe(
+            "Account",
+            [
+                {
+                    "name": "OwnerId",
+                    "type": "reference",
+                    "relationshipName": "Owner",
+                    "referenceTo": ["User"],
+                },
+            ],
+        ),
+        "User": _make_object_describe("User", [{"name": "Name", "type": "string"}]),
+    }
+    fetcher = _RecordingFetcher()
+    existing = {
+        ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Owner",
+            display_name="",
+            soql_name="Account.Owner.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(
+        column_map, existing, "Opportunity", objects, warnings, fetch_object=fetcher
+    )
+    assert result[0]["型"] == "string"
+    assert fetcher.calls == []  # 1 度も呼ばれない
+
+
+def test_apply_overrides_typo_in_segment_emits_candidate_warning() -> None:
+    """``Account.Ownr.Name`` （ 打ち間違い ） で「 Ownr が Account に見つかり
+    ません」 という WARNING が出て、 候補 （ Owner など ） が並び、 値は残る。
+    """
+    column_map = [
+        {
+            "列キー": "Opp.Account.Ownr",
+            "表示名": "所有者",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "対応フィールドなし",
+        }
+    ]
+    objects = {
+        "Opportunity": _make_object_describe(
+            "Opportunity",
+            [
+                {
+                    "name": "AccountId",
+                    "type": "reference",
+                    "relationshipName": "Account",
+                    "referenceTo": ["Account"],
+                },
+            ],
+        ),
+        "Account": _make_object_describe(
+            "Account",
+            [
+                {
+                    "name": "OwnerId",
+                    "type": "reference",
+                    "relationshipName": "Owner",
+                    "referenceTo": ["User"],
+                },
+                {
+                    "name": "Custom__c",
+                    "type": "string",
+                    "relationshipName": "CustomRel",
+                    "referenceTo": ["User"],
+                },
+            ],
+        ),
+    }
+    fetcher = _RecordingFetcher()
+    existing = {
+        ("opportunity", "Opp.Account.Ownr"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Ownr",
+            display_name="所有者",
+            soql_name="Account.Ownr.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(
+        column_map, existing, "Opportunity", objects, warnings, fetch_object=fetcher
+    )
+    # 値は残るが型は引けない
+    assert result[0]["対応フィールドAPI名"] == "Account.Ownr.Name"
+    assert result[0]["型"] == ""
+    # 「たどれません」 の文。 Account 上で候補 を列挙
+    matching = [w for w in warnings if "「Ownr」が Account に見つかりません" in w]
+    assert len(matching) == 1
+    assert "Owner" in matching[0]
+    assert "CustomRel" in matching[0]
+    # Op.Opp.Account.Ownr も入る
+    assert any("Opp.Account.Ownr" in w for w in warnings)
+    # 打ち間違い？ の文は出ない （ 新しいフォーマット ）
+
+
+def test_apply_overrides_fetch_failure_emits_warning_and_keeps_value() -> None:
+    """``fetch_object`` が ``None`` を返す （ 取得できない ） とき、 その旨の
+    WARNING が出て、 値は残る。 ``fetch_object`` は次の候補も試さない。
+    """
+    column_map = [
+        {
+            "列キー": "Opp.Account.Owner",
+            "表示名": "所有者",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "",
+        }
+    ]
+    objects = {
+        "Opportunity": _make_object_describe(
+            "Opportunity",
+            [
+                {
+                    "name": "AccountId",
+                    "type": "reference",
+                    "relationshipName": "Account",
+                    "referenceTo": ["Account"],
+                },
+            ],
+        ),
+        "Account": _make_object_describe(
+            "Account",
+            [
+                {
+                    "name": "OwnerId",
+                    "type": "reference",
+                    "relationshipName": "Owner",
+                    "referenceTo": ["User"],
+                },
+            ],
+        ),
+    }
+    fetcher = _RecordingFetcher(fail_on={"User"})
+    existing = {
+        ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Owner",
+            display_name="所有者",
+            soql_name="Account.Owner.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(
+        column_map, existing, "Opportunity", objects, warnings, fetch_object=fetcher
+    )
+    # 値は残って 型は空
+    assert result[0]["対応フィールドAPI名"] == "Account.Owner.Name"
+    assert result[0]["型"] == ""
+    # 「参照先 User の項目定義を取得できません」 系
+    matching = [w for w in warnings if "参照先 User の項目定義を取得できません" in w]
+    assert len(matching) == 1
+    assert any("Opp.Account.Owner" in w for w in warnings)
+
+
+def test_apply_overrides_handles_polymorphic_reference() -> None:
+    """``What.Name`` で What が ``Account`` / ``Opportunity`` のポリモーフィッ
+    ク参照のとき、 ``referenceTo`` の順 （ まず Account ） で次の段の
+    ``Name`` を探す。 Account に Name があれば Account を選ぶ。
+    """
+    column_map = [
+        {
+            "列キー": "Opp.What",
+            "表示名": "What",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "",
+        }
+    ]
+    objects = {
+        "Opportunity": _make_object_describe(
+            "Opportunity",
+            [
+                {
+                    "name": "WhatId",
+                    "type": "reference",
+                    "relationshipName": "What",
+                    "referenceTo": ["Account", "Opportunity"],
+                },
+            ],
+        ),
+        "Account": _make_object_describe("Account", [{"name": "Name", "type": "string"}]),
+        # Opportunity にも Name はあるが、 Account が優先される
+    }
+    fetcher = _RecordingFetcher()  # Account は既にあるので呼ばれない想定
+    existing = {
+        ("opportunity", "Opp.What"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.What",
+            display_name="What",
+            soql_name="What.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(
+        column_map, existing, "Opportunity", objects, warnings, fetch_object=fetcher
+    )
+    assert result[0]["対応フィールドAPI名"] == "What.Name"
+    assert result[0]["型"] == "string"
+    # Account が既にあるので fetcher は呼ばれない
+    assert fetcher.calls == []
+
+
+def test_apply_overrides_path_too_long_warns() -> None:
+    """6 段以上なら 「 経路が長すぎます 」 WARNING で止める。 値は残る。"""
+    column_map = [
+        {
+            "列キー": "Opp.Path.Too.Long.For.Me",
+            "表示名": "長経路",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "",
+        }
+    ]
+    objects = {"Opportunity": _make_object_describe("Opportunity", [])}
+    fetcher = _RecordingFetcher()
+    existing = {
+        ("opportunity", "Opp.Path.Too.Long.For.Me"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Path.Too.Long.For.Me",
+            display_name="",
+            soql_name="A.B.C.D.E.F",  # 6 段
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(
+        column_map, existing, "Opportunity", objects, warnings, fetch_object=fetcher
+    )
+    assert result[0]["対応フィールドAPI名"] == "A.B.C.D.E.F"
+    assert result[0]["型"] == ""
+    matching = [w for w in warnings if "経路が長すぎます" in w]
+    assert len(matching) == 1
+
+
+def test_apply_overrides_auto_resolved_rows_do_not_call_fetcher() -> None:
+    """自動で取れた列 （ 上書き対象でない ） では ``fetch_object`` を呼ばない
+    （ そのレポートで扱う経路の補完はしない ）。
+    """
+    column_map = [
+        {
+            "列キー": "Opp.Account.Name",
+            "表示名": "取引先名",
+            "所属オブジェクト": "Account",
+            "対応フィールドAPI名": "Account.Name",  # 自動が取った値
+            "型": "string",
+            "備考": "関連オブジェクト経由",
+        }
+    ]
+    objects = {
+        "Opportunity": _make_object_describe(
+            "Opportunity",
+            [
+                {
+                    "name": "AccountId",
+                    "type": "reference",
+                    "relationshipName": "Account",
+                    "referenceTo": ["Account"],
+                },
+            ],
+        ),
+        "Account": _make_object_describe("Account", [{"name": "Name", "type": "string"}]),
+    }
+    fetcher = _RecordingFetcher()
+    # 自動で取れた行なので、 仮に CSV に値が入っていても無視する
+    existing = {
+        ("opportunity", "Opp.Account.Name"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Name",
+            display_name="",
+            soql_name="Account.Custom__c",
+            note="手動",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(
+        column_map, existing, "Opportunity", objects, warnings, fetch_object=fetcher
+    )
+    # 自動の Account.Name が優先される
+    assert result[0]["対応フィールドAPI名"] == "Account.Name"
+    # fetcher は呼ばれない
+    assert fetcher.calls == []
+
+
+def test_apply_overrides_fetcher_none_is_legacy_behavior() -> None:
+    """``fetch_object=None`` のときは既存の挙動と同じ。 経路上に無い
+    オブジェクトがあると型が引けず、 新形式の WARNING が出る。
+    """
+    column_map = [
+        {
+            "列キー": "Opp.Account.Owner",
+            "表示名": "所有者",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "",
+        }
+    ]
+    objects = {
+        "Opportunity": _make_object_describe(
+            "Opportunity",
+            [
+                {
+                    "name": "AccountId",
+                    "type": "reference",
+                    "relationshipName": "Account",
+                    "referenceTo": ["Account"],
+                },
+            ],
+        ),
+        "Account": _make_object_describe(
+            "Account",
+            [
+                {
+                    "name": "OwnerId",
+                    "type": "reference",
+                    "relationshipName": "Owner",
+                    "referenceTo": ["User"],
+                },
+            ],
+        ),
+        # User は無いが fetch_object もない
+    }
+    existing = {
+        ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Owner",
+            display_name="",
+            soql_name="Account.Owner.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(column_map, existing, "Opportunity", objects, warnings)
+    # 型は引けず
+    assert result[0]["対応フィールドAPI名"] == "Account.Owner.Name"
+    assert result[0]["型"] == ""
+    # ただし新形式の 「たどれません」 文が出る
+    assert any("たどれません" in w for w in warnings)
+
+
+def test_apply_overrides_no_fetcher_for_path_succeeds_when_all_objects_present() -> None:
+    """``fetch_object=None`` でも ``objects`` に全 object があれば型は引ける。"""
+    column_map = [
+        {
+            "列キー": "Opp.Account.Owner",
+            "表示名": "所有者",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "",
+        }
+    ]
+    objects = {
+        "Opportunity": _make_object_describe(
+            "Opportunity",
+            [
+                {
+                    "name": "AccountId",
+                    "type": "reference",
+                    "relationshipName": "Account",
+                    "referenceTo": ["Account"],
+                },
+            ],
+        ),
+        "Account": _make_object_describe(
+            "Account",
+            [
+                {
+                    "name": "OwnerId",
+                    "type": "reference",
+                    "relationshipName": "Owner",
+                    "referenceTo": ["User"],
+                },
+            ],
+        ),
+        "User": _make_object_describe("User", [{"name": "Name", "type": "string"}]),
+    }
+    existing = {
+        ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.Account.Owner",
+            display_name="",
+            soql_name="Account.Owner.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(column_map, existing, "Opportunity", objects, warnings)
+    assert result[0]["対応フィールドAPI名"] == "Account.Owner.Name"
+    assert result[0]["型"] == "string"
+    assert warnings == []
+
+
+def test_apply_overrides_polymorphic_falls_back_to_second_when_first_missing() -> None:
+    """ポリモーフィックで先頭候補が ``objects`` に無いときは、 ``fetch_object``
+    で取りに行く。 先頭が取れるときは先頭が選ばれる。
+    """
+    column_map = [
+        {
+            "列キー": "Opp.What",
+            "表示名": "What",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "備考": "",
+        }
+    ]
+    objects = {
+        "Opportunity": _make_object_describe(
+            "Opportunity",
+            [
+                {
+                    "name": "WhatId",
+                    "type": "reference",
+                    "relationshipName": "What",
+                    "referenceTo": ["Account", "Opportunity"],
+                },
+            ],
+        ),
+        # Account は無い。 fetch_object で取りに行く
+    }
+    fetcher = _RecordingFetcher(
+        objects_to_return={
+            "Account": _make_object_describe("Account", [{"name": "Name", "type": "string"}]),
+        }
+    )
+    existing = {
+        ("opportunity", "Opp.What"): ColumnMapRow(
+            main_object="Opportunity",
+            column_key="Opp.What",
+            display_name="",
+            soql_name="What.Name",
+            note="",
+            report_count=0,
+            updated_at="",
+        ),
+    }
+    warnings: list[str] = []
+    result = apply_overrides(
+        column_map, existing, "Opportunity", objects, warnings, fetch_object=fetcher
+    )
+    assert result[0]["対応フィールドAPI名"] == "What.Name"
+    assert result[0]["型"] == "string"
+    # 先頭の Account が取られた
+    assert fetcher.calls == ["Account"]
+    # Account が objects にも入った
+    assert "Account" in objects
+    assert "Opportunity" not in fetcher.calls
 
 
 # ── _merge_and_write_after_run ────────────────────────────────
