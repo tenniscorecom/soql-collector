@@ -45,7 +45,7 @@ from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
 from openpyxl.utils import get_column_letter
 
-from src import pii, similar
+from src import ai_markdown, pii, similar
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +394,12 @@ def run_tables(
         )
     if column_names_path.exists():
         wrote.append(column_names_path)
+
+    # 1 レポート 1 つの Markdown 資料を ``SOQL資料/{管理番号}.md`` に書く。
+    # AI に SOQL を組ませるときにそのまま渡す用途。 既存のファイルはそのまま
+    # 残し、 今回取れた record の分だけ上書きする。 xlsx / csv の挙動は
+    # 変えない
+    wrote.extend(ai_markdown.write_ai_markdowns(output_dir, sorted_records))
 
     return TableOutcome(wrote=tuple(wrote), skipped=())
 
