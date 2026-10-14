@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import csv
-import dataclasses
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -25,7 +24,7 @@ DOMAIN = "https://example.my.salesforce.com/lightning/r/Report"
 
 
 def _build_master(path: Path) -> None:
-    """``load_settings`` が困らないよう ``MASTER_XLSX_PATH`` の指す xlsx を作る。"""
+    """``MASTER_XLSX_PATH`` の指す xlsx を作る。"""
     workbook = Workbook()
     active = workbook.active
     if active is not None:
@@ -45,9 +44,15 @@ def _build_master(path: Path) -> None:
 
 
 def _write_ini(tmp_path: Path, master: Path) -> None:
-    """テスト用 ``config.ini`` を ``tmp_path`` に書く。"""
+    """テスト用 ``config.ini`` を ``tmp_path`` に書く。 ``[FILES]`` の 4 つの
+    キーはすべて必須なので、 このヘルパでは 4 つ全部を書く。
+    """
     (tmp_path / "config.ini").write_text(
-        f"[FILES]\nMASTER_XLSX_PATH = {master.name}\nOUTPUT_DIR = ./output\n",
+        "[FILES]\n"
+        f"MASTER_XLSX_PATH = {master.name}\n"
+        "OUTPUT_DIR = ./output\n"
+        "DESCRIBE_CSV_PATH = ./data/項目定義.csv\n"
+        "COLUMN_MAP_CSV_PATH = ./data/列の対応.csv\n",
         encoding="utf-8",
     )
 
@@ -142,7 +147,10 @@ def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
             result[sheet_name] = []
             continue
         result[sheet_name] = [
-            {header: ("" if value is None else value) for header, value in zip(headers, row, strict=False)}
+            {
+                header: ("" if value is None else value)
+                for header, value in zip(headers, row, strict=False)
+            }
             for row in rows_iter
         ]
     workbook.close()
@@ -238,15 +246,14 @@ def _run_e2e(tmp_path: Path) -> Path:
     """再現シナリオを実行し、 出力ディレクトリを返す。"""
     from src.fetch import run_fetch
     from src.master import MasterEntry
-    from src.settings import load_settings
     from src.tables import run_tables
 
     master = tmp_path / "master.xlsx"
     _build_master(master)
     _write_ini(tmp_path, master)
 
-    settings = load_settings(project_root=tmp_path)
-    settings = dataclasses.replace(settings, output_dir=tmp_path / "output")
+    file_paths = _load_file_paths_for_test(tmp_path)
+    output_dir = tmp_path / "output"
 
     client = _FakeClient(_e2e_describe(), _e2e_object_describes())
 
@@ -256,10 +263,32 @@ def _run_e2e(tmp_path: Path) -> Path:
         url=f"{DOMAIN}/00O000000000001/view",
         enabled=True,
     )
-    outcomes = run_fetch(settings, [entry], site_for=_site_for(client))
+    outcomes = run_fetch(
+        [entry],
+        describe_csv_path=file_paths.describe_csv_path,
+        site_for=_site_for(client),
+    )
     assert all(o.status == "ok" for o in outcomes), [(o.status, o.error) for o in outcomes]
-    run_tables(settings.output_dir, [o.record for o in outcomes if o.record])
-    return settings.output_dir
+    run_tables(output_dir, [o.record for o in outcomes if o.record])
+    return output_dir
+
+
+def _load_file_paths_for_test(tmp_path: Path):
+    """``config.ini`` を ``tmp_path`` プロジェクトに見立てて ``FilePaths`` を読み込む。"""
+    import sys
+
+    from comken.core.config import _reset_cached_config
+
+    from src.run import read_file_paths
+
+    _reset_cached_config()
+    original_argv = sys.argv
+    sys.argv = [str(tmp_path / "fake_main.py")]
+    try:
+        return read_file_paths()
+    finally:
+        sys.argv = original_argv
+        _reset_cached_config()
 
 
 # ── テスト本体 ───────────────────────────────────────────────────────────
@@ -381,7 +410,7 @@ def test_e2e_related_table(tmp_path: Path) -> None:
 
 
 def test_e2e_column_names_csv(tmp_path: Path) -> None:
-    """``列名の対応.csv`` は解決できた列だけが出る ( 管理番号列を持たない)。 """
+    """``列名の対応.csv`` は解決できた列だけが出る ( 管理番号列を持たない)。"""
     output_dir = _run_e2e(tmp_path)
 
     columns, rows = _read_csv(output_dir / "列名の対応.csv")
@@ -416,15 +445,13 @@ def test_e2e_full_aggregate_table_all_kinds_are_human_readable(tmp_path: Path) -
     """
     from src.fetch import run_fetch
     from src.master import MasterEntry
-    from src.settings import load_settings
     from src.tables import run_tables
 
     master = tmp_path / "master.xlsx"
     _build_master(master)
     _write_ini(tmp_path, master)
-    settings = dataclasses.replace(
-        load_settings(project_root=tmp_path), output_dir=tmp_path / "output"
-    )
+    file_paths = _load_file_paths_for_test(tmp_path)
+    output_dir = tmp_path / "output"
 
     describe = {
         "reportMetadata": {
@@ -465,10 +492,14 @@ def test_e2e_full_aggregate_table_all_kinds_are_human_readable(tmp_path: Path) -
         url=f"{DOMAIN}/00O000000000001/view",
         enabled=True,
     )
-    outcomes = run_fetch(settings, [entry], site_for=_site_for(client))
-    run_tables(settings.output_dir, [o.record for o in outcomes if o.record])
+    outcomes = run_fetch(
+        [entry],
+        describe_csv_path=file_paths.describe_csv_path,
+        site_for=_site_for(client),
+    )
+    run_tables(output_dir, [o.record for o in outcomes if o.record])
 
-    sheets = _read_xlsx(settings.output_dir / "SOQL調査.xlsx")
+    sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
     rows = sheets["集計"]
     by_kind: dict[str, list[dict[str, str]]] = {}
     for row in rows:
@@ -508,15 +539,13 @@ def test_e2e_full_condition_table_all_kinds_are_human_readable(tmp_path: Path) -
     """
     from src.fetch import run_fetch
     from src.master import MasterEntry
-    from src.settings import load_settings
     from src.tables import run_tables
 
     master = tmp_path / "master.xlsx"
     _build_master(master)
     _write_ini(tmp_path, master)
-    settings = dataclasses.replace(
-        load_settings(project_root=tmp_path), output_dir=tmp_path / "output"
-    )
+    file_paths = _load_file_paths_for_test(tmp_path)
+    output_dir = tmp_path / "output"
 
     describe = {
         "reportMetadata": {
@@ -558,10 +587,14 @@ def test_e2e_full_condition_table_all_kinds_are_human_readable(tmp_path: Path) -
         url=f"{DOMAIN}/00O000000000001/view",
         enabled=True,
     )
-    outcomes = run_fetch(settings, [entry], site_for=_site_for(client))
-    run_tables(settings.output_dir, [o.record for o in outcomes if o.record])
+    outcomes = run_fetch(
+        [entry],
+        describe_csv_path=file_paths.describe_csv_path,
+        site_for=_site_for(client),
+    )
+    run_tables(output_dir, [o.record for o in outcomes if o.record])
 
-    sheets = _read_xlsx(settings.output_dir / "SOQL調査.xlsx")
+    sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
     rows = sheets["条件"]
     by_kind: dict[str, list[dict[str, str]]] = {}
     for row in rows:

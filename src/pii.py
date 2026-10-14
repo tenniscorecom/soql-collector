@@ -97,7 +97,7 @@ MATCHING_COLUMNS_LIMIT = 10
 
 @dataclass(frozen=True)
 class PIIConfig:
-    """PII 判定の設定。 ``settings.py`` から渡される。"""
+    """PII 判定の設定。 呼び出し側（ ``run.py`` / ``fetch.py`` ） から渡される。"""
 
     keywords: tuple[str, ...]
     person_objects: tuple[str, ...]

@@ -1887,34 +1887,71 @@ def test_merge_and_write_failed_header_raises(tmp_path: Path) -> None:
     )
 
 
-# ── Settings 経由のテスト ─────────────────────────────────────────────
+# ── config.ini 読み込みのテスト ─────────────────────────────────────────────
 
 
-def test_load_settings_default_column_map_csv_path(tmp_path: Path) -> None:
-    """``[FILES] COLUMN_MAP_CSV_PATH`` 未設定のとき既定値 ``./data/列の対応.csv``。"""
-    from src.settings import load_settings
-
-    master_path = tmp_path / "master.xlsx"
-    (tmp_path / "config.ini").write_text(
-        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n",
-        encoding="utf-8",
-    )
-    settings = load_settings(tmp_path)
-    assert settings.column_map_csv_path == (tmp_path / "data" / "列の対応.csv").resolve()
-
-
-def test_load_settings_ignores_soql_count_legacy(tmp_path: Path) -> None:
+def test_config_ini_ignores_soql_count_legacy(tmp_path: Path) -> None:
     """``[CHECKS] SOQL_COUNT`` が旧 config.ini に残っていても無視する
     （ SOQL の件数チェックは 2026-10-14 に撤去 ）。
+
+    comken の ``Config`` は未知のセクションを読まないので、 エラーにせず
+    無視できることを確認する。
     """
-    from src.settings import Settings, load_settings
+    from comken.core.config import Config, _reset_cached_config
 
     master_path = tmp_path / "master.xlsx"
     (tmp_path / "config.ini").write_text(
         f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n[CHECKS]\nSOQL_COUNT = ○\n",
         encoding="utf-8",
     )
-    settings = load_settings(tmp_path)
-    assert settings.master_xlsx_path == master_path
-    assert not hasattr(settings, "soql_count")
-    assert isinstance(settings, Settings)
+
+    _reset_cached_config()
+    cfg = Config(tmp_path / "config.ini")
+    # [FILES] はそのまま読める
+    assert cfg.FILES.MASTER_XLSX_PATH == master_path
+    # [CHECKS] の SOQL_COUNT キーは存在するが、 どこからも読まれない
+    # （ 既定の動作と同じ ）
+
+
+def test_config_ini_ignores_unknown_sections(tmp_path: Path) -> None:
+    """``[LIMITS]`` / ``[SF]`` / ``[PII]`` / ``[SIMILAR]`` / ``[OBJECTS]`` などの
+    旧セクションが config.ini に残っていても、 エラーにならず無視される
+    （ 移行を段階的に行えることを確認 ）。
+    """
+    from comken.core.config import Config, _reset_cached_config
+
+    master_path = tmp_path / "master.xlsx"
+    (tmp_path / "config.ini").write_text(
+        f"[FILES]\nMASTER_XLSX_PATH = {master_path}\n"
+        "[LIMITS]\nRELATED_MAX = 99\nRELATED_DEPTH = 2\n"
+        "[SF]\nCREDENTIAL_PREFIX = dev\n"
+        "[CHECKS]\nROW_LIMIT = 〇\n"
+        "[PII]\nKEYWORDS = 氏名\nOBJECTS = Contact\n"
+        "[SIMILAR]\nCOLUMN_SIMILARITY = 0.5\n"
+        "[OBJECTS]\nNAMES = Account,Contact\n",
+        encoding="utf-8",
+    )
+
+    _reset_cached_config()
+    cfg = Config(tmp_path / "config.ini")
+    # 必須キーはそのまま読める
+    assert cfg.FILES.MASTER_XLSX_PATH == master_path
+
+
+def test_config_ini_missing_required_key_raises(tmp_path: Path) -> None:
+    """``[FILES] MASTER_XLSX_PATH`` が無いと comken の ``ConfigKeyNotFoundError`` が
+    出ること、 メッセージにキー名が入ること。
+    """
+    from comken.core.config import Config, _reset_cached_config
+    from comken.exceptions import ConfigKeyNotFoundError
+
+    (tmp_path / "config.ini").write_text(
+        "[FILES]\nOUTPUT_DIR = ./output\n",
+        encoding="utf-8",
+    )
+    _reset_cached_config()
+    cfg = Config(tmp_path / "config.ini")
+    with pytest.raises(ConfigKeyNotFoundError) as exc_info:
+        _ = cfg.FILES.MASTER_XLSX_PATH
+    # メッセージにキー名が出る
+    assert "MASTER_XLSX_PATH" in str(exc_info.value)

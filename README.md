@@ -3,8 +3,9 @@
 Salesforce のレポート describe（レポート本体 + 主オブジェクト + 関連オブジェクト）を
 **管理番号ごと**にとってメモリに保持して、 人が Excel で見るブック
 ``SOQL調査.xlsx`` と、 ダウンローダー用の ``列名の対応.csv`` を作るツールです。
-関連オブジェクトは、 config.ini の `RELATED_DEPTH` 段数まで幅優先で掘ります
-（既定 3）。 1 段だけ（ 今までの挙動 ） にしたいときは `RELATED_DEPTH = 1` にしてください。
+関連オブジェクトは、 コードの定数 ``RELATED_DEPTH`` 段数まで幅優先で掘ります
+（ 既定 3、 `src/fetch.py` ）。 1 段だけ（ 今までの挙動 ） にしたいときは
+`src/fetch.py` の `RELATED_DEPTH = 1` に直してください。
 
 どのレポートを取るかは管理表の「有効」列が `○` のものすべて。 個別に取りたい
 ときは、その行だけ `○` にして、ほかを `×` にします。
@@ -28,12 +29,14 @@ CSV / ログ / 警告 / 例外メッセージには絶対に出さない。
 
 1. Python 3.11 以上を用意する
 2. `config.ini.example` を `config.ini` にコピーし， `[FILES] MASTER_XLSX_PATH`
-   / `OUTPUT_DIR` / `DESCRIBE_CSV_PATH` / `COLUMN_MAP_CSV_PATH`，
-   `[LIMITS] RELATED_MAX` / `[LIMITS] RELATED_DEPTH`，
-   `[SF] CREDENTIAL_PREFIX`， 必要に応じて `[CHECKS] ROW_LIMIT` /
-   `[PII] KEYWORDS` / `[PII] OBJECTS` /
-   `[SIMILAR] COLUMN_SIMILARITY` を書き換える （詳細は
-   [docs/使い方.md](docs/使い方.md)）
+   / `OUTPUT_DIR` / `DESCRIBE_CSV_PATH` / `COLUMN_MAP_CSV_PATH` の **4 つの
+   キーはすべて必須**。 どれか 1 つでも config.ini に無いと comken が
+   `ConfigKeyNotFoundError` （ メッセージにキー名が出る ） で止まる （ 旧
+   config.ini に `[LIMITS]` / `[SF]` / `[CHECKS]` / `[PII]` / `[SIMILAR]`
+   などのセクションが残っていても無視される ）。 関連オブジェクトの段数・
+   2000 件チェック・ 個人情報判定のキーワードなどはコードの定数
+   （ `src/fetch.py` / `src/pii.py` / `src/run.py` ） にあるので、
+   config.ini.example のコメントを参照
 3. comken の親（既定 `F:\dev`）を `PYTHONPATH` に含める。 `実行.bat` を
    使うと PYTHONPATH の設定を代行してくれる
 
@@ -73,14 +76,14 @@ python -m trial.fetch_one_report <レポートのURL> [管理番号]
 
 ## 出力ファイル
 
-`[FILES] OUTPUT_DIR`（既定 `./output`）に次の 2 種類が置かれる。
+`[FILES] OUTPUT_DIR`（例: `./output`）に次の 2 種類が置かれる。
 
 | ファイル | 中身 |
 |---|---|
 | `SOQL調査.xlsx` | 人が見る 1 冊のブック。 毎回その回の結果で丸ごと作り直す。 シートは 「 一覧 」 「 取得できなかった項目 」 「 項目の対応 」 「 条件 」 「 集計 」 「 似たレポート 」 「 警告 」 「 項目一覧 」 「 関連 」 の 9 枚 |
 | `列名の対応.csv` | 全レポート分を **積み上げる** ダウンローダー用 CSV。 `主オブジェクト, SOQL列名, 表示名, 備考, 更新日` の 5 列。 その回に取れた (主オブジェクト, SOQL列名) の行は今回の内容で入れ替わり、 他は残る |
 
-加えて、 `[FILES] DESCRIBE_CSV_PATH` （ 既定 `./data/項目定義.csv` ） に
+加えて、 `[FILES] DESCRIBE_CSV_PATH` （ 例: `./data/項目定義.csv` ） に
 **オブジェクト describe のキャッシュ** が書かれる。 1 行 1 項目、 1 オブジェクト
 の行は同じ取得日時。 列は `組織 / オブジェクト / オブジェクト表示名 / カスタム
 オブジェクト / 項目 API 名 / 項目表示名 / 型 / 参照先 / リレーション名 / カスタム
@@ -88,7 +91,7 @@ python -m trial.fetch_one_report <レポートのURL> [管理番号]
 の値は入らない** 。 レポートは毎回 Salesforce に聞くが、 オブジェクトの
 describe はここに溜めたものを使い、 無いものだけ API から取る。
 
-さらに、 `[FILES] COLUMN_MAP_CSV_PATH` （ 既定 `./data/列の対応.csv` ） に
+さらに、 `[FILES] COLUMN_MAP_CSV_PATH` （ 例: `./data/列の対応.csv` ） に
 **人が手で見比べる列の対応表** を書く。 自動で取れない列だけ、 人が
 Excel で開いて SOQL 列名を直したり空欄を埋めたりする。 列は
 `主オブジェクト, 列キー, 表示名, SOQL列名, メモ, 使っているレポート数, 更新日`

@@ -21,7 +21,6 @@ from comken.exceptions import (
 from src.describe_store import DescribeStore
 from src.fetch import _check_row_count, _fetch_one
 from src.master import MasterEntry
-from src.settings import Settings
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
@@ -114,20 +113,15 @@ def _site_for(client: _FakeClient):
     return resolver
 
 
-def _settings(tmp_path: Path, *, row_limit: bool = True) -> Settings:
-    return Settings(
-        master_xlsx_path=tmp_path / "master.xlsx",
-        output_dir=tmp_path / "output",
-        related_max=40,
-        related_depth=1,
-        credential_prefix="",
-        row_limit=row_limit,
-        pii_keywords=(),
-        pii_person_objects=(),
-        similar_column_similarity=0.8,
-        describe_csv_path=tmp_path / "describe.csv",
-        column_map_csv_path=tmp_path / "column_map.csv",
-    )
+def _settings(tmp_path: Path, *, row_limit: bool = True) -> dict:
+    """``_fetch_one`` に渡す kwargs を返す。"""
+    return {
+        "related_max": 40,
+        "related_depth": 1,
+        "row_limit": row_limit,
+        "pii_keywords": (),
+        "pii_person_objects": (),
+    }
 
 
 def _metadata(report_format: str = "TABULAR") -> dict:
@@ -242,11 +236,11 @@ def test_row_limit_disabled_skips_get(tmp_path: Path) -> None:
     settings = _settings(tmp_path, row_limit=False)
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     outcome = _fetch_one(
-        settings,
         entry,
         site_for=_site_for(client),
         store=DescribeStore.empty(tmp_path / "describe.csv"),
         refresh_set=set(),
+        **settings,
     )
     assert outcome.status == "ok"
     assert outcome.record is not None
@@ -287,11 +281,11 @@ def test_row_data_never_leaks_to_output(tmp_path: Path, caplog: pytest.LogCaptur
     settings = _settings(tmp_path)
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     outcome = _fetch_one(
-        settings,
         entry,
         site_for=_site_for(client2),
         store=DescribeStore.empty(tmp_path / "describe.csv"),
         refresh_set=set(),
+        **settings,
     )
     # 警告 / エラーメッセージに目印が入らない
     assert outcome.status == "ok"

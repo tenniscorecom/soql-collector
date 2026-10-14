@@ -193,9 +193,7 @@ def describe_to_csv_rows(
     object_custom = isinstance(object_custom_raw, bool) and object_custom_raw
     fields_raw = describe.get("fields")
     fields = fields_raw if isinstance(fields_raw, list) else []
-    return _describe_to_csv_rows(
-        org, object_name, object_label, object_custom, fields, fetched_at
-    )
+    return _describe_to_csv_rows(org, object_name, object_label, object_custom, fields, fetched_at)
 
 
 def csv_rows_to_describe(rows: list[dict[str, str]]) -> dict[str, Any]:
@@ -432,9 +430,7 @@ class DescribeStore:
             # メモリには載っているので、 この実行中は API を再呼びしない
             logger.warning("CSV への書き出しに失敗: %s", exc)
 
-    def record_api_failure(
-        self, org: str, object_name: str, warning: str
-    ) -> None:
+    def record_api_failure(self, org: str, object_name: str, warning: str) -> None:
         """API の失敗をメモリにだけ覚える。 CSV には書かない。"""
         key = _key(org, object_name)
         self.memory_cache[key] = {

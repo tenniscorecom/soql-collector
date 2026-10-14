@@ -17,7 +17,6 @@ from src.fetch import (
     run_fetch,
 )
 from src.master import MasterEntry
-from src.settings import Settings
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
@@ -137,20 +136,16 @@ def _site_for(client: _FakeClient):
     return resolver, site
 
 
-def _settings(tmp_path: Path, related_max: int = 40, related_depth: int = 1) -> Settings:
-    return Settings(
-        master_xlsx_path=tmp_path / "master.xlsx",
-        output_dir=tmp_path / "output",
-        related_max=related_max,
-        related_depth=related_depth,
-        credential_prefix="",
-        row_limit=True,
-        pii_keywords=("name", "電話"),
-        pii_person_objects=("Contact",),
-        similar_column_similarity=0.8,
-        describe_csv_path=tmp_path / "describe.csv",
-        column_map_csv_path=tmp_path / "column_map.csv",
-    )
+def _settings(tmp_path: Path, related_max: int = 40, related_depth: int = 1) -> dict:
+    """``run_fetch`` に渡す kwargs を返す。"""
+    return {
+        "related_max": related_max,
+        "related_depth": related_depth,
+        "row_limit": True,
+        "pii_keywords": ("name", "電話"),
+        "pii_person_objects": ("Contact",),
+        "describe_csv_path": tmp_path / "describe.csv",
+    }
 
 
 def _output_dir_exists(tmp_path: Path) -> Path:
@@ -307,9 +302,8 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
         },
     )
     site_for, _site = _site_for(client)
-    settings = _settings(tmp_path)
 
-    outcomes = run_fetch(settings, [entry], site_for=site_for)
+    outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
 
     assert outcomes[0].status == "ok"
     assert outcomes[0].record is not None
@@ -357,7 +351,7 @@ def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
     payload = _record_to_payload(record)
     opp = payload["objects"]["Opportunity"]
     # オブジェクトは 4 キーだけ
@@ -398,7 +392,7 @@ def test_objects_dict_does_not_mutate_original_describe(tmp_path: Path) -> None:
         object_describes={"Opportunity": original, "Account": _main_describe("Account")},
     )
     site_for, _ = _site_for(client)
-    run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+    run_fetch([entry], site_for=site_for, **_settings(tmp_path))
 
     assert original == snapshot
 
@@ -426,7 +420,7 @@ def test_related_objects_dedup_excludes_main_polymorphic(tmp_path: Path) -> None
         },
     )
     site_for, _ = _site_for(client)
-    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
     payload = _record_to_payload(record)
     # 順序: Account, Contact, Lead, User（出現順。Account 重複は出ない）
     assert list(payload["objects"]) == ["Opportunity", "Account", "Contact", "Lead", "User"]
@@ -442,7 +436,7 @@ def test_related_object_failure_becomes_warning(tmp_path: Path) -> None:
         errors={"User": SalesforceRequestError("GET", "/sobjects/User/describe", 404, "Not Found")},
     )
     site_for, _ = _site_for(client)
-    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
     payload = _record_to_payload(record)
     assert payload["主オブジェクト"] == "Opportunity"
     assert "Account" in payload["objects"]
@@ -474,7 +468,7 @@ def test_related_max_overflow_warns(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    record = run_fetch(_settings(tmp_path, related_max=2), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path, related_max=2))[0].record
     payload = _record_to_payload(record)
     assert list(payload["objects"]) == ["Opportunity", "Account", "Contact"]
     warning = next(w for w in payload["warnings"] if "上限" in w)
@@ -509,7 +503,7 @@ def _run_task_chain(tmp_path: Path, *, related_depth: int) -> dict:
     )
     site_for, _ = _site_for(client)
     record = run_fetch(
-        _settings(tmp_path, related_depth=related_depth), [entry], site_for=site_for
+        [entry], site_for=site_for, **_settings(tmp_path, related_depth=related_depth)
     )[0].record
     return _record_to_payload(record)
 
@@ -581,7 +575,7 @@ def test_related_depth_dedup_across_paths(tmp_path: Path) -> None:
     describe = {"reportMetadata": {"reportType": {"type": "X"}, "reportFormat": "TABULAR"}}
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
-    record = run_fetch(_settings(tmp_path, related_depth=3), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path, related_depth=3))[0].record
     payload = _record_to_payload(record)
 
     # ``Y`` は 1 回しか describe されていない
@@ -609,7 +603,7 @@ def test_related_depth_stops_at_cycle(tmp_path: Path) -> None:
     describe = {"reportMetadata": {"reportType": {"type": "A"}, "reportFormat": "TABULAR"}}
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
-    record = run_fetch(_settings(tmp_path, related_depth=5), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path, related_depth=5))[0].record
     payload = _record_to_payload(record)
 
     # オブジェクトは 3 つとも取れる （ 各段で重複はなし ） 。
@@ -643,9 +637,9 @@ def test_related_depth_max_limits_total_across_levels(tmp_path: Path) -> None:
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
     record = run_fetch(
-        _settings(tmp_path, related_depth=3, related_max=3),
         [entry],
         site_for=site_for,
+        **_settings(tmp_path, related_depth=3, related_max=3),
     )[0].record
     payload = _record_to_payload(record)
 
@@ -729,7 +723,7 @@ def test_related_objects_multiple_parents_to_same_child_yields_separate_rows(
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
     record = run_fetch(
-        _settings(tmp_path, related_depth=1, related_max=10), [entry], site_for=site_for
+        [entry], site_for=site_for, **_settings(tmp_path, related_depth=1, related_max=10)
     )[0].record
     payload = _record_to_payload(record)
 
@@ -785,7 +779,7 @@ def test_related_objects_polymorphic_reference_yields_separate_rows(
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
     record = run_fetch(
-        _settings(tmp_path, related_depth=1, related_max=10), [entry], site_for=site_for
+        [entry], site_for=site_for, **_settings(tmp_path, related_depth=1, related_max=10)
     )[0].record
     payload = _record_to_payload(record)
 
@@ -828,9 +822,7 @@ def test_related_table_omits_child_dropped_by_limit(tmp_path: Path) -> None:
     site_for, _ = _site_for(client)
     # RELATED_MAX=1 で Account だけ採用、 Contact は skipped。
     record = run_fetch(
-        _settings(tmp_path, related_depth=3, related_max=1),
-        [entry],
-        site_for=site_for,
+        [entry], site_for=site_for, **_settings(tmp_path, related_depth=3, related_max=1)
     )[0].record
     payload = _record_to_payload(record)
 
@@ -1088,7 +1080,7 @@ def test_run_fetch_emits_main_and_self_references_in_related_objects(
     client = _FakeClient(describe=describe, object_describes=objects)
     site_for, _ = _site_for(client)
     record = run_fetch(
-        _settings(tmp_path, related_depth=3, related_max=40), [entry], site_for=site_for
+        [entry], site_for=site_for, **_settings(tmp_path, related_depth=3, related_max=40)
     )[0].record
     payload = _record_to_payload(record)
 
@@ -1134,7 +1126,7 @@ def test_main_object_resolves_custom_entity_dollar_type(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
     payload = _record_to_payload(record)
 
     # 主オブジェクトが解決済みで、 objects に Project__c が入る
@@ -1160,7 +1152,7 @@ def test_main_object_describe_failure_yields_null(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
     payload = _record_to_payload(record)
     assert payload["主オブジェクト"] is None
     assert payload["objects"] == {}
@@ -1180,7 +1172,7 @@ def test_auth_error_on_main_object_marks_id_failed(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+    outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
     assert outcomes[0].status == "failed"
     assert "401" in (outcomes[0].error or "")
     assert outcomes[0].record is None
@@ -1201,7 +1193,7 @@ def test_auth_error_on_related_object_marks_id_failed(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+    outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
     assert outcomes[0].status == "failed"
     assert "403" in (outcomes[0].error or "")
     # 主オブジェクトは書かれる前なので JSON 無し
@@ -1212,7 +1204,7 @@ def test_bad_url_marks_id_failed(tmp_path: Path) -> None:
     """URL が壊れている行は ``fetch`` 段で失敗として報告。"""
     entry = MasterEntry(key="1", summary="", url="https://壊れたURL", enabled=True)
     site_for, _ = _site_for(_FakeClient(describe={}))
-    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+    outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
     assert outcomes[0].status == "failed"
     assert "URL" in (outcomes[0].error or "")
 
@@ -1229,12 +1221,11 @@ def test_object_describe_cached_across_ids(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    settings = _settings(tmp_path)
     entries = [
         MasterEntry(key="1001", summary="", url=f"{DOMAIN}/00O5g00000AAAAA/view", enabled=True),
         MasterEntry(key="1002", summary="", url=f"{DOMAIN}/00O5g00000BBBBB/view", enabled=True),
     ]
-    run_fetch(settings, entries, site_for=site_for)
+    run_fetch(entries, site_for=site_for, **_settings(tmp_path))
     # Opportunity と Account は 2 ID で参照されるが、HTTP は 1 回ずつ
     assert client.describe_object_calls.count("Opportunity") == 1
     assert client.describe_object_calls.count("Account") == 1
@@ -1252,12 +1243,11 @@ def test_failed_object_cached(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    settings = _settings(tmp_path)
     entries = [
         MasterEntry(key="1001", summary="", url=f"{DOMAIN}/00O5g00000AAAAA/view", enabled=True),
         MasterEntry(key="1002", summary="", url=f"{DOMAIN}/00O5g00000BBBBB/view", enabled=True),
     ]
-    outcomes = run_fetch(settings, entries, site_for=site_for)
+    outcomes = run_fetch(entries, site_for=site_for, **_settings(tmp_path))
     # 両方 OK（警告付き）
     assert outcomes[0].status == "ok"
     assert outcomes[1].status == "ok"
@@ -1277,7 +1267,7 @@ def test_partial_failure_exit_code_is_one(tmp_path: Path) -> None:
         object_describes={"Opportunity": _main_describe("Opportunity")},
     )
     site_for, _ = _site_for(client)
-    outcomes = run_fetch(_settings(tmp_path), entries, site_for=site_for)
+    outcomes = run_fetch(entries, site_for=site_for, **_settings(tmp_path))
     statuses = [o.status for o in outcomes]
     assert statuses == ["ok", "failed", "ok"]
 
@@ -1290,7 +1280,7 @@ def test_dry_run_does_not_open_site(tmp_path: Path) -> None:
     )
     client = _FakeClient(describe={})
     site_for, _site = _site_for(client)
-    outcomes = run_fetch(_settings(tmp_path), [entry], dry_run=True, site_for=site_for)
+    outcomes = run_fetch([entry], dry_run=True, site_for=site_for, **_settings(tmp_path))
     assert outcomes[0].status == "dry-run"
     assert _site.open_count == 0
     # 出力先にファイルが無い
@@ -1331,8 +1321,7 @@ def test_site_for_salesforce_error_marks_id_failed(tmp_path: Path) -> None:
 
         return call
 
-    settings = _settings(tmp_path)
-    outcomes = run_fetch(settings, [good, bad], site_for=resolver)
+    outcomes = run_fetch([good, bad], site_for=resolver, **_settings(tmp_path))
 
     # good は OK、bad は failed（個別）
     statuses = {o.entry.key: o.status for o in outcomes}
@@ -1363,7 +1352,7 @@ def test_site_for_comken_error_marks_id_failed(tmp_path: Path) -> None:
     def resolver(url: str) -> _FakeSite:
         raise ComkenError("何か comken のエラー")
 
-    outcomes = run_fetch(_settings(tmp_path), [bad], site_for=resolver)
+    outcomes = run_fetch([bad], site_for=resolver, **_settings(tmp_path))
 
     assert outcomes[0].status == "failed"
     assert outcomes[0].error and "接続先を決定できません" in outcomes[0].error
@@ -1384,7 +1373,7 @@ def test_run_fetch_does_not_write_any_files(tmp_path: Path) -> None:
     )
     site_for, _ = _site_for(client)
 
-    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+    outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
 
     assert outcomes[0].status == "ok"
     assert outcomes[0].record is not None
@@ -1413,7 +1402,7 @@ def test_run_fetch_does_not_use_atomic_write(tmp_path: Path) -> None:
     )
     site_for, _ = _site_for(client)
 
-    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+    outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
     assert outcomes[0].status == "ok"
     assert outcomes[0].record is not None
     # 出力先ディレクトリも空のまま （ ``run_fetch`` はフォルダも作らない ）
@@ -1464,7 +1453,7 @@ def test_main_object_describe_called_once_per_id(tmp_path: Path) -> None:
     )
     site_for, _ = _site_for(client)
 
-    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+    outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
 
     assert outcomes[0].status == "ok"
     # 主オブジェクト ``Opportunity`` に対する ``describe_object`` 呼び出しは 1 回
@@ -1495,7 +1484,7 @@ def test_main_object_describe_called_once_for_custom_entity_with_winning_candida
     )
     site_for, _ = _site_for(client)
 
-    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+    outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
 
     assert outcomes[0].status == "ok"
     # ``Project__c`` に対する ``describe_object`` は 1 回。 他の候補は試さない
@@ -1952,7 +1941,7 @@ def test_record_report_has_no_heavy_keys(tmp_path: Path) -> None:
 
     import json as _json
 
-    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
     raw_text = _json.dumps({"report": record.report, "objects": record.objects}, ensure_ascii=False)
 
     # ``"重いキー":`` という**キー形**が出現しない（ 出力 record の中に
@@ -2006,7 +1995,7 @@ def test_related_objects_collected_from_original_describe_not_slimmed(
     )
     site_for, _ = _site_for(client)
 
-    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
     payload = _record_to_payload(record)
 
     # ``Account`` が出てきている（ slim 後の fields から集めていれば出ない）
@@ -2221,7 +2210,7 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
     )
     site_for, _ = _site_for(client)
 
-    record = run_fetch(_settings(tmp_path), [entry], site_for=site_for)[0].record
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
     payload = _record_to_payload(record)
 
     # slim 後の ``fields`` から集めていると ``Account`` が**取れない**
@@ -2269,9 +2258,8 @@ def test_run_fetch_does_not_leak_row_data_to_logs(
         get_table=_TableWithSecret(),
     )
     site_for, _ = _site_for(client)
-    settings = _settings(tmp_path)
 
-    outcomes = run_fetch(settings, [entry], site_for=site_for)
+    outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
 
     assert outcomes[0].status == "ok"
     # ログに値そのものが漏れていない （ DEBUG 以上全部 ）
@@ -2301,7 +2289,7 @@ def test_run_fetch_emits_each_outcome_warning_once_at_warning_level(
 
     expected_warning = "オブジェクト User の describe に失敗（HTTP 404: Not Found）"
 
-    outcomes = run_fetch(_settings(tmp_path), [entry], site_for=site_for)
+    outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
 
     assert outcomes[0].status == "ok"
     # warnings に User の失敗がちょうど 1 件だけ積まれている
@@ -2426,11 +2414,11 @@ def test_run_fetch_fetches_missing_object_along_user_path(tmp_path: Path) -> Non
     store = DescribeStore.empty(tmp_path / "describe.csv")
 
     outcomes = run_fetch(
-        _settings(tmp_path),
         [entry],
         site_for=site_for,
         describe_store=store,
         column_map_overrides=_path_owner_overrides(),
+        **_settings(tmp_path),
     )
 
     assert outcomes[0].status == "ok"
@@ -2470,11 +2458,11 @@ def test_run_fetch_caches_fetched_user_across_reports(tmp_path: Path) -> None:
     store = DescribeStore.empty(tmp_path / "describe.csv")
 
     outcomes = run_fetch(
-        _settings(tmp_path),
         [entry1, entry2],
         site_for=site_for,
         describe_store=store,
         column_map_overrides=_path_owner_overrides(),
+        **_settings(tmp_path),
     )
 
     # 2 件とも成功
@@ -2512,11 +2500,11 @@ def test_run_fetch_uses_describe_csv_cache_for_user(tmp_path: Path) -> None:
     store.csv_index[(org, "user")] = user_describe
 
     outcomes = run_fetch(
-        _settings(tmp_path),
         [entry],
         site_for=site_for,
         describe_store=store,
         column_map_overrides=_path_owner_overrides(),
+        **_settings(tmp_path),
     )
 
     assert outcomes[0].status == "ok"
@@ -2573,11 +2561,11 @@ def test_run_fetch_typo_in_path_warns_with_candidates(tmp_path: Path) -> None:
     }
 
     outcomes = run_fetch(
-        _settings(tmp_path),
         [entry],
         site_for=site_for,
         describe_store=store,
         column_map_overrides=overrides,
+        **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
     record = outcomes[0].record
@@ -2609,11 +2597,11 @@ def test_run_fetch_path_fetch_404_warns_and_record_ok(tmp_path: Path) -> None:
     store = DescribeStore.empty(tmp_path / "describe.csv")
 
     outcomes = run_fetch(
-        _settings(tmp_path),
         [entry],
         site_for=site_for,
         describe_store=store,
         column_map_overrides=_path_owner_overrides(),
+        **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
     record = outcomes[0].record
@@ -2645,11 +2633,11 @@ def test_run_fetch_path_fetch_401_marks_report_failed(tmp_path: Path) -> None:
     store = DescribeStore.empty(tmp_path / "describe.csv")
 
     outcomes = run_fetch(
-        _settings(tmp_path),
         [entry],
         site_for=site_for,
         describe_store=store,
         column_map_overrides=_path_owner_overrides(),
+        **_settings(tmp_path),
     )
 
     assert outcomes[0].status == "failed"
@@ -2711,11 +2699,11 @@ def test_run_fetch_handles_polymorphic_what(tmp_path: Path) -> None:
     }
 
     outcomes = run_fetch(
-        _settings(tmp_path),
         [entry],
         site_for=site_for,
         describe_store=store,
         column_map_overrides=overrides,
+        **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
     row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.What")
@@ -2759,11 +2747,11 @@ def test_run_fetch_path_too_long_warns(tmp_path: Path) -> None:
     }
 
     outcomes = run_fetch(
-        _settings(tmp_path),
         [entry],
         site_for=site_for,
         describe_store=store,
         column_map_overrides=overrides,
+        **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
     row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.A.B.C.D.E.F")
@@ -2806,11 +2794,11 @@ def test_run_fetch_auto_resolved_does_not_call_fetcher(tmp_path: Path) -> None:
     }
 
     outcomes = run_fetch(
-        _settings(tmp_path),
         [entry],
         site_for=site_for,
         describe_store=store,
         column_map_overrides=overrides,
+        **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
     # 自動の Name がそのまま残っている
@@ -2849,12 +2837,7 @@ def test_run_fetch_no_fetcher_legacy_behavior(tmp_path: Path) -> None:
     store = DescribeStore.empty(tmp_path / "describe.csv")
 
     # overrides 無し
-    outcomes = run_fetch(
-        _settings(tmp_path),
-        [entry],
-        site_for=site_for,
-        describe_store=store,
-    )
+    outcomes = run_fetch([entry], site_for=site_for, describe_store=store, **_settings(tmp_path))
     assert outcomes[0].status == "ok"
     # fetcher は呼ばれない (apply_overrides の経路補完は走らない)
     assert "User" not in client.describe_object_calls

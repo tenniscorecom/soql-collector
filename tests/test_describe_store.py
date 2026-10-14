@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import csv
+import sys
 from pathlib import Path
 
 from comken.exceptions import CSVError, SalesforceRequestError
@@ -32,7 +33,6 @@ from src.describe_store import (
 )
 from src.fetch import _slim_object, run_fetch
 from src.master import MasterEntry
-from src.settings import Settings
 
 # 既存テストと揃える
 DOMAIN_A = "https://example.my.salesforce.com/lightning/r/Report"
@@ -102,20 +102,25 @@ def _site_for(client: _FakeClient):
 # ── ヘルパー ─────────────────────────────────────────────────────────────
 
 
-def _settings(tmp_path: Path) -> Settings:
-    return Settings(
-        master_xlsx_path=tmp_path / "master.xlsx",
-        output_dir=tmp_path / "output",
-        related_max=40,
-        related_depth=1,
-        credential_prefix="",
-        row_limit=False,  # 2000 件チェックは行わない （ API を呼ばない ）
-        pii_keywords=("name",),
-        pii_person_objects=("Contact",),
-        similar_column_similarity=0.8,
-        describe_csv_path=tmp_path / "describe.csv",
-        column_map_csv_path=tmp_path / "column_map.csv",
-    )
+def _settings(tmp_path: Path) -> dict:
+    """``run_fetch`` に渡す kwargs を返す。"""
+    return {
+        "related_max": 40,
+        "related_depth": 1,
+        "row_limit": False,  # 2000 件チェックは行わない （ API を呼ばない ）
+        "pii_keywords": ("name",),
+        "pii_person_objects": ("Contact",),
+        "describe_csv_path": tmp_path / "describe.csv",
+    }
+
+    return {
+        "related_max": 40,
+        "related_depth": 1,
+        "row_limit": False,  # 2000 件チェックは行わない （ API を呼ばない ）
+        "pii_keywords": ("name",),
+        "pii_person_objects": ("Contact",),
+        "describe_csv_path": tmp_path / "describe.csv",
+    }
 
 
 def _opportunity_describe() -> dict:
@@ -269,12 +274,12 @@ def test_run_persists_describe_to_csv(tmp_path: Path) -> None:
         url=f"{DOMAIN_A}/00O5g00000AAAAA/view",
         enabled=True,
     )
-    outcomes = run_fetch(settings, [entry], site_for=_site_for(client))
+    outcomes = run_fetch([entry], site_for=_site_for(client), **settings)
     assert outcomes[0].status == "ok"
     assert client.describe_object_calls == ["Opportunity"]
 
     # CSV に Opportunity の行が書かれている
-    path = settings.describe_csv_path
+    path = settings["describe_csv_path"]
     assert path.exists()
     rows = _read_csv_rows(path)
     assert any(row["オブジェクト"] == "Opportunity" for row in rows)
@@ -315,13 +320,13 @@ def test_second_run_does_not_call_api_for_cached_object(tmp_path: Path) -> None:
         describe=metadata,
         object_describes={"Opportunity": opportunity},
     )
-    store1 = DescribeStore.empty(settings.describe_csv_path)
+    store1 = DescribeStore.empty(settings["describe_csv_path"])
     first_outcomes = run_fetch(
-        settings,
         [entry],
         site_for=_site_for(client1),
         describe_store=store1,
         refresh_set=set(),
+        **settings,
     )
     first_record = first_outcomes[0].record
     first_column_map = first_record.column_map if first_record else None
@@ -333,14 +338,14 @@ def test_second_run_does_not_call_api_for_cached_object(tmp_path: Path) -> None:
         describe=metadata,
         object_describes={"Opportunity": opportunity},
     )
-    store2 = DescribeStore.load(settings.describe_csv_path)
+    store2 = DescribeStore.load(settings["describe_csv_path"])
     assert store2.csv_hit_count == 0  # load 時点ではカウンタは進まない
     second_outcomes = run_fetch(
-        settings,
         [entry],
         site_for=_site_for(client2),
         describe_store=store2,
         refresh_set=set(),
+        **settings,
     )
     assert client2.describe_object_calls == []
     assert store2.csv_hit_count == 1  # Opportunity は CSV から 1 度引かれた
@@ -380,13 +385,13 @@ def test_different_orgs_are_separated_in_csv(tmp_path: Path) -> None:
             enabled=True,
         ),
     ]
-    outcomes = run_fetch(settings, entries, site_for=_site_for(client))
+    outcomes = run_fetch(entries, site_for=_site_for(client), **settings)
     assert all(o.status == "ok" for o in outcomes)
     # 2 つの組織 （ netloc が違う ） なので Opportunity の API は 2 回呼ばれる
     assert client.describe_object_calls.count("Opportunity") == 2
 
     # CSV には 2 組織分の Opportunity の行が残る
-    rows = _read_csv_rows(settings.describe_csv_path)
+    rows = _read_csv_rows(settings["describe_csv_path"])
     orgs = sorted({r["組織"] for r in rows if r["オブジェクト"] == "Opportunity"})
     assert orgs == [
         "example--sandbox.sandbox.my.salesforce.com",
@@ -401,7 +406,7 @@ def test_different_orgs_keep_separate_state_across_runs(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     # CSV に A 組織の Opportunity を書いておく
     upsert_object_rows(
-        settings.describe_csv_path,
+        settings["describe_csv_path"],
         "example.my.salesforce.com",
         "Opportunity",
         _opportunity_describe(),
@@ -437,13 +442,13 @@ def test_different_orgs_keep_separate_state_across_runs(tmp_path: Path) -> None:
             enabled=True,
         ),
     ]
-    store = DescribeStore.load(settings.describe_csv_path)
+    store = DescribeStore.load(settings["describe_csv_path"])
     run_fetch(
-        settings,
         entries,
         site_for=_site_for(client),
         describe_store=store,
         refresh_set=set(),
+        **settings,
     )
     # A 組織は CSV から、 B 組織は API から取るので Opportunity の呼び出しは 1 回だけ
     assert client.describe_object_calls == ["Opportunity"]
@@ -469,21 +474,21 @@ def test_describe_failure_is_not_persisted(tmp_path: Path) -> None:
         url=f"{DOMAIN_A}/00O5g00000AAAAA/view",
         enabled=True,
     )
-    outcomes = run_fetch(settings, [entry], site_for=_site_for(client))
+    outcomes = run_fetch([entry], site_for=_site_for(client), **settings)
     # describe 失敗で主オブジェクトは None、 警告が残る
     assert outcomes[0].status == "ok"
     assert outcomes[0].record is not None
     assert outcomes[0].record.main_object is None
 
     # CSV は作られない
-    assert not settings.describe_csv_path.exists()
+    assert not settings["describe_csv_path"].exists()
 
     # もう一度 （ 別のクライアント 、 同じ CSV パス ） では API が呼ばれる
     client2 = _FakeClient(
         describe=_make_metadata("Opportunity", ["Opp.Name"]),
         object_describes={"Opportunity": _opportunity_describe()},
     )
-    outcomes2 = run_fetch(settings, [entry], site_for=_site_for(client2))
+    outcomes2 = run_fetch([entry], site_for=_site_for(client2), **settings)
     assert client2.describe_object_calls == ["Opportunity"]
     assert outcomes2[0].record is not None
     assert outcomes2[0].record.main_object == "Opportunity"
@@ -499,7 +504,7 @@ def test_object_without_csv_rows_triggers_api_call(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     # CSV に Account だけ書いておく
     upsert_object_rows(
-        settings.describe_csv_path,
+        settings["describe_csv_path"],
         "example.my.salesforce.com",
         "Account",
         _account_describe(),
@@ -526,13 +531,13 @@ def test_object_without_csv_rows_triggers_api_call(tmp_path: Path) -> None:
         url=f"{DOMAIN_A}/00O5g00000AAAAA/view",
         enabled=True,
     )
-    store = DescribeStore.load(settings.describe_csv_path)
+    store = DescribeStore.load(settings["describe_csv_path"])
     run_fetch(
-        settings,
         [entry],
         site_for=_site_for(client),
         describe_store=store,
         refresh_set=set(),
+        **settings,
     )
     # Account は CSV から取れたので API は呼ばれない
     assert client.describe_object_calls == []
@@ -544,7 +549,7 @@ def test_csv_with_some_object_rows_triggers_api_for_others(tmp_path: Path) -> No
     """
     settings = _settings(tmp_path)
     upsert_object_rows(
-        settings.describe_csv_path,
+        settings["describe_csv_path"],
         "example.my.salesforce.com",
         "Account",
         _account_describe(),
@@ -564,7 +569,7 @@ def test_csv_with_some_object_rows_triggers_api_for_others(tmp_path: Path) -> No
         url=f"{DOMAIN_A}/00O5g00000AAAAA/view",
         enabled=True,
     )
-    run_fetch(settings, [entry], site_for=_site_for(client))
+    run_fetch([entry], site_for=_site_for(client), **settings)
     # Opportunity だけ API から取られる
     assert client.describe_object_calls == ["Opportunity"]
 
@@ -589,7 +594,7 @@ def test_stale_csv_triggers_refresh_once(tmp_path: Path) -> None:
         ],
     }
     upsert_object_rows(
-        settings.describe_csv_path,
+        settings["describe_csv_path"],
         "example.my.salesforce.com",
         "Opportunity",
         stale_opportunity,
@@ -624,13 +629,13 @@ def test_stale_csv_triggers_refresh_once(tmp_path: Path) -> None:
         describe=metadata,
         object_describes={"Opportunity": fresh_opportunity},
     )
-    store = DescribeStore.load(settings.describe_csv_path)
+    store = DescribeStore.load(settings["describe_csv_path"])
     outcomes = run_fetch(
-        settings,
         [entry],
         site_for=_site_for(client),
         describe_store=store,
         refresh_set=set(),
+        **settings,
     )
     record = outcomes[0].record
     assert record is not None
@@ -645,13 +650,13 @@ def test_stale_csv_triggers_refresh_once(tmp_path: Path) -> None:
         describe=metadata,
         object_describes={"Opportunity": fresh_opportunity},
     )
-    store2 = DescribeStore.load(settings.describe_csv_path)
+    store2 = DescribeStore.load(settings["describe_csv_path"])
     outcomes2 = run_fetch(
-        settings,
         [entry],
         site_for=_site_for(client2),
         describe_store=store2,
         refresh_set=set(),
+        **settings,
     )
     record2 = outcomes2[0].record
     assert record2 is not None
@@ -677,7 +682,7 @@ def test_refresh_does_not_repeat_if_api_returns_same_data(tmp_path: Path) -> Non
         ],
     }
     upsert_object_rows(
-        settings.describe_csv_path,
+        settings["describe_csv_path"],
         "example.my.salesforce.com",
         "Opportunity",
         stale,
@@ -694,7 +699,7 @@ def test_refresh_does_not_repeat_if_api_returns_same_data(tmp_path: Path) -> Non
         url=f"{DOMAIN_A}/00O5g00000AAAAA/view",
         enabled=True,
     )
-    outcomes = run_fetch(settings, [entry], site_for=_site_for(client))
+    outcomes = run_fetch([entry], site_for=_site_for(client), **settings)
     record = outcomes[0].record
     assert record is not None
     # 列対応の Amount は (不明) のまま
@@ -710,7 +715,7 @@ def test_refresh_does_not_repeat_if_api_returns_same_data(tmp_path: Path) -> Non
 def test_existing_csv_with_wrong_header_aborts(tmp_path: Path) -> None:
     """既存 CSV の見出しが想定と違うと、 上書きせず失敗させる。"""
     settings = _settings(tmp_path)
-    path = settings.describe_csv_path
+    path = settings["describe_csv_path"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("wrong,header\nfoo,bar\n", encoding="utf-8-sig")
 
@@ -727,25 +732,39 @@ def test_existing_csv_with_wrong_header_aborts(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8-sig") == "wrong,header\nfoo,bar\n"
 
 
-# ── 既定値のフォールバック ─────────────────────────────────────────────
+# ── 必須キー欠落 ─────────────────────────────────────────────────────
 
 
-def test_settings_without_describe_csv_uses_default(tmp_path: Path) -> None:
-    """config.ini に ``DESCRIBE_CSV_PATH`` が無いときは、 既定値の
-    ``./data/項目定義.csv`` が使われる （ config.ini からの相対 ）。
-    ここでは別のパスを書いた config を読んで確かめる。
+def test_settings_missing_describe_csv_raises(tmp_path: Path) -> None:
+    """config.ini に ``DESCRIBE_CSV_PATH`` が無いと comken の
+    ``ConfigKeyNotFoundError`` が上がり、 メッセージにキー名が入る。
     """
-    from src.settings import load_settings
+    from comken.core.config import _reset_cached_config
+    from comken.exceptions import ConfigKeyNotFoundError
+
+    from src.run import read_file_paths
+
+    _reset_cached_config()
 
     config_dir = tmp_path / "proj"
     config_dir.mkdir()
     (config_dir / "config.ini").write_text(
-        "[FILES]\nMASTER_XLSX_PATH = ./master.xlsx\n",
+        "[FILES]\n"
+        "MASTER_XLSX_PATH = ./master.xlsx\n"
+        "OUTPUT_DIR = ./output\n"
+        "COLUMN_MAP_CSV_PATH = ./data/列の対応.csv\n",
         encoding="utf-8",
     )
-    settings = load_settings(project_root=config_dir)
-    # 既定値の ./data/項目定義.csv が config.ini のフォルダからの相対で解決される
-    assert settings.describe_csv_path == (config_dir / "data" / "項目定義.csv").resolve()
+
+    original_argv = sys.argv
+    sys.argv = [str(config_dir / "fake_main.py")]
+    try:
+        with pytest.raises(ConfigKeyNotFoundError) as exc_info:
+            read_file_paths()
+        assert "DESCRIBE_CSV_PATH" in str(exc_info.value)
+    finally:
+        sys.argv = original_argv
+        _reset_cached_config()
 
 
 # ── 終了ログ ─────────────────────────────────────────────────────────
@@ -761,7 +780,7 @@ def test_run_logs_describe_counts(tmp_path: Path, caplog) -> None:
     settings = _settings(tmp_path)
     # CSV に Account を書いておく
     upsert_object_rows(
-        settings.describe_csv_path,
+        settings["describe_csv_path"],
         "example.my.salesforce.com",
         "Account",
         _account_describe(),
@@ -777,7 +796,7 @@ def test_run_logs_describe_counts(tmp_path: Path, caplog) -> None:
         url=f"{DOMAIN_A}/00O5g00000AAAAA/view",
         enabled=True,
     )
-    run_fetch(settings, [entry], site_for=_site_for(client))
+    run_fetch([entry], site_for=_site_for(client), **settings)
     # ``run_fetch`` は終了ログを出さない （ run.py 側 ） ので、 テストは
     # ``DescribeStore`` のカウントを直接見て確認する。 （ 終了ログは run.py の
     # 統合テストで別途確かめる ）
@@ -787,13 +806,13 @@ def test_describe_store_counts_track_sources(tmp_path: Path) -> None:
     """``DescribeStore`` の ``csv_hit_count`` / ``api_count`` が正しく増える。"""
     settings = _settings(tmp_path)
     upsert_object_rows(
-        settings.describe_csv_path,
+        settings["describe_csv_path"],
         "example.my.salesforce.com",
         "Account",
         _account_describe(),
         fetched_at="2025-01-01T00:00:00+00:00",
     )
-    store = DescribeStore.load(settings.describe_csv_path)
+    store = DescribeStore.load(settings["describe_csv_path"])
     # Account は CSV から取れる
     assert store.lookup("example.my.salesforce.com", "Account") is not None
     assert store.csv_hit_count == 1

@@ -19,7 +19,6 @@ per-ID の CSV は作らない。
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import logging
 import sys
 from collections.abc import Callable
@@ -27,7 +26,10 @@ from collections.abc import Callable
 from src import pii
 from src.fetch import run_fetch
 from src.master import MasterEntry
-from src.settings import load_settings
+from src.run import (
+    SIMILAR_COLUMN_SIMILARITY,
+    FilePaths,
+)
 from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
@@ -63,17 +65,23 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
 
     # 出力先だけ ``single/`` にずらす。 本体の ``output/`` を汚さず、 全体の
     # ``対応表.csv`` にも混ざらない。
-    base_settings = load_settings()
-    settings = dataclasses.replace(base_settings, output_dir=base_settings.output_dir / "single")
+    base_paths = _read_trial_file_paths()
+    single_output_dir = base_paths.output_dir / "single"
+    file_paths = FilePaths(
+        master_xlsx_path=base_paths.master_xlsx_path,
+        output_dir=single_output_dir,
+        describe_csv_path=base_paths.describe_csv_path,
+        column_map_csv_path=base_paths.column_map_csv_path,
+    )
 
     entry = MasterEntry(key=args.key, summary="単品サンプル", url=args.url, enabled=True)
     from src.describe_store import DescribeStore
 
-    describe_store = DescribeStore.load(settings.describe_csv_path)
+    describe_store = DescribeStore.load(file_paths.describe_csv_path)
     refresh_set: set[tuple[str, str]] = set()
     outcomes = run_fetch(
-        settings,
         [entry],
+        describe_csv_path=file_paths.describe_csv_path,
         site_for=site_for,
         describe_store=describe_store,
         refresh_set=refresh_set,
@@ -96,19 +104,35 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
     if records:
         try:
             run_tables(
-                settings.output_dir,
+                file_paths.output_dir,
                 records,
                 only_keys=ok_keys,
                 pii_config=pii.PIIConfig(
-                    keywords=settings.pii_keywords,
-                    person_objects=settings.pii_person_objects,
+                    keywords=pii.DEFAULT_KEYWORDS,
+                    person_objects=pii.DEFAULT_PERSON_OBJECTS,
                 ),
-                similar_threshold=settings.similar_column_similarity,
+                similar_threshold=SIMILAR_COLUMN_SIMILARITY,
             )
         except Exception as exc:
             logger.error("CSV の生成に失敗しました: %s", exc)
 
     return 1 if failed_count else 0
+
+
+def _read_trial_file_paths() -> FilePaths:
+    """trial 用の ``FilePaths`` を読む。 必須キー無ければ ``ConfigKeyNotFoundError``。
+
+    ``src/run.py`` の ``read_file_paths()`` と同じ解決で、 4 つのキーを
+    ``config.ini [FILES]`` からそのまま読む。 既定値の補完はしない。
+    """
+    from comken import config
+
+    return FilePaths(
+        master_xlsx_path=config.FILES.MASTER_XLSX_PATH,
+        output_dir=config.FILES.OUTPUT_DIR,
+        describe_csv_path=config.FILES.DESCRIBE_CSV_PATH,
+        column_map_csv_path=config.FILES.COLUMN_MAP_CSV_PATH,
+    )
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ from comken.toolbox.csv import CSV
 from src.describe_store import DescribeStore, org_from_url
 from src.fetch import FATAL_STATUS_CODES
 from src.master import read_master
-from src.settings import load_settings
+from src.run import FilePaths
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ def main(
     object_names: list[str] | None = None,
     org_url: str | None = None,
     site_for: SiteFor | None = None,
+    file_paths: FilePaths | None = None,
 ) -> int:
     """オブジェクトの項目定義を取り直す。
 
@@ -75,6 +76,7 @@ def main(
         org_url: 組織の URL。 ``None`` ならファイル先頭の ``ORG_URL`` を使う。
             空文字なら管理表から自動判定。
         site_for: URL → Salesforce サイトクラスの関数。 テスト用差し替え。
+        file_paths: テスト用差し替え。 ``None`` なら ``config.ini [FILES]`` から読む。
 
     Returns:
         0 … 全件取得成功
@@ -96,19 +98,20 @@ def main(
         site_for = default_site_for
     assert site_for is not None  # 上の分岐で必ず代入される
 
-    base_settings = load_settings()
+    if file_paths is None:
+        file_paths = _read_trial_file_paths()
 
-    target_org, connection_url = _resolve_org(org_url, base_settings, site_for)
+    target_org, connection_url = _resolve_org(org_url, file_paths, site_for)
     if connection_url is None:
         # 0 組織・複数組織で既にメッセージを出して終了
         return 2
 
     # 出力先 （ 本体の output/ を汚さず single/ に隔離 ）
-    output_dir = base_settings.output_dir / "single"
+    output_dir = file_paths.output_dir / "single"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # キャッシュは読み込まず、 取得結果を書き込むためだけにストアを作る
-    describe_store = DescribeStore.empty(base_settings.describe_csv_path)
+    describe_store = DescribeStore.empty(file_paths.describe_csv_path)
 
     try:
         site_class = site_for(connection_url)
@@ -145,7 +148,7 @@ def main(
 
 def _resolve_org(
     org_url: str,
-    settings: object,
+    file_paths: FilePaths,
     site_for: SiteFor,
 ) -> tuple[str, str | None]:
     """接続先の組織と ``site_for`` に渡す URL を決める。
@@ -158,7 +161,7 @@ def _resolve_org(
         target_org = org_from_url(org_url)
         return target_org, org_url
 
-    master_path = settings.master_xlsx_path
+    master_path = file_paths.master_xlsx_path
     entries = read_master(master_path)
     orgs: set[str] = set()
     representative_url: dict[str, str] = {}
@@ -301,6 +304,22 @@ def _write_output_csv(path, results: list[tuple[str, dict]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with CSV(path, columns=list(OUTPUT_COLUMNS)) as csv:
         csv.replace(Table(list(OUTPUT_COLUMNS), rows))
+
+
+def _read_trial_file_paths() -> FilePaths:
+    """trial 用の ``FilePaths`` を読む。 必須キー無ければ ``ConfigKeyNotFoundError``。
+
+    ``src/run.py`` の ``read_file_paths()`` と同じ解決で、 4 つのキーを
+    ``config.ini [FILES]`` からそのまま読む。 既定値の補完はしない。
+    """
+    from comken import config
+
+    return FilePaths(
+        master_xlsx_path=config.FILES.MASTER_XLSX_PATH,
+        output_dir=config.FILES.OUTPUT_DIR,
+        describe_csv_path=config.FILES.DESCRIBE_CSV_PATH,
+        column_map_csv_path=config.FILES.COLUMN_MAP_CSV_PATH,
+    )
 
 
 if __name__ == "__main__":

@@ -16,8 +16,8 @@
 5. 関連オブジェクト （ 参照先を ``RELATED_DEPTH`` 段まで ） : 主オブジェクトの
    describe の ``fields`` を起点に幅優先で参照を辿り、 ``relationshipName``
    が空でなく ``referenceTo`` が空でない項目を **1 段ずつ** 掘る。 同じ名前は
-   浅い段から先に登録される。 件数は ``[LIMITS] RELATED_MAX`` （ 既定 40 ）
-   で全段の合計を打ち切り、 超えた名前は ``warnings`` に残す
+   浅い段から先に登録される。 件数は ``RELATED_MAX`` （ 既定 40 ） で全段の
+   合計を打ち切り、 超えた名前は ``warnings`` に残す
 6. ``mapping.build_column_map(metadata, main_describe, reason, ...)`` で列対応表
    を組み立てる。 主オブジェクトの describe は **ID ごとに 1 回** だけ取得する
    （ ``_fetch_object_cached`` のキャッシュを経由するため、 複数 ID が同じ
@@ -39,6 +39,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field as dc_field
+from pathlib import Path
 from typing import Any
 
 from comken.exceptions import (
@@ -53,9 +54,22 @@ from comken.toolbox.salesforce.report import report_id_from_url
 from src import column_map_csv, mapping, pii
 from src.describe_store import DescribeStore, org_from_url
 from src.master import MasterEntry
-from src.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# 関連オブジェクトの合計件数の上限。 全段の合計が ``RELATED_MAX`` に達したら
+# 打ち切り、 超えた名前は ``warnings`` に残す。 1 = 関連オブジェクトを取らない
+RELATED_MAX: int = 40
+
+# 関連オブジェクトを掘る最大の段数。 1 = 主オブジェクトの参照先 1 段だけ
+# （ 2026-10-14 以前の挙動 ）。 2 以上にすると ``Task.What.Account.Owner`` の
+# ように参照先をたどって掘る
+RELATED_DEPTH: int = 3
+
+# 1 レポートごとに 2000 行チェックを実行するか。 True = 実行する
+# （ 一覧シートの 「 2000件超 」 列が埋まる ）。 False = 実行しない
+# （ 同列が 「 未実施 」 になる ）
+ROW_LIMIT_ENABLED: bool = True
 
 # ``describe_object`` が 401 / 403 を返したとき、 その ID 全体を失敗させる
 # ステータスコード（ comken の ``ReportAPI.describe`` と同じく ）。
@@ -158,7 +172,7 @@ class RowCheck:
     - ``超えている`` （ SalesforceReportTruncatedError ）
     - ``超えていない`` （ 取得でき、 ``rows`` に行数 ）
     - ``判定不可`` （ ``reason`` に理由 ）
-    - ``未実施`` （ ``[CHECKS] ROW_LIMIT = ×`` で実行しなかった ）
+    - ``未実施`` （ ``ROW_LIMIT_ENABLED`` が ``False`` のとき ）
 
     行データ（ 値そのもの ） は **保持しない** 。 メモリ上でも行数だけ数え、
     CSV / ログ / 警告 / 例外メッセージに絶対に出さない。
@@ -212,9 +226,14 @@ class FetchOutcome:
 
 
 def run_fetch(
-    settings: Settings,
     entries: list[MasterEntry],
     *,
+    related_depth: int = RELATED_DEPTH,
+    related_max: int = RELATED_MAX,
+    row_limit: bool = ROW_LIMIT_ENABLED,
+    pii_keywords: tuple[str, ...] = pii.DEFAULT_KEYWORDS,
+    pii_person_objects: tuple[str, ...] = pii.DEFAULT_PERSON_OBJECTS,
+    describe_csv_path: Path,
     dry_run: bool = False,
     site_for: SiteFor | None = None,
     describe_store: DescribeStore | None = None,
@@ -227,12 +246,20 @@ def run_fetch(
     そのまま ``run_tables`` に渡す。
 
     Args:
-        settings: config.ini から読んだ設定。
         entries: 処理対象の管理表エントリ（ 既に ``--all`` 絞り込み済み ）。
+        related_depth: 関連オブジェクトを掘る段数。 既定は ``RELATED_DEPTH``。
+        related_max: 関連オブジェクトの合計件数上限。 既定は ``RELATED_MAX``。
+        row_limit: True のとき 1 レポートごとに 2000 行チェックを実行する。
+            既定は ``ROW_LIMIT_ENABLED``。
+        pii_keywords: PII 判定に使うキーワード。 既定は ``pii.DEFAULT_KEYWORDS``。
+        pii_person_objects: 個人系オブジェクト。 既定は
+            ``pii.DEFAULT_PERSON_OBJECTS``。
+        describe_csv_path: ``describe_store`` が ``None`` のときに空ストアを
+            作るパス。 ``run.py`` が ``[FILES] DESCRIBE_CSV_PATH`` から渡す。
         dry_run: True なら接続せず、 対象だけ表示用 ``FetchOutcome`` を返す。
         site_for: URL → Salesforce サイトクラスの関数。テスト用差し替え。
         describe_store: メモリ＋CSV の describe キャッシュ。 ``None`` のときは
-            ``settings.describe_csv_path`` から空ストアを作る。 同じ実行内で
+            ``describe_csv_path`` から空ストアを作る。 同じ実行内で
             ``describe_object`` を 1 回にまとめるための入口。
         refresh_set: 取り直し （ 一度 API で取り直して再試行 ） を実行済みの
             ``(org, object_lower)`` の集合。 ``None`` のときは内部で作る。
@@ -252,7 +279,7 @@ def run_fetch(
     assert site_for is not None  # 上の分岐で必ず代入される
 
     if describe_store is None:
-        describe_store = DescribeStore.empty(settings.describe_csv_path)
+        describe_store = DescribeStore.empty(describe_csv_path)
     if refresh_set is None:
         refresh_set = set()
     if column_map_overrides is None:
@@ -288,8 +315,12 @@ def run_fetch(
         )
         started_at = time.perf_counter()
         outcome = _fetch_one(
-            settings,
             entry,
+            related_depth=related_depth,
+            related_max=related_max,
+            row_limit=row_limit,
+            pii_keywords=pii_keywords,
+            pii_person_objects=pii_person_objects,
             site_for=site_for,
             store=describe_store,
             refresh_set=refresh_set,
@@ -775,9 +806,13 @@ def _coerce_str(value: object) -> str:
 
 
 def _fetch_one(
-    settings: Settings,
     entry: MasterEntry,
     *,
+    related_depth: int,
+    related_max: int,
+    row_limit: bool,
+    pii_keywords: tuple[str, ...],
+    pii_person_objects: tuple[str, ...],
     site_for: SiteFor,
     store: DescribeStore,
     refresh_set: set[tuple[str, str]],
@@ -857,12 +892,10 @@ def _fetch_one(
                     ),
                 )
 
-            # 2000 行チェック: ``[CHECKS] ROW_LIMIT`` が ○ のときだけ実行。
+            # 2000 行チェック: ``row_limit`` が True のときだけ実行。
             # 401 / 403 のような致命エラーは外側の except に伝播させて ID 全体を
             # 失敗扱いにする。 その他のエラーは ``RowCheck`` に縮退する。
-            row_check = (
-                _check_row_count(client, report_id, metadata) if settings.row_limit else None
-            )
+            row_check = _check_row_count(client, report_id, metadata) if row_limit else None
             _log_row_check(row_check)
 
             # 主オブジェクトの解決（ ``$`` / ``@`` を含むときは候補を
@@ -896,15 +929,15 @@ def _fetch_one(
                     fetcher=lambda name: _fetch_object_cached(
                         client, org, name, store, warnings, csv_used_keys
                     ),
-                    related_depth=settings.related_depth,
-                    related_max=settings.related_max,
+                    related_depth=related_depth,
+                    related_max=related_max,
                 )
                 if skipped_names:
                     collected_count = len(related_nodes)
                     total = collected_count + len(skipped_names)
                     warnings.append(
                         f"関連オブジェクトが {total} 件あり"
-                        f"上限 {settings.related_max} を超えたため、"
+                        f"上限 {related_max} を超えたため、"
                         f"次の {len(skipped_names)} 件は取得しません: {', '.join(skipped_names)}"
                     )
                 _log_related_objects(related_nodes, skipped_names)
@@ -1036,8 +1069,8 @@ def _fetch_one(
 
     # PII 評価: 出力列だけを対象にする。 絞り込みにだけ使う列は対象外。
     pii_config = pii.PIIConfig(
-        keywords=settings.pii_keywords,
-        person_objects=settings.pii_person_objects,
+        keywords=pii_keywords,
+        person_objects=pii_person_objects,
     )
     pii_result = _evaluate_record_pii(slim_report, column_map, slim_objects, pii_config)
     _log_pii(pii_result)

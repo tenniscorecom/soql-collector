@@ -1,6 +1,6 @@
 """``trial/`` の単品サンプルを fake client で検証する。
 実 Salesforce に繋がないよう、 ``site_for`` をテストで差し替えられる形にし、
-``tmp_path`` 配下の ``config.ini`` + 空の管理表で ``load_settings`` を動かす。
+``tmp_path`` 配下の ``config.ini`` + 空の管理表で ``_read_trial_file_paths`` を動かす。
 
 ``trial/`` は **名前空間パッケージ** （ ``__init__.py`` を **持たない** ）。
 ``python -m trial.fetch_one_report`` でそのまま動くことを前提に、
@@ -25,7 +25,7 @@ DOMAIN_PROD = "https://example.my.salesforce.com/lightning/r/Report"
 
 
 def _build_master(path: Path) -> None:
-    """``load_settings`` が困らないよう ``MASTER_XLSX_PATH`` の指す xlsx を作る。
+    """``MASTER_XLSX_PATH`` の指す xlsx を作る。
 
     中身は空の ``PY_管理表`` 1 枚でよい （ 例題は管理表を読まない ）。
     """
@@ -71,25 +71,76 @@ def _build_master_with_rows(path: Path, rows: list[tuple[str, str, str, str]]) -
 
 
 def _write_ini(tmp_path: Path, master: Path) -> None:
-    """テスト用 ``config.ini`` を ``tmp_path`` に書く。"""
+    """テスト用 ``config.ini`` を ``tmp_path`` に書く。 ``[FILES]`` の 4 つの
+    キーはすべて必須なので、 このヘルパでは 4 つ全部を書く。
+    """
     (tmp_path / "config.ini").write_text(
-        f"[FILES]\nMASTER_XLSX_PATH = {master.name}\nOUTPUT_DIR = ./output\n",
+        "[FILES]\n"
+        f"MASTER_XLSX_PATH = {master.name}\n"
+        "OUTPUT_DIR = ./output\n"
+        "DESCRIBE_CSV_PATH = ./data/項目定義.csv\n"
+        "COLUMN_MAP_CSV_PATH = ./data/列の対応.csv\n",
         encoding="utf-8",
     )
 
 
-def _patch_load_settings(
+def _patched_master_path(cfg, project_root: Path, name_attr: str = "MASTER_XLSX_PATH") -> Path:
+    """``cfg.FILES.MASTER_XLSX_PATH`` がそのまま使える形（絶対 or 解決済み相対 ）で返す。
+
+    comken の ``_parse_value`` は区切り文字を含まない値（``master.xlsx``）を
+    文字列のまま返すので、 ``project_root`` を基準に解決する。 ``./master.xlsx``
+    なら comken 側で自動解決されるが、 テストでは ``master.name`` の形で書いて
+    いるので、 ここで明示的に連結する。
+    """
+    value = getattr(cfg.FILES, name_attr)
+    if isinstance(value, Path):
+        return value
+    text = str(value)
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    return (project_root / path).resolve()
+
+
+def _patch_read_file_paths(
     monkeypatch: pytest.MonkeyPatch, module: object, project_root: Path
 ) -> None:
-    """``module.load_settings`` を ``project_root`` からの読み込みに差し替える。"""
-    from src import settings as settings_module
+    """``module._read_trial_file_paths`` を ``project_root`` からの読み込みに差し替える。
 
-    real_load = settings_module.load_settings
+    trial モジュールは内部で ``_read_trial_file_paths`` を呼ぶので、 それを
+    ``project_root`` ベースの config.ini で読むバージョンに差し替える。
+    """
+    from comken.core.config import Config, _reset_cached_config
 
-    def patched() -> object:
-        return real_load(project_root=project_root)
+    from src.run import FilePaths
 
-    monkeypatch.setattr(module, "load_settings", patched)
+    def patched() -> FilePaths:
+        cfg = Config(project_root / "config.ini")
+        return FilePaths(
+            master_xlsx_path=_patched_master_path(cfg, project_root),
+            output_dir=_path_from_cfg(cfg, "OUTPUT_DIR", project_root),
+            describe_csv_path=_path_from_cfg(cfg, "DESCRIBE_CSV_PATH", project_root),
+            column_map_csv_path=_path_from_cfg(cfg, "COLUMN_MAP_CSV_PATH", project_root),
+        )
+
+    monkeypatch.setattr(module, "_read_trial_file_paths", patched)
+    # 念のためキャッシュもクリア
+    _reset_cached_config()
+
+
+def _path_from_cfg(cfg, key: str, project_root: Path) -> Path:
+    """``cfg.FILES.<key>`` を ``Path`` として返す。 comken の Config が
+    ``./`` 付き相対値を str で返す場合があるので、 ``project_root`` 基準で
+    解決する。
+    """
+    value = getattr(cfg.FILES, key)
+    if isinstance(value, Path):
+        return value
+    text = str(value)
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    return (project_root / path).resolve()
 
 
 # ── 偽物のクライアント ─────────────────────────────────────────────────
@@ -197,7 +248,7 @@ def test_fetch_one_report_writes_xlsx(tmp_path: Path, monkeypatch: pytest.Monkey
     master = tmp_path / "master.xlsx"
     _build_master(master)
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_one_report, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_one_report, tmp_path)
 
     client = _FakeClient(
         describe=_make_metadata(),
@@ -235,7 +286,7 @@ def test_fetch_one_report_default_key_is_sample(
     master = tmp_path / "master.xlsx"
     _build_master(master)
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_one_report, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_one_report, tmp_path)
 
     client = _FakeClient(
         describe=_make_metadata(),
@@ -266,7 +317,7 @@ def test_fetch_one_report_failure_returns_1(
     master = tmp_path / "master.xlsx"
     _build_master(master)
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_one_report, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_one_report, tmp_path)
 
     def failing_site_for(url: str) -> _FakeSite:
         raise ComkenError("未登録組織")
@@ -369,7 +420,7 @@ def test_fetch_objects_resolves_single_org_automatically(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_objects, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_objects, tmp_path)
 
     account_describe = _account_describe_full()
     client = _FakeClient(
@@ -405,7 +456,7 @@ def test_fetch_objects_multiple_orgs_returns_2(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_objects, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_objects, tmp_path)
 
     client = _FakeClient(
         describe=_make_metadata(),
@@ -441,7 +492,7 @@ def test_fetch_objects_with_org_url_skips_master_scan(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_objects, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_objects, tmp_path)
 
     client = _FakeClient(
         describe=_make_metadata(),
@@ -480,7 +531,7 @@ def test_fetch_objects_writes_to_describe_cache(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_objects, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_objects, tmp_path)
 
     account_describe = _account_describe_full()
     client = _FakeClient(
@@ -528,7 +579,7 @@ def test_fetch_objects_refreshes_existing_cache(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_objects, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_objects, tmp_path)
 
     # キャッシュに 「 古い Account 」 を入れておく （ 1 項目だけ ）
     old_describe = {
@@ -593,7 +644,7 @@ def test_fetch_objects_partial_failure_returns_1(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_objects, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_objects, tmp_path)
 
     class _FakeClientWithError(_FakeClient):
         def __init__(
@@ -644,7 +695,7 @@ def test_fetch_objects_empty_object_names_returns_2(
     master = tmp_path / "master.xlsx"
     _build_master(master)
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_objects, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_objects, tmp_path)
 
     client = _FakeClient(
         describe=_make_metadata(),
@@ -679,7 +730,7 @@ def test_fetch_objects_output_csv_columns_and_rows(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_objects, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_objects, tmp_path)
 
     client = _FakeClient(
         describe=_make_metadata(),
@@ -754,7 +805,7 @@ def test_fetch_objects_broken_no_cache_write_fails_test(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, fetch_objects, tmp_path)
+    _patch_read_file_paths(monkeypatch, fetch_objects, tmp_path)
 
     # ``record_api_success`` を何もしない no-op に差し替えて壊す
     def _noop(self: DescribeStore, org: str, object_name: str, describe: dict) -> None:

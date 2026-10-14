@@ -53,13 +53,18 @@ def _build_master(path: Path, rows: list[dict]) -> None:
 
 
 def _write_ini(tmp_path: Path, master_xlsx: Path, *, extra: str = "") -> None:
-    """テスト用 ``config.ini`` を書く。 追加でセクションを足したいときは
+    """テスト用 ``config.ini`` を書く。 ``[FILES]`` の 4 つのキーはすべて必須なので、
+    このヘルパでは 4 つ全部を書く。 追加でセクションを足したいときは
     ``extra`` に ``"[OBJECTS]\\nNAMES = ..."`` のように渡す。 ``[OBJECTS]``
     が残っていても無視されることを確認するための経路として残しておく。
     """
     ini = tmp_path / "config.ini"
     ini.write_text(
-        f"[FILES]\nMASTER_XLSX_PATH = {master_xlsx}\nOUTPUT_DIR = ./output\n",
+        "[FILES]\n"
+        f"MASTER_XLSX_PATH = {master_xlsx}\n"
+        "OUTPUT_DIR = ./output\n"
+        "DESCRIBE_CSV_PATH = ./data/項目定義.csv\n"
+        "COLUMN_MAP_CSV_PATH = ./data/列の対応.csv\n",
         encoding="utf-8",
     )
     if extra:
@@ -67,30 +72,23 @@ def _write_ini(tmp_path: Path, master_xlsx: Path, *, extra: str = "") -> None:
             handle.write(extra)
 
 
-def _make_settings(tmp_path: Path, master: Path) -> Any:
-    """``Settings`` 互換（ ``run`` の中の ``load_settings`` を差し替え）。"""
-    from src.settings import Settings
+def _make_file_paths(tmp_path: Path, master: Path) -> Any:
+    """``run()`` 用の ``FilePaths`` を作る（ ``read_file_paths`` の差し替えに使う）。"""
+    from src.run import FilePaths
 
-    return Settings(
+    return FilePaths(
         master_xlsx_path=master,
         output_dir=tmp_path / "output",
-        related_max=40,
-        related_depth=1,
-        credential_prefix="",
-        row_limit=True,
-        pii_keywords=("name", "電話"),
-        pii_person_objects=("Contact",),
-        similar_column_similarity=0.8,
         describe_csv_path=tmp_path / "describe.csv",
         column_map_csv_path=tmp_path / "column_map.csv",
     )
 
 
-def _patch_load_settings(monkeypatch: pytest.MonkeyPatch, settings: Any) -> None:
-    """``src.run.load_settings`` を差し替え。"""
+def _patch_read_file_paths(monkeypatch: pytest.MonkeyPatch, file_paths: Any) -> None:
+    """``src.run.read_file_paths`` を差し替え。"""
     import src.run as run_module
 
-    monkeypatch.setattr(run_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_module, "read_file_paths", lambda: file_paths)
 
 
 # ── 偽物のクライアント ─────────────────────────────────────────────────
@@ -206,7 +204,7 @@ def test_run_with_argv_returns_2_and_skips_site_for(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, _make_settings(tmp_path, master))
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master))
 
     def site_for(url: str):
         called["site_for"] += 1
@@ -228,7 +226,7 @@ def test_run_with_none_argv_uses_sys_argv(
     master = tmp_path / "master.xlsx"
     _build_master(master, [])
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, _make_settings(tmp_path, master))
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master))
 
     monkeypatch.setattr(sys, "argv", ["main.py", "--help"])
 
@@ -256,14 +254,19 @@ def test_run_filters_disabled_rows(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, _make_settings(tmp_path, master))
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master))
 
     captured_keys: list[str] = []
 
     def fake_run_fetch(
-        settings,
         entries,
         *,
+        related_depth=1,
+        related_max=40,
+        row_limit=True,
+        pii_keywords=(),
+        pii_person_objects=(),
+        describe_csv_path=None,
         dry_run=False,
         site_for=None,
         describe_store=None,
@@ -373,7 +376,7 @@ def test_run_no_enabled_rows_returns_2(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, _make_settings(tmp_path, master))
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master))
 
     called = {"site_for": 0}
 
@@ -407,12 +410,17 @@ def test_run_writes_jsons_and_csvs(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_load_settings(monkeypatch, _make_settings(tmp_path, master))
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master))
 
     def fake_run_fetch(
-        settings,
         entries,
         *,
+        related_depth=1,
+        related_max=40,
+        row_limit=True,
+        pii_keywords=(),
+        pii_person_objects=(),
+        describe_csv_path=None,
         dry_run=False,
         site_for=None,
         describe_store=None,
@@ -475,18 +483,23 @@ def test_run_partial_failure_continues_and_returns_1(
         ],
     )
     _write_ini(tmp_path, master)
-    settings = _make_settings(tmp_path, master)
-    _patch_load_settings(monkeypatch, settings)
+    file_paths = _make_file_paths(tmp_path, master)
+    _patch_read_file_paths(monkeypatch, file_paths)
 
     # 失敗 ID の既存 CSV を残しておく
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-    existing_csv = settings.output_dir / "対応表_1002.csv"
+    file_paths.output_dir.mkdir(parents=True, exist_ok=True)
+    existing_csv = file_paths.output_dir / "対応表_1002.csv"
     existing_csv.write_text("既存\nそのまま\n", encoding="utf-8")
 
     def fake_run_fetch(
-        settings,
         entries,
         *,
+        related_depth=1,
+        related_max=40,
+        row_limit=True,
+        pii_keywords=(),
+        pii_person_objects=(),
+        describe_csv_path=None,
         dry_run=False,
         site_for=None,
         describe_store=None,
@@ -552,8 +565,8 @@ def test_run_dry_run_skips_site_for_and_writes(
         ],
     )
     _write_ini(tmp_path, master)
-    settings = _make_settings(tmp_path, master)
-    _patch_load_settings(monkeypatch, settings)
+    file_paths = _make_file_paths(tmp_path, master)
+    _patch_read_file_paths(monkeypatch, file_paths)
 
     called = {"fetch": 0, "tables": 0}
 

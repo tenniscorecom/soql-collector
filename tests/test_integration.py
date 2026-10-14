@@ -195,24 +195,13 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
     - 1002: 1001 と同じ構造で 違う ID
     """
     from src import pii
-    from src.fetch import run_fetch
+    from src.fetch import RELATED_DEPTH, RELATED_MAX, ROW_LIMIT_ENABLED, run_fetch
     from src.master import MasterEntry
-    from src.settings import Settings
     from src.tables import run_tables
 
-    settings = Settings(
-        master_xlsx_path=tmp_path / "master.xlsx",
-        output_dir=tmp_path / "output",
-        related_max=40,
-        related_depth=1,
-        credential_prefix="",
-        row_limit=True,
-        pii_keywords=pii.DEFAULT_KEYWORDS,
-        pii_person_objects=pii.DEFAULT_PERSON_OBJECTS,
-        similar_column_similarity=0.8,
-        describe_csv_path=tmp_path / "describe.csv",
-        column_map_csv_path=tmp_path / "column_map.csv",
-    )
+    describe_csv_path = tmp_path / "describe.csv"
+    pii_keywords = pii.DEFAULT_KEYWORDS
+    pii_person_objects = pii.DEFAULT_PERSON_OBJECTS
 
     from comken.exceptions import SalesforceReportTruncatedError
 
@@ -234,7 +223,16 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
         url=f"{DOMAIN}/00O000000000001/view",
         enabled=True,
     )
-    outcome_1001 = run_fetch(settings, [entry_1001], site_for=site_for)[0]
+    outcome_1001 = run_fetch(
+        [entry_1001],
+        related_depth=RELATED_DEPTH,
+        related_max=RELATED_MAX,
+        row_limit=ROW_LIMIT_ENABLED,
+        pii_keywords=pii_keywords,
+        pii_person_objects=pii_person_objects,
+        describe_csv_path=describe_csv_path,
+        site_for=site_for,
+    )[0]
     assert outcome_1001.status == "ok"
     assert outcome_1001.record is not None
     assert outcome_1001.record.row_check is not None
@@ -256,7 +254,16 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
         url=f"{DOMAIN}/00O000000000002/view",
         enabled=True,
     )
-    outcome_1002 = run_fetch(settings, [entry_1002], site_for=_site_for(client2))[0]
+    outcome_1002 = run_fetch(
+        [entry_1002],
+        related_depth=RELATED_DEPTH,
+        related_max=RELATED_MAX,
+        row_limit=ROW_LIMIT_ENABLED,
+        pii_keywords=pii_keywords,
+        pii_person_objects=pii_person_objects,
+        describe_csv_path=describe_csv_path,
+        site_for=_site_for(client2),
+    )[0]
     assert outcome_1002.status == "ok"
     assert outcome_1002.record is not None
     assert outcome_1002.record.row_check is not None
@@ -270,10 +277,8 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
     run_tables(
         output,
         records,
-        pii_config=pii.PIIConfig(
-            keywords=settings.pii_keywords, person_objects=settings.pii_person_objects
-        ),
-        similar_threshold=settings.similar_column_similarity,
+        pii_config=pii.PIIConfig(keywords=pii_keywords, person_objects=pii_person_objects),
+        similar_threshold=0.8,
     )
 
     # xlsx が作られている
@@ -309,24 +314,13 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
 def test_e2e_single_record_no_similar_sheet(tmp_path: Path) -> None:
     """1 件だけのときは 似たレポート シートは見出しだけ ( 1 冊全部できる )。"""
     from src import pii
-    from src.fetch import run_fetch
+    from src.fetch import RELATED_DEPTH, RELATED_MAX, ROW_LIMIT_ENABLED, run_fetch
     from src.master import MasterEntry
-    from src.settings import Settings
     from src.tables import run_tables
 
-    settings = Settings(
-        master_xlsx_path=tmp_path / "master.xlsx",
-        output_dir=tmp_path / "output",
-        related_max=40,
-        related_depth=1,
-        credential_prefix="",
-        row_limit=True,
-        pii_keywords=pii.DEFAULT_KEYWORDS,
-        pii_person_objects=pii.DEFAULT_PERSON_OBJECTS,
-        similar_column_similarity=0.8,
-        describe_csv_path=tmp_path / "describe.csv",
-        column_map_csv_path=tmp_path / "column_map.csv",
-    )
+    describe_csv_path = tmp_path / "describe.csv"
+    pii_keywords = pii.DEFAULT_KEYWORDS
+    pii_person_objects = pii.DEFAULT_PERSON_OBJECTS
     client = _FakeClient(
         describe=_describe("Opportunity", ["Opp.Name"]),
         object_describes=_object_describes(),
@@ -337,16 +331,23 @@ def test_e2e_single_record_no_similar_sheet(tmp_path: Path) -> None:
         url=f"{DOMAIN}/00O000000000001/view",
         enabled=True,
     )
-    outcome = run_fetch(settings, [entry], site_for=_site_for(client))[0]
+    outcome = run_fetch(
+        [entry],
+        related_depth=RELATED_DEPTH,
+        related_max=RELATED_MAX,
+        row_limit=ROW_LIMIT_ENABLED,
+        pii_keywords=pii_keywords,
+        pii_person_objects=pii_person_objects,
+        describe_csv_path=describe_csv_path,
+        site_for=_site_for(client),
+    )[0]
     output = tmp_path / "output"
     output.mkdir(parents=True, exist_ok=True)
     run_tables(
         output,
         [outcome.record],
-        pii_config=pii.PIIConfig(
-            keywords=settings.pii_keywords, person_objects=settings.pii_person_objects
-        ),
-        similar_threshold=settings.similar_column_similarity,
+        pii_config=pii.PIIConfig(keywords=pii_keywords, person_objects=pii_person_objects),
+        similar_threshold=0.8,
     )
     # xlsx はある ( 1 冊全部できる )
     assert (output / "SOQL調査.xlsx").exists()
@@ -360,24 +361,13 @@ def test_e2e_single_record_no_similar_sheet(tmp_path: Path) -> None:
 def test_e2e_resolved_correspondence_has_pii_columns(tmp_path: Path) -> None:
     """``項目の対応`` シートに 個人情報 / 個人情報の根拠 列が加わっている。"""
     from src import pii
-    from src.fetch import run_fetch
+    from src.fetch import RELATED_DEPTH, RELATED_MAX, ROW_LIMIT_ENABLED, run_fetch
     from src.master import MasterEntry
-    from src.settings import Settings
     from src.tables import RESOLVED_COLUMNS, run_tables
 
-    settings = Settings(
-        master_xlsx_path=tmp_path / "master.xlsx",
-        output_dir=tmp_path / "output",
-        related_max=40,
-        related_depth=1,
-        credential_prefix="",
-        row_limit=True,
-        pii_keywords=pii.DEFAULT_KEYWORDS,
-        pii_person_objects=pii.DEFAULT_PERSON_OBJECTS,
-        similar_column_similarity=0.8,
-        describe_csv_path=tmp_path / "describe.csv",
-        column_map_csv_path=tmp_path / "column_map.csv",
-    )
+    describe_csv_path = tmp_path / "describe.csv"
+    pii_keywords = pii.DEFAULT_KEYWORDS
+    pii_person_objects = pii.DEFAULT_PERSON_OBJECTS
     client = _FakeClient(
         # 「 メール 」 ラベルが Contact.Email と一致する想定 ( 既存テストと同形 )
         describe=_describe(
@@ -391,16 +381,23 @@ def test_e2e_resolved_correspondence_has_pii_columns(tmp_path: Path) -> None:
         url=f"{DOMAIN}/00O000000000001/view",
         enabled=True,
     )
-    outcome = run_fetch(settings, [entry], site_for=_site_for(client))[0]
+    outcome = run_fetch(
+        [entry],
+        related_depth=RELATED_DEPTH,
+        related_max=RELATED_MAX,
+        row_limit=ROW_LIMIT_ENABLED,
+        pii_keywords=pii_keywords,
+        pii_person_objects=pii_person_objects,
+        describe_csv_path=describe_csv_path,
+        site_for=_site_for(client),
+    )[0]
     output = tmp_path / "output"
     output.mkdir(parents=True, exist_ok=True)
     run_tables(
         output,
         [outcome.record],
-        pii_config=pii.PIIConfig(
-            keywords=settings.pii_keywords, person_objects=settings.pii_person_objects
-        ),
-        similar_threshold=settings.similar_column_similarity,
+        pii_config=pii.PIIConfig(keywords=pii_keywords, person_objects=pii_person_objects),
+        similar_threshold=0.8,
     )
 
     # RESOLVED_COLUMNS 定数で 個人情報 / 個人情報の根拠 の存在を保証
