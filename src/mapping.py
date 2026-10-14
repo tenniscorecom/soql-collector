@@ -6,11 +6,18 @@ describe から列対応表を作る。
 
 ``build_column_map()`` は主オブジェクトに加えて、関連オブジェクトの
 describe と relations を受け取り、 関連オブジェクトを跨ぐ列も解決する。
+
+2026-10-14: 列キーが ``主オブジェクト.`` で始まる形（ 例:
+``Contact.Account.Name`` ） については、 表示名ではなく列キー自体から
+主オブジェクトをたどって SOQL 列名を決めるようにした。 カスタムレポート
+タイプで人が主オブジェクトを知らなくても SOQL 組立に必要な列名を
+取れるようにするため。
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -98,6 +105,179 @@ def _normalize_label(label: str) -> str:
 def _normalize_identifier(value: str) -> str:
     """識別子の比較用に正規化する。 大文字小文字と ``_`` を無視する。"""
     return value.strip().lower().replace("_", "")
+
+
+# 列キーから SOQL 列名を取りに行くときのパスの最大段数。 6 段以上なら
+# 経路が長すぎると判断して表示名引き当てにフォールバックする
+COLUMN_KEY_PATH_MAX_DEPTH: int = 5
+
+
+def _starts_with_main_object(column_key: str, main_object: str) -> bool:
+    """``column_key`` が ``main_object + "."`` で始まるか。 大小文字を無視する。
+
+    ``Contact2.Mainten`` のような一部一致は誤検出しない。 必ず次の文字が
+    ``.`` であることを見る。
+    """
+    if not column_key or not main_object:
+        return False
+    if len(column_key) <= len(main_object):
+        return False
+    if column_key[len(main_object)] != ".":
+        return False
+    return column_key[: len(main_object)].lower() == main_object.lower()
+
+
+def _candidate_relationship_names_from_fields(fields: list[Any], limit: int = 10) -> list[str]:
+    """``fields`` の ``relationshipName`` を出現順で最大 ``limit`` 個返す。
+
+    候補が無い （ もしくは dict でない要素しかない ） ときは空 list。
+    列キーからの経路たどりに失敗したときの備考で使う。
+    """
+    candidates: list[str] = []
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        rn = field.get("relationshipName")
+        if isinstance(rn, str) and rn:
+            candidates.append(rn)
+            if len(candidates) >= limit:
+                break
+    return candidates
+
+
+def _resolve_column_key_to_soql(
+    main_object: str,
+    column_key: str,
+    main_describe: dict[str, Any],
+    fetch_object: Callable[[str], dict[str, Any] | None] | None,
+    *,
+    max_depth: int = COLUMN_KEY_PATH_MAX_DEPTH,
+) -> tuple[str | None, str | None, str | None]:
+    """``column_key`` を ``main_object`` から 1 段ずつたどって
+    ``(soql_name, type, failure_note)`` を返す。
+
+    成功時 ``(soql_name, field_type, None)`` 。 失敗時 ``(None, None, note)`` 。
+    ``note`` は表示名の照合にフォールバックしたときに備考に足す一行分
+    （ 「 列キーで『 X 』が Y に見つかりません（ リレーション名の候補: … ） 」 ）。
+    呼び出し側で表示名の照合が決まったときはこの note は **使わない**
+    （ 「 決まったほうを優先 」 のため ）。
+
+    各段の項目を探す順は ``_walk_soql_path`` と同じ:
+
+    1. ``relationshipName`` が一致する参照項目
+    2. ``name`` が一致する項目
+
+    途中の段がマッチしたとき（ 最後の段以外 ） は、 **SOQL 上は** その項目
+    の ``relationshipName`` （ 例: ``AccountId`` 参照 → ``Account`` ） に
+    置き換える。 最後の段は項目の ``name`` （ ``Account.Owner.Name`` の
+    末端 ``Name`` ） 。
+
+    経路上のオブジェクトが ``main_describe`` 起点の ``objects`` に無い
+    ときは ``fetch_object`` で取りに行く。 取得は ``fetch_object`` の内部で
+    既存のキャッシュ → API の順で行われる前提。 401 / 403 は
+    ``fetch_object`` からそのまま上位へ送出される（ ``_make_overrides_fetcher``
+    と同じ挙動 ）。
+    """
+    if not _starts_with_main_object(column_key, main_object):
+        return None, None, None
+    suffix = column_key[len(main_object) + 1 :]
+    parts = suffix.split(".")
+    # 空の経路（ ``Contact.`` など ） や ``max_depth`` を超える経路は失敗
+    if not parts or any(not p for p in parts):
+        return None, None, None
+    if len(parts) > max_depth:
+        return None, None, (f"列キーで {len(parts)} 段の経路は長すぎます（ {max_depth} 段まで）")
+
+    objects: dict[str, dict[str, Any]] = {main_object: main_describe}
+    soql_segments: list[str] = []
+    current_object = main_object
+    for index, part in enumerate(parts):
+        describe = objects.get(current_object)
+        if not isinstance(describe, dict):
+            return (
+                None,
+                None,
+                (f"列キーで「{part}」を扱う {current_object} の項目定義が無いためたどれません"),
+            )
+        fields_raw = describe.get("fields")
+        fields: list[Any] = fields_raw if isinstance(fields_raw, list) else []
+
+        matched: dict[str, Any] | None = None
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            relationship = field.get("relationshipName")
+            if isinstance(relationship, str) and relationship == part:
+                matched = field
+                break
+        if matched is None:
+            for field in fields:
+                if not isinstance(field, dict):
+                    continue
+                name = field.get("name")
+                if isinstance(name, str) and name == part:
+                    matched = field
+                    break
+
+        if matched is None:
+            candidates = _candidate_relationship_names_from_fields(fields)
+            cand_text = ", ".join(candidates) if candidates else "(なし)"
+            return (
+                None,
+                None,
+                (
+                    f"列キーで「{part}」が {current_object} に見つかりません"
+                    f"（リレーション名の候補: {cand_text}）"
+                ),
+            )
+
+        if index == len(parts) - 1:
+            # 最後の段: SOQL は ``name``
+            field_name = matched.get("name")
+            if not isinstance(field_name, str) or not field_name:
+                return None, None, None  # 形式が壊れている。 表示名引き当てに任せる
+            soql_segments.append(field_name)
+            field_type = matched.get("type")
+            return ".".join(soql_segments), field_type if isinstance(field_type, str) else "", None
+
+        # 途中の段: SOQL は ``relationshipName`` （ 参照項目の名前空間 ）
+        relationship = matched.get("relationshipName")
+        if not isinstance(relationship, str) or not relationship:
+            return (
+                None,
+                None,
+                (
+                    f"列キーで「{part}」は {current_object} の参照項目ではないため"
+                    "経路を続けられません"
+                ),
+            )
+        soql_segments.append(relationship)
+
+        # 次のオブジェクトを決める。 単一参照は ``referenceTo`` の先頭、
+        # ``objects`` にある候補があればそれを優先
+        reference_to_raw = matched.get("referenceTo")
+        reference_to: list[str] = (
+            [r for r in reference_to_raw if isinstance(r, str) and r]
+            if isinstance(reference_to_raw, list)
+            else []
+        )
+        next_object: str | None = None
+        for cand in reference_to:
+            if cand in objects:
+                next_object = cand
+                break
+            if fetch_object is not None:
+                fetched = fetch_object(cand)
+                if isinstance(fetched, dict):
+                    objects[cand] = fetched
+                    next_object = cand
+                    break
+        if next_object is None:
+            target = reference_to[0] if reference_to else "(対象不明)"
+            return None, None, (f"列キーで参照先 {target} の項目定義を取得できません")
+        current_object = next_object
+
+    return None, None, None
 
 
 @dataclass(frozen=True)
@@ -210,7 +390,10 @@ def _build_field_index(describe: object) -> dict[str, list[dict[str, Any]]]:
 
     Object Describe が ``fields`` を返さなかった場合（壊れたレスポンス等）
     は空の辞書を返し、 全列が「対応フィールドなし」になる。 例外にはしない
-    （ ``build_column_map()`` のポリシーと揃えるため ）。
+    （ ``build_column_map()`` のポリシーと揃えるため ） 。
+
+    2026-10-14: 複数候補ありの文言に項目の表示名（ ``label`` ） を添える
+    ため、 ``label`` も一緒に蓄える。
     """
     fields = describe.get("fields", []) if isinstance(describe, dict) else []
     index: dict[str, list[dict[str, Any]]] = {}
@@ -225,6 +408,7 @@ def _build_field_index(describe: object) -> dict[str, list[dict[str, Any]]]:
         index.setdefault(_normalize_label(label), []).append(
             {
                 "name": name,
+                "label": label,
                 "type": field_type if isinstance(field_type, str) else "",
                 "referenceTo": field.get("referenceTo", []),
                 "relationshipName": field.get("relationshipName"),
@@ -382,6 +566,7 @@ def build_column_map(
     related_describes: dict[str, dict[str, Any]] | None = None,
     relations: list[Any] | None = None,
     main_object: str | None = None,
+    fetch_object: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> list[dict[str, str]]:
     """渡された主オブジェクトの describe から列対応表を作る（純粋関数）。
 
@@ -393,8 +578,16 @@ def build_column_map(
     フィールドが無い列は ``"対応フィールドなし"`` 、 候補が 2 件以上の列は
     誤った候補を押し付けず「複数候補あり」にする。
 
-    解決アルゴリズム （ 列キーごとに、 列表示名 ラベル一致 ）:
+    解決アルゴリズム （ 列キーごとに ）:
 
+    0. **列キーからたどる** （ 2026-10-14 ）: ``column_key`` が
+       ``<主オブジェクト名>.`` で始まる（ 大小文字無視 ） 列は、 列キーの
+       残りから 1 段ずつ主オブジェクトの ``fields`` を ``relationshipName``
+       → ``name`` の順で突き合わせる。 途中の段は ``relationshipName`` を
+       SOQL セグメントにして次の参照先へ進む。 経路上のオブジェクトは
+       ``fetch_object`` で取りに行く。 たどれれば SOQL 列名と最後の型を
+       採用し、 備考は「 列キーから 」 。 5 段を超える、または途中で項目
+        が見つからない・参照先が取れない場合は表示名の照合にフォールバック
     1. 主オブジェクトで、 表示名（ 前後空白除去・小文字 ） が **一意に**
        一致すればそれを採用 （ 今までの挙動 ）
     2. 一致しない列は、 取れた関連オブジェクト（ 段の浅い順 ） の項目
@@ -407,7 +600,9 @@ def build_column_map(
        名またはオブジェクト名と一致する候補だけに絞り、 1 つになったら採用
        （ 備考「 列キーの接頭辞で絞り込み 」 ）。 それでも複数あれば 対応は
        ``"(不明)"`` のまま、 備考に「複数候補あり: 鎖+項目（ 最大 5 件、
-       浅い順 ）」。 無ければ「対応フィールドなし」
+       浅い順、 オブジェクト名 + 表示名も添える ）」。 無ければ
+       「 対応フィールドなし 」、 0. で経路の補完に失敗していたときは
+       その理由も添える
 
     列キーの実際の形は本物の組織で未確認。 この実装は推測の範囲で作る。
     結果は **必ず備考を確認** すること。
@@ -422,6 +617,9 @@ def build_column_map(
             渡された関連だけが解決対象になる。
         relations: ``RelationRecord`` のリスト。 鎖の計算に使う。
         main_object: 主オブジェクト名。 ``relations`` から鎖を引くために使う。
+        fetch_object: 経路の補完 （ 列キーからのたどり ） で経路上の
+            オブジェクトを取りに行く関数。 ``None`` のときは ``main_describe``
+            だけから既知の経路で解決を試み、 無いものはたどれなくなる。
 
     Returns:
         列対応表の行のリスト。 各行は ``列キー`` / ``表示名`` /
@@ -447,6 +645,10 @@ def build_column_map(
             ordered_chains.append(chain)
     ordered_chains.sort(key=lambda c: (c.depth, c.object_name))
 
+    # 関連オブジェクトの表示名引き当て用インデックス。
+    # キー: ``(所属オブジェクト名, 正規化表示名)`` → ``[field, ...]``
+    related_indices: dict[str, dict[str, list[dict[str, Any]]]] = {}
+
     rows: list[dict[str, str]] = []
     for column_key in columns:
         info = column_info.get(column_key, {}) if isinstance(column_info, dict) else {}
@@ -468,6 +670,48 @@ def build_column_map(
             rows.append(row)
             continue
 
+        # 0. 列キーからたどる （ 2026-10-14 ） 。
+        # 主オブジェクトが分かっていて、 列キーが ``主オブジェクト.`` で
+        # 始まり ``.`` を含むときだけ試す。 たどれが漏れたら表示名の照合
+        # に進むので、 失敗の理由は保持しておく。
+        path_failure_note: str | None = None
+        if (
+            main_object
+            and isinstance(column_key, str)
+            and "." in column_key
+            and _starts_with_main_object(column_key, main_object)
+        ):
+            soql_name, field_type, failure_note = _resolve_column_key_to_soql(
+                main_object=main_object,
+                column_key=column_key,
+                main_describe=main_describe,
+                fetch_object=fetch_object,
+            )
+            if soql_name:
+                row["対応フィールドAPI名"] = soql_name
+                row["型"] = field_type or ""
+                # 最後の項目の参照先 / リレーション名は表示名引き当てと
+                # 同じく埋める （ 表示の一貫性 ） 。 末端の項目は
+                # ``main_describe`` から同じ name を探して再利用する。
+                last_field_name = soql_name.rsplit(".", 1)[-1]
+                # ``main_describe`` はここに来る時点で必ず dict
+                # （ 上で ``field_index is None`` を弾いている ）
+                assert isinstance(main_describe, dict)
+                last_field = _find_last_field(main_describe, last_field_name)
+                if isinstance(last_field, dict):
+                    ref_to = last_field.get("referenceTo")
+                    if isinstance(ref_to, list) and ref_to:
+                        row["参照先オブジェクト"] = "|".join(
+                            str(item) for item in ref_to if isinstance(item, str) and item
+                        )
+                    rel_name = last_field.get("relationshipName")
+                    if isinstance(rel_name, str):
+                        row["リレーション名"] = rel_name
+                row["備考"] = "列キーから"
+                rows.append(row)
+                continue
+            path_failure_note = failure_note
+
         # 候補を全部集める （ 主 → 関連、 関連は浅い順 ）
         # 各候補は (所属オブジェクト名, 鎖文字列, field_dict) の組
         all_candidates: list[tuple[str, str, dict[str, Any], bool]] = []
@@ -481,14 +725,16 @@ def build_column_map(
             related_describe = related_describes.get(chain.object_name)
             if not isinstance(related_describe, dict):
                 continue
-            related_index = _build_field_index(related_describe)
+            if chain.object_name not in related_indices:
+                related_indices[chain.object_name] = _build_field_index(related_describe)
+            related_index = related_indices[chain.object_name]
             related_matches = related_index.get(normalized_label, [])
             for field in related_matches:
                 soql_chain = chain.chain
                 all_candidates.append((chain.object_name, soql_chain, field, False))
 
         if not all_candidates:
-            row["備考"] = "対応フィールドなし"
+            row["備考"] = path_failure_note or "対応フィールドなし"
             rows.append(row)
             continue
 
@@ -598,14 +844,53 @@ def build_column_map(
             filtered,
             key=lambda t: (0 if t[3] else 1, t[0], t[1]),
         )[:5]
-        candidate_texts = []
-        for owner, soql_chain, field, from_main, _ in sorted_filtered:
-            if from_main:
-                candidate_texts.append(f"{owner}.{field['name']}")
-            else:
-                candidate_texts.append(
-                    f"{soql_chain}.{field['name']}" if soql_chain else field["name"]
-                )
-        row["備考"] = "複数候補あり: " + ", ".join(candidate_texts)
+        row["備考"] = "複数候補あり: " + " / ".join(
+            _format_multiple_candidate(owner, soql_chain, field, from_main)
+            for owner, soql_chain, field, from_main, _ in sorted_filtered
+        )
         rows.append(row)
     return rows
+
+
+def _format_multiple_candidate(
+    owner: str, soql_chain: str, field: dict[str, Any], from_main: bool
+) -> str:
+    """複数候補ありの 1 件分の文字列を作る。
+
+    主オブジェクトの項目は ``Name（Opportunity 商談名）`` のように表示名と
+    オブジェクト名だけで添え、 関連経由の項目は ``Account.Name（Account
+    取引先名）`` のように鎖つきの SOQL セグメントに続けてオブジェクト名 +
+    表示名を添える。 SOQL 列名として ``Account.Name`` のようにそのまま
+    貼れる形にする。
+    """
+    label = field.get("label", "")
+    label_text = label if isinstance(label, str) and label else ""
+    if from_main:
+        soql_segment = field.get("name", "")
+        soql_segment = soql_segment if isinstance(soql_segment, str) else ""
+    else:
+        soql_segment = f"{soql_chain}.{field['name']}" if soql_chain else field.get("name", "")
+        soql_segment = soql_segment if isinstance(soql_segment, str) else ""
+    owner_text = owner if isinstance(owner, str) and owner else ""
+    return f"{soql_segment}（{owner_text} {label_text}）"
+
+
+def _find_last_field(main_describe: dict[str, Any], last_field_name: str) -> dict[str, Any] | None:
+    """``main_describe`` の ``fields`` から ``name == last_field_name`` の項目を返す。
+
+    列キー経路の最後の項目は多くの場合 **主オブジェクトの** フィールド
+    （ ``Contact.Name`` / ``Contact.Account.Name`` など ） か、 経路の
+    途中で ``fetch_object`` が補完してくれたオブジェクト側。 主オブジェクト
+    に同名の項目があればそれを、 無ければ ``None`` を返します（ 経路上の
+    他のオブジェクトは ``slim_objects`` 側に居るが、 ここでの参照先 /
+    リレーション名 は主オブジェクト上の項目に対してだけ埋める ） 。
+    """
+    fields_raw = main_describe.get("fields") if isinstance(main_describe, dict) else None
+    if not isinstance(fields_raw, list):
+        return None
+    for field in fields_raw:
+        if not isinstance(field, dict):
+            continue
+        if field.get("name") == last_field_name:
+            return field
+    return None

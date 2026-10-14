@@ -458,13 +458,19 @@ def test_different_orgs_keep_separate_state_across_runs(tmp_path: Path) -> None:
 
 
 def test_describe_failure_is_not_persisted(tmp_path: Path) -> None:
-    """HTTP エラーは CSV に書かれず、 次回は API を呼び直す。"""
+    """HTTP エラーは CSV に書かれず、 次回は API を呼び直す。
+
+    2026-10-14: 列キー先頭 （ ``Opp`` ） のフォールバックを試すように
+    なったので、 ``Opp`` 側も同じ HTTP エラーにして 主オブジェクトの
+    解決が両方全滅するようにしてある。
+    """
     client = _FakeClient(
         describe=_make_metadata("Opportunity", ["Opp.Name"]),
         errors={
             "Opportunity": SalesforceRequestError(
                 "GET", "/sobjects/Opportunity/describe", 500, "Boom"
-            )
+            ),
+            "Opp": SalesforceRequestError("GET", "/sobjects/Opp/describe", 500, "Boom"),
         },
     )
     settings = _settings(tmp_path)

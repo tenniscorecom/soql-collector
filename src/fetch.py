@@ -97,6 +97,11 @@ ROW_CHECK_UNDER = "超えていない"
 ROW_CHECK_UNKNOWN = "判定不可"
 ROW_CHECK_DISABLED = "未実施"
 
+# 2026-10-14: ``reportType.type`` から主オブジェクトが取れなかったときの
+# 代替候補として、 列キーの先頭を最大何個試すか。 多すぎても 1 度目で
+# 見つかることが多いので、 この値で十分
+_MAIN_OBJECT_PREFIX_LIMIT: int = 5
+
 # 接続先判定の既定実装（ comken の ``site_for`` ）。 テストでは差し替える。
 SiteFor = Callable[[str], type]
 
@@ -877,7 +882,9 @@ def _fetch_one(
     # ``apply_overrides`` が使う slim 版のオブジェクト dict。 中で経路の
     # 補完 （``_make_overrides_fetcher``） がオブジェクトを追加するので、
     # 接続の中に同じ dict を入れて、 接続後も pii / record で参照できる
-    # よう関数スコープに置く
+    # よう関数スコープに置く。 2026-10-14 から、 ``build_column_map`` も
+    # 列キーからの経路の補完に同じ fetcher を使うため、 最初に主オブジェクト
+    # だけ入れてから段階的に広げる。
     slim_objects: dict[str, dict[str, Any]] = {}
 
     try:
@@ -902,16 +909,32 @@ def _fetch_one(
             row_check = _check_row_count(client, report_id) if row_limit else None
             _log_row_check(row_check)
 
-            # 主オブジェクトの解決（ ``$`` / ``@`` を含むときは候補を
-            # ``_fetch_object_cached()`` で順に試す）。 ``describe_object`` が
-            # 401 / 403 を返したら ``_fetch_object_cached`` がそのまま上位へ
-            # ``SalesforceRequestError`` を送出し、 ID 全体を失敗扱いにする。
+            # 主オブジェクトの解決。 ``describe_object`` が 401 / 403 を返したら
+            # ``_fetch_object_cached`` がそのまま上位へ ``SalesforceRequestError``
+            # を送出し、 ID 全体を失敗扱いにする。
             main_object_name, main_describe, object_reason, csv_used_keys = _choose_main(
                 client, org, metadata, store, warnings
             )
             if object_reason:
                 warnings.append(object_reason)
             _log_report_contents(metadata, main_object_name)
+
+            # 主オブジェクトが確定したら ``objects`` / ``slim_objects`` の
+            # 種を蒔いて、 列キーからのたどりに使う fetcher を作る。 同じ
+            # fetcher を後の関連オブジェクト収集後にも ``build_column_map`` /
+            # ``apply_overrides`` に渡すので、 1 度作った dict を使い回す。
+            fetcher: Callable[[str], dict[str, Any] | None] | None = None
+            if main_object_name and main_describe is not None:
+                objects[main_object_name] = main_describe
+                slim_objects[main_object_name] = _slim_object(main_describe)
+                fetcher = _make_overrides_fetcher(
+                    client=client,
+                    org=org,
+                    store=store,
+                    objects=objects,
+                    slim_objects=slim_objects,
+                    csv_used_keys=csv_used_keys,
+                )
 
             # 列対応表: 主オブジェクトで 1 つも決まらないとき用に、 関連
             # オブジェクトの describe と relations を渡して解決範囲を広げる。
@@ -922,11 +945,11 @@ def _fetch_one(
                 related_describes=related_describes,
                 relations=[],
                 main_object=main_object_name,
+                fetch_object=fetcher,
             )
 
             # 主オブジェクト
             if main_object_name and main_describe is not None:
-                objects[main_object_name] = main_describe
                 # 関連オブジェクトを参照先から幅優先で掘る（ ``RELATED_DEPTH`` 段まで ）
                 related_nodes, relations, skipped_names = _collect_related_objects(
                     main_describe,
@@ -949,6 +972,11 @@ def _fetch_one(
                     if node.describe is not None:
                         objects[node.name] = node.describe
                         related_describes[node.name] = node.describe
+                        # 関連も ``slim_objects`` に入れる。 これで
+                        # ``build_column_map`` の経路の補完が ``slim_objects``
+                        # に既載の関連を 1 度で引ける。
+                        if node.name not in slim_objects:
+                            slim_objects[node.name] = _slim_object(node.describe)
 
                 # 列対応表を取り直す（ 関連オブジェクトが取れてから解く ）
                 column_map = mapping.build_column_map(
@@ -958,6 +986,7 @@ def _fetch_one(
                     related_describes=related_describes,
                     relations=relations,
                     main_object=main_object_name,
+                    fetch_object=fetcher,
                 )
 
             # 取り直し: 列対応に (不明) が残り、 CSV から読んだオブジェクトが
@@ -987,11 +1016,13 @@ def _fetch_one(
                         if main_object_name and _object_key(org, main_object_name) == key:
                             main_describe = refreshed
                             objects[main_object_name] = refreshed
+                            slim_objects[main_object_name] = _slim_object(refreshed)
                         else:
                             for obj_name in list(objects):
                                 if _object_key(org, obj_name) == key:
                                     objects[obj_name] = refreshed
                                     related_describes[obj_name] = refreshed
+                                    slim_objects[obj_name] = _slim_object(refreshed)
                                     break
 
                     # 列対応表を取り直す（ 取り直し後 ）
@@ -1002,29 +1033,17 @@ def _fetch_one(
                         related_describes=related_describes,
                         relations=relations,
                         main_object=main_object_name,
+                        fetch_object=fetcher,
                     )
                 # 1 パス内では取り直しは 1 度きり （ 取り直し後も (不明) が
                 # 残るケースは API 側でも解決できないので、 無限ループを避ける ）
                 # ※ 同じ実行の中で複数レポートがある場合は refresh_set で
                 #   同じ (org, object) を 1 度しか取り直さない
 
-            # slim_objects を作って、 人が ``列の対応.csv`` に入れた値で
-            # ``column_map`` を上書きする。 ``apply_overrides`` が
-            # ``Account.Owner.Name`` のような経路を辿るときに、 その経路上
-            # に無いオブジェクトは ``_make_overrides_fetcher`` で Salesforce
-            # から取る。 取れたオブジェクトは ``slim_objects`` と ``objects``
-            # の両方に加わる。 ``with`` の中に置くのは fetcher が
-            # ``client`` / ``store`` を掴むため。 401 / 403 は fetcher から
-            # 再送出されて外側の except で拾われ、 ID 全体が失敗扱いになる
-            slim_objects = {name: _slim_object(describe) for name, describe in objects.items()}
-            fetcher = _make_overrides_fetcher(
-                client=client,
-                org=org,
-                store=store,
-                objects=objects,
-                slim_objects=slim_objects,
-                csv_used_keys=csv_used_keys,
-            )
+            # 人が ``列の対応.csv`` に入れた値で ``column_map`` を上書きする。
+            # ``apply_overrides`` が ``Account.Owner.Name`` のような経路を辿る
+            # ときに、 その経路上に無いオブジェクトは fetcher が取りに行く。
+            # 取れたオブジェクトは ``slim_objects`` と ``objects`` の両方に加わる
             column_map = column_map_csv.apply_overrides(
                 column_map_rows=column_map,
                 existing=column_map_overrides,
@@ -1520,17 +1539,30 @@ def _choose_main(
     store: DescribeStore,
     warnings: list[str],
 ) -> tuple[str | None, dict[str, Any] | None, str | None, set[tuple[str, str]]]:
-    """``metadata`` の ``reportType.type`` から主オブジェクトを決める。
+    """``metadata`` から主オブジェクトを決める （ 2 段: レポートタイプ → 列キー先頭 ）。
 
-    ``report_type_candidates()`` で抽出した候補を先頭から
-    ``_fetch_object_cached()`` で試し、 最初に describe が取れた候補を
-    採用する。 全滅したとき・候補が無いときは ``candidate_failure_reason()``
-    の理由を返す（ ``reportType.type`` が空のときは「候補を抽出できなかった」
-    になる）。
+    2026-10-14 の方針: ``reportType.type`` から候補が取れなかったとき （ カ
+    スタムレポートタイプのレポートタイプ自体が主オブジェクトの API 名でな
+    いケース ） に備え、 **列キーの先頭** を代替の候補として試す。 次の順
+    で ``_fetch_object_cached()`` を呼んで、 最初に describe が取れた候補を
+    採用する:
+
+    (a) ``mapping.report_type_candidates(reportType.type)`` の候補
+    (b) (a) が全滅したとき、 列キーの先頭 （ ``.`` を含む列キーの最初の
+        ``.`` より前 ） を多い順、 同数は最初に出た順で最大
+        ``_MAIN_OBJECT_PREFIX_LIMIT`` 個
+
+    (a) で決まれば従来通り、 (b) で決まれば警告を出さずに正常な経路として
+    扱う。 どちらもだめなら ``mapping.candidate_failure_reason()`` の形
+    で両方のリストを並べた理由を返す。
 
     ``_fetch_object_cached()`` の 401 / 403 はそのまま上位へ
     ``SalesforceRequestError`` が送出され、 ID 全体が失敗扱いになる（呼び出し
     側で ``try`` している前提）。
+
+    (a) の ``describe_object`` が 404 / ValueError などで失敗したときの
+    WARNING は、 (b) が **成功する** なら出さない ( 正常な経路として扱う ) 。
+    (a) (b) ともに全滅したときは (a) の WARNING も積む。
 
     Returns:
         ``(main_object_name | None, main_describe | None, reason | None,
@@ -1546,15 +1578,106 @@ def _choose_main(
           ``(org, object_lower)`` の集合。 取り直し判定用
     """
     report_metadata = metadata.get("reportMetadata", {}) if isinstance(metadata, dict) else {}
-    object_name = report_metadata.get("reportType", {}).get("type", "")
-    if not isinstance(object_name, str):
-        object_name = ""
+    raw_type = report_metadata.get("reportType", {}).get("type", "")
+    object_name = raw_type if isinstance(raw_type, str) else ""
 
-    candidates = mapping.report_type_candidates(object_name)
     csv_used_keys: set[tuple[str, str]] = set()
-    for candidate in candidates:
-        describe = _fetch_object_cached(client, org, candidate, store, warnings, csv_used_keys)
+
+    # (a) ``reportType.type`` から候補。 失敗 WARNING は一時バッファに
+    # 溜め、 (b) が成功したら捨てる ( 正常な経路扱い ) 。
+    candidates_a = mapping.report_type_candidates(object_name)
+    a_warnings: list[str] = []
+    for candidate in candidates_a:
+        describe = _fetch_object_cached(client, org, candidate, store, a_warnings, csv_used_keys)
         if describe is not None:
             return candidate, describe, None, csv_used_keys
 
-    return None, None, mapping.candidate_failure_reason(object_name, candidates), csv_used_keys
+    # (b) 列キーの先頭から候補。 こちらは「 正常な経路 」 なので WARNING を
+    # 直接 ``warnings`` に積む。 ただし (b) で出た WARNING は (a) が全滅
+    # してもそのまま残す。
+    candidates_b = _extract_column_key_prefix_candidates(metadata)
+    b_warnings: list[str] = []
+    for candidate in candidates_b:
+        describe = _fetch_object_cached(client, org, candidate, store, b_warnings, csv_used_keys)
+        if describe is not None:
+            warnings.extend(b_warnings)
+            return candidate, describe, None, csv_used_keys
+
+    # 両方だめ: (a) の WARNING も積んでから理由を組み立てる
+    warnings.extend(a_warnings)
+    warnings.extend(b_warnings)
+    reason = _main_object_failure_reason(object_name, candidates_a, candidates_b)
+    return None, None, reason, csv_used_keys
+
+
+def _extract_column_key_prefix_candidates(
+    metadata: dict[str, Any],
+    *,
+    limit: int = _MAIN_OBJECT_PREFIX_LIMIT,
+) -> list[str]:
+    """``metadata`` の列キーのうち ``.`` を含むものについて最初の ``.`` よ
+    り前を集計し、 多い順（ 同数は最初に出た順 ） で ``limit`` 個返す。
+
+    列キーは ``mapping.collect_describable_columns`` が集める全ソース
+    （ ``detailColumns`` / ``reportFilters`` / ``groupingsDown`` /
+    ``groupingsAcross`` / ``aggregates`` / ``standardDateFilter`` /
+    ``sortBy`` ） を使う。 ``.`` を含まない列キーは対象外（ 主オブジェクトと
+    同じ名前 1 つのキーや、 ``OPPORTUNITY_NAME`` のような値 ）。
+
+    ``_choose_main`` の (b) 段階で主オブジェクトの候補を組み立てるのに使う。
+    """
+    report_metadata = metadata.get("reportMetadata", {}) if isinstance(metadata, dict) else {}
+    columns = mapping.collect_describable_columns(report_metadata)
+    counts: dict[str, int] = {}
+    first_seen: dict[str, int] = {}
+    for index, column_key in enumerate(columns):
+        if not isinstance(column_key, str) or "." not in column_key:
+            continue
+        prefix = column_key.split(".", 1)[0].strip()
+        if not prefix:
+            continue
+        counts[prefix] = counts.get(prefix, 0) + 1
+        if prefix not in first_seen:
+            first_seen[prefix] = index
+    # 多い順、 同数は最初に出た順
+    sorted_prefixes = sorted(
+        counts.keys(),
+        key=lambda p: (-counts[p], first_seen[p]),
+    )
+    return sorted_prefixes[:limit]
+
+
+def _main_object_failure_reason(
+    original: str,
+    candidates_a: list[str],
+    candidates_b: list[str],
+) -> str:
+    """``_choose_main`` の (a) / (b) が両方全滅したときの理由を組み立てる。
+
+    既存 ``mapping.candidate_failure_reason`` のスタイルを保ちつつ、 両方
+    のリストを 「 ``(a)`` / ``(b)`` 」 と分かる形で添える。 ``(a)`` も
+    ``(b)`` も無い（ ``reportType.type`` が空で列キーにも ``.`` が無い）
+    ときは、 「 主オブジェクト候補を抽出できなかった 」 の旨を返す。
+    """
+    if candidates_a and candidates_b:
+        a_text = ", ".join(repr(c) for c in candidates_a)
+        b_text = ", ".join(repr(c) for c in candidates_b)
+        return (
+            f"レポートタイプ {original!r} の主オブジェクト候補 {a_text} と"
+            f" 列キー先頭の候補 {b_text} を順に確認しましたが、"
+            "どれも Object Describe できず自動判定できません。手動で確認してください"
+        )
+    if candidates_a:
+        return mapping.candidate_failure_reason(original, candidates_a)
+    if candidates_b:
+        b_text = ", ".join(repr(c) for c in candidates_b)
+        return (
+            f"レポートタイプ {original!r} の主オブジェクトは特定できず、"
+            f" 列キー先頭の候補 {b_text} を順に確認しましたが、"
+            "どれも Object Describe できず自動判定できません。手動で確認してください"
+        )
+    return (
+        f"レポートタイプ {original!r} からは主オブジェクト候補を抽出できず、"
+        "列キーにも主オブジェクトの手がかりが無いため自動判定できません。"
+        "手動で確認してください"
+    )

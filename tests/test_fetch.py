@@ -1141,14 +1141,19 @@ def test_main_object_resolves_custom_entity_dollar_type(tmp_path: Path) -> None:
 
 def test_main_object_describe_failure_yields_null(tmp_path: Path) -> None:
     """主オブジェクトの describe_object が失敗（401/403 以外）→ ``主オブジェクト: null`` 、警告、
-    関連は取らない。"""
+    関連は取らない。
+
+    2026-10-14: 列キー先頭のフォールバック （ ``Opp`` ） も試すように
+    なったので、 ``Opp`` も同じエラーにして 両方が全滅するシナリオを確かめる
+    """
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
         describe=_make_metadata("Opportunity"),
         errors={
             "Opportunity": SalesforceRequestError(
                 "GET", "/sobjects/Opportunity/describe", 400, "Bad"
-            )
+            ),
+            "Opp": SalesforceRequestError("GET", "/sobjects/Opp/describe", 400, "Bad"),
         },
     )
     site_for, _ = _site_for(client)
@@ -2844,3 +2849,392 @@ def test_run_fetch_no_fetcher_legacy_behavior(tmp_path: Path) -> None:
     # 列は自動が取れなかったまま (不明)
     row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.Account.Owner")
     assert row["対応フィールドAPI名"] in ("(不明)", "")
+
+
+# ── 列キーからの主オブジェクト・SOQL 列名の解決 （ 2026-10-14 ） ─────────────
+
+
+def _contact_describe() -> dict:
+    """列キー経路のテスト用の Contact describe。 Account への参照と
+    カスタム Retention への参照 ( `Retention__c` / relationshipName
+    `Retention__r` / referenceTo `Retention__c` ) を持つ。
+    """
+    return {
+        "name": "Contact",
+        "fields": [
+            {"name": "Name", "type": "string", "label": "氏名"},
+            {"name": "Email", "type": "email", "label": "メール"},
+            {
+                "name": "AccountId",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "Account",
+            },
+            {
+                "name": "Retention__c",
+                "type": "reference",
+                "referenceTo": ["Retention__c"],
+                "relationshipName": "Retention__r",
+            },
+        ],
+    }
+
+
+def _retention_describe() -> dict:
+    """列キー経路のテスト用の Retention__c describe。"""
+    return {
+        "name": "Retention__c",
+        "fields": [
+            {"name": "Status__c", "type": "picklist", "label": "ステータス"},
+        ],
+    }
+
+
+def _account_describe() -> dict:
+    """列キー経路のテスト用の Account describe。"""
+    return {
+        "name": "Account",
+        "fields": [
+            {"name": "Name", "type": "string", "label": "取引先名"},
+        ],
+    }
+
+
+def _custom_retention_metadata() -> dict:
+    """``Contact_Retention__c`` 形式のレポートタイプ + 列キー ``Contact.*`` の
+    メタデータ。**
+    """
+    detail_columns = [
+        "Contact.Name",
+        "Contact.Email",
+        "Contact.Account.Name",
+        "Contact.Retention__c.Status__c",
+    ]
+    info = {
+        "Contact.Name": {"label": "氏名"},
+        "Contact.Email": {"label": "メール"},
+        "Contact.Account.Name": {"label": "取引先名"},
+        "Contact.Retention__c.Status__c": {"label": "ステータス"},
+    }
+    return {
+        "reportMetadata": {
+            "reportType": {"type": "Contact_Retention__c"},
+            "reportFormat": "TABULAR",
+            "detailColumns": detail_columns,
+        },
+        "reportExtendedMetadata": {"detailColumnInfo": info},
+    }
+
+
+def test_main_object_falls_back_to_column_key_prefix(tmp_path: Path) -> None:
+    """``reportType.type`` が describe 404、 列キー先頭の ``Contact`` が
+    通る → ``Contact`` が主オブジェクトになり、警告は出ない
+    """
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_custom_retention_metadata(),
+        object_describes={
+            "Contact": _contact_describe(),
+            "Account": _account_describe(),
+            "Retention__c": _retention_describe(),
+        },
+        errors={
+            "Contact_Retention__c": SalesforceRequestError(
+                "GET", "/sobjects/Contact_Retention__c/describe", 404, "Not Found"
+            ),
+        },
+    )
+    site_for, _ = _site_for(client)
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+    payload = _record_to_payload(record)
+    # 列キー先頭の Contact が主オブジェクトに
+    assert payload["主オブジェクト"] == "Contact"
+    # ``Contact_Retention__c`` の 404 が警告として残らない
+    # ( ``Contact`` 側の警告も無い = 正常な経路扱い )
+    assert not any("Contact_Retention__c" in w for w in payload["warnings"])
+    assert not any("Contact の describe に失敗" in w for w in payload["warnings"])
+
+
+def test_column_key_path_walks_soql_and_fetches_intermediate(tmp_path: Path) -> None:
+    """列キーが ``Contact.Account.Name`` / ``Contact.Retention__c.Status__c``
+    なら SOQL 列名が ``Account.Name`` / ``Retention__r.Status__c`` になり、
+    型が付き、 Retention__c は取りに行く （ describe 1 回 ） 。
+    """
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_custom_retention_metadata(),
+        object_describes={
+            "Contact": _contact_describe(),
+            "Account": _account_describe(),
+            "Retention__c": _retention_describe(),
+        },
+        errors={
+            "Contact_Retention__c": SalesforceRequestError(
+                "GET", "/sobjects/Contact_Retention__c/describe", 404, "Not Found"
+            ),
+        },
+    )
+    site_for, _ = _site_for(client)
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+
+    rows_by_key = {r["列キー"]: r for r in record.column_map}
+    name_row = rows_by_key["Contact.Name"]
+    assert name_row["対応フィールドAPI名"] == "Name"
+    assert name_row["型"] == "string"
+    assert name_row["備考"] == "列キーから"
+
+    email_row = rows_by_key["Contact.Email"]
+    assert email_row["対応フィールドAPI名"] == "Email"
+    assert email_row["型"] == "email"
+    assert email_row["備考"] == "列キーから"
+
+    account_row = rows_by_key["Contact.Account.Name"]
+    assert account_row["対応フィールドAPI名"] == "Account.Name"
+    assert account_row["型"] == "string"
+    assert account_row["備考"] == "列キーから"
+
+    retention_row = rows_by_key["Contact.Retention__c.Status__c"]
+    assert retention_row["対応フィールドAPI名"] == "Retention__r.Status__c"
+    assert retention_row["型"] == "picklist"
+    assert retention_row["備考"] == "列キーから"
+
+    # Retention__c は取りに行った (Account は関連の探索経路で既出に近い回数になる)
+    assert client.describe_object_calls.count("Retention__c") == 1
+
+
+def test_column_key_path_falls_back_to_label_when_first_segment_404(
+    tmp_path: Path,
+) -> None:
+    """列キー ``Contact.Acount.Name`` (Acount は Contact に無い) → 経路の
+    補完は失敗、 表示名の照合にフォールバック。 表示名が ``Account Name``
+    のときに Account.Name が取れて、 備考は 「 関連オブジェクト経由 」
+    ( 経路の補完失敗の理由は残らない )
+
+    """
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "Contact"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["Contact.Acount.Name"],
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {"Contact.Acount.Name": {"label": "Account Name"}},
+        },
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    contact = {
+        "name": "Contact",
+        "fields": [
+            {
+                "name": "AccountId",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "Account",
+            },
+        ],
+    }
+    account = {
+        "name": "Account",
+        "fields": [{"name": "Name", "type": "string", "label": "Account Name"}],
+    }
+    client = _FakeClient(
+        describe=metadata,
+        object_describes={"Contact": contact, "Account": account},
+    )
+    site_for, _ = _site_for(client)
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+    row = next(r for r in record.column_map if r["列キー"] == "Contact.Acount.Name")
+    # 表示名で Account.Name が取れている
+    assert row["対応フィールドAPI名"] == "Account.Name"
+    assert row["型"] == "string"
+    # 表示名の照合で決まったので経路の補完失敗理由は **残らない**
+    assert "列キーで" not in row["備考"]
+
+
+def test_column_key_path_falls_back_when_label_also_fails(tmp_path: Path) -> None:
+    """列キー ``Contact.Acount.Name`` で経路も表示名もダメ → 「 対応表示で
+    はありません 」 の代わりに 経路の補完失敗の理由が備考に入る
+    """
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "Contact"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["Contact.Acount.Name"],
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {"Contact.Acount.Name": {"label": "存在しないラベル"}},
+        },
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    contact = {
+        "name": "Contact",
+        "fields": [
+            {
+                "name": "AccountId",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "Account",
+            },
+        ],
+    }
+    account = {"name": "Account", "fields": []}
+    client = _FakeClient(
+        describe=metadata,
+        object_describes={"Contact": contact, "Account": account},
+    )
+    site_for, _ = _site_for(client)
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+    row = next(r for r in record.column_map if r["列キー"] == "Contact.Acount.Name")
+    assert row["対応フィールドAPI名"] == "(不明)"
+    # 経路の補完失敗の理由がそのまま備考に入る
+    assert "列キーで" in row["備考"]
+    assert "Acount" in row["備考"]
+
+
+def test_standard_form_column_key_falls_back_to_label_matching(tmp_path: Path) -> None:
+    """``.`` を含まない列キー ( 例 ``OPPORTUNITY_NAME`` ) は列キーからの
+    経路を試さず、 既存の表示名引き当てがそのまま動く
+    """
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "Opportunity"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["OPPORTUNITY_NAME"],
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {"OPPORTUNITY_NAME": {"label": "商談名"}},
+        },
+    }
+    opportunity = {
+        "name": "Opportunity",
+        "fields": [{"name": "Name", "type": "string", "label": "商談名"}],
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(describe=metadata, object_describes={"Opportunity": opportunity})
+    site_for, _ = _site_for(client)
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+    row = next(r for r in record.column_map if r["列キー"] == "OPPORTUNITY_NAME")
+    assert row["対応フィールドAPI名"] == "Name"
+    assert row["型"] == "string"
+    # 列キーからの経路ではない、 既存の表示名引き当てで決まった
+    assert row["備考"] == ""
+
+
+def test_column_key_prefix_picks_2nd_when_first_404(tmp_path: Path) -> None:
+    """``Contact_Retention__c`` の describe が 404 、 列キーの先頭 1 番目
+    ( 例 ``Contact_Retention__c`` ) も 404 、 2 番目 ( 例 ``Contact`` ) が
+    通る → 2 番目が主オブジェクトになる
+    """
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "Contact_Retention__c"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["Contact_Retention__c.Name", "Contact.Name", "Contact.Email"],
+        },
+        "reportExtendedMetadata": {
+            "detailColumnInfo": {
+                "Contact_Retention__c.Name": {"label": "X"},
+                "Contact.Name": {"label": "氏名"},
+                "Contact.Email": {"label": "メール"},
+            },
+        },
+    }
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=metadata,
+        object_describes={
+            "Contact": _contact_describe(),
+        },
+        errors={
+            "Contact_Retention__c": SalesforceRequestError(
+                "GET", "/sobjects/Contact_Retention__c/describe", 404, "Not Found"
+            ),
+        },
+    )
+    site_for, _ = _site_for(client)
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+    payload = _record_to_payload(record)
+    # 2 番目の ``Contact`` が採用される
+    assert payload["主オブジェクト"] == "Contact"
+
+
+def test_column_key_break_makes_resilience(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``build_column_map`` の列キーからの経路の補完を空にした壊れた実装に
+    差し替えると、 列キー経路のテスト ``test_column_key_path_walks_soql_...``
+    の主条件 ( ``Contact.Retention__c.Status__c`` が ``Retention__r.Status__c``
+    に解決 ) が落ち、 本物の実装では通ることを直接確かめる
+    """
+    import src.mapping as mapping_module
+
+    real = mapping_module.build_column_map
+
+    def no_column_key_build_column_map(
+        metadata: dict,
+        main_describe: dict | None,
+        reason: str | None,
+        *,
+        fetch_object: object = None,
+        **kwargs: object,
+    ) -> list[dict[str, str]]:
+        del fetch_object
+        # 列キーからの経路の補完を試さない壊れた版
+        return real(
+            metadata,
+            main_describe,
+            reason,
+            related_describes=None,
+            relations=None,
+            main_object=kwargs.get("main_object"),
+            fetch_object=None,
+        )
+
+    monkeypatch.setattr(mapping_module, "build_column_map", no_column_key_build_column_map)
+
+    # テスト条件: ``Contact_Retention__c`` (404) + 列キー ``Contact.*``
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_custom_retention_metadata(),
+        object_describes={
+            "Contact": _contact_describe(),
+            "Account": _account_describe(),
+            "Retention__c": _retention_describe(),
+        },
+        errors={
+            "Contact_Retention__c": SalesforceRequestError(
+                "GET", "/sobjects/Contact_Retention__c/describe", 404, "Not Found"
+            ),
+        },
+    )
+    site_for, _ = _site_for(client)
+    record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+    # ``Contact.Retention__c.Status__c`` の SOQL 列名は
+    # ``Retention__r.Status__c`` にならず、 経路の補完が空だったために
+    # ``(不明)`` のままになる
+    row = next(r for r in record.column_map if r["列キー"] == "Contact.Retention__c.Status__c")
+    assert row["対応フィールドAPI名"] == "(不明)"
+
+
+def test_extract_column_key_prefix_candidates_orders_by_frequency() -> None:
+    """``_extract_column_key_prefix_candidates`` は ``.`` を含む列キーの
+    先頭を 多い順、 同数は最初に出た順 で最大 5 個返す"""
+    from src.fetch import _extract_column_key_prefix_candidates
+
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "Unknown__c"},
+            "detailColumns": [
+                "Contact.Name",  # Contact 1
+                "Contact.Email",  # Contact 2
+                "Account.Name",  # Account 1
+                "Contact.Account.Industry",  # Contact 3
+                "Owner.Name",  # Owner 1
+                "OPPORTUNITY_NAME",  # 対象外 ( ``.`` なし )
+            ],
+            "reportFilters": [{"column": "Account.Owner"}],  # Account 2
+        },
+    }
+    assert _extract_column_key_prefix_candidates(metadata) == [
+        "Contact",  # 3 件
+        "Account",  # 2 件
+        "Owner",  # 1 件 ( 出現順が先 )
+    ]
