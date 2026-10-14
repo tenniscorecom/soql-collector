@@ -541,3 +541,310 @@ def test_build_column_map_related_resolution_detects_main_only_regression(
     # main_only 実装だと、 Task に 「 Account Name 」 が無いため 「 対応フィールドなし 」 。
     row = next(r for r in rows if r["列キー"] == "ACCOUNT.NAME")
     assert row["対応フィールドAPI名"] == "(不明)"
+
+
+# ── FK_ 列キー ──────────────────────────────────────────────────────────
+
+
+def _fk_opportunity_with_contact_ref() -> dict:
+    """``Contact__c`` 参照を持つ ``Opportunity`` 風の main_describe。"""
+    return _describe_with_fields(
+        [
+            {"name": "Name", "label": "Name", "type": "Text"},
+            {
+                "name": "Contact__c",
+                "label": "Contact",
+                "type": "reference",
+                "referenceTo": ["Contact"],
+                "relationshipName": "Contact__r",
+            },
+        ]
+    )
+
+
+def _contact_with_email() -> dict:
+    """``Email__c`` を持つ ``Contact`` 風の describe。"""
+    return {
+        "name": "Contact",
+        "fields": [{"name": "Email__c", "label": "Email", "type": "Email"}],
+    }
+
+
+def test_build_column_map_resolves_fk_single_reference() -> None:
+    """``FK_Contact.Email__c`` のような列キーは、 主の ``Contact__c`` 参照を
+    通って ``Contact__r.Email__c`` として解決する （ 備考: 「FK_ から」 ） 。
+    """
+    metadata = _make_metadata(
+        detail_columns=["FK_Contact.Email__c"],
+        detail_column_labels={"FK_Contact.Email__c": "Contact Email"},
+    )
+
+    def fetch_object(name: str) -> dict | None:
+        return _contact_with_email() if name == "Contact" else None
+
+    rows = build_column_map(
+        metadata,
+        _fk_opportunity_with_contact_ref(),
+        None,
+        related_describes={},
+        relations=[],
+        main_object="Opportunity",
+        fetch_object=fetch_object,
+    )
+
+    row = next(r for r in rows if r["列キー"] == "FK_Contact.Email__c")
+    assert row["対応フィールドAPI名"] == "Contact__r.Email__c"
+    assert row["型"] == "Email"
+    assert row["備考"] == "FK_ から"
+
+
+def test_build_column_map_resolves_fk_with_dollar_prefix() -> None:
+    """``FK_$Contact.Email__c`` の先頭の ``$`` を外して ``Contact.Email__c``
+    として解く。 結果は ``$`` なしと同じ。
+    """
+    metadata = _make_metadata(
+        detail_columns=["FK_$Contact.Email__c"],
+        detail_column_labels={"FK_$Contact.Email__c": "Contact Email"},
+    )
+
+    def fetch_object(name: str) -> dict | None:
+        return _contact_with_email() if name == "Contact" else None
+
+    rows = build_column_map(
+        metadata,
+        _fk_opportunity_with_contact_ref(),
+        None,
+        related_describes={},
+        relations=[],
+        main_object="Opportunity",
+        fetch_object=fetch_object,
+    )
+
+    row = next(r for r in rows if r["列キー"] == "FK_$Contact.Email__c")
+    assert row["対応フィールドAPI名"] == "Contact__r.Email__c"
+    assert row["備考"] == "FK_ から"
+
+
+def test_build_column_map_resolves_fk_multiple_references() -> None:
+    """主オブジェクトに同じ対象への参照項目が 2 つあるときは、 ``(不明)``
+    のまま備考に「 複数候補あり: ... 」 を入れる。 表示名照合には進まない。
+    """
+    metadata = _make_metadata(
+        detail_columns=["FK_Contact.Email__c"],
+        detail_column_labels={"FK_Contact.Email__c": "Contact Email"},
+    )
+    opportunity_describe = _describe_with_fields(
+        [
+            {
+                "name": "Contact__c",
+                "label": "Contact",
+                "type": "reference",
+                "referenceTo": ["Contact"],
+                "relationshipName": "Contact__r",
+            },
+            {
+                "name": "Sub_Contact__c",
+                "label": "Sub Contact",
+                "type": "reference",
+                "referenceTo": ["Contact"],
+                "relationshipName": "Sub_Contact__r",
+            },
+        ]
+    )
+
+    def fetch_object(name: str) -> dict | None:
+        return _contact_with_email() if name == "Contact" else None
+
+    rows = build_column_map(
+        metadata,
+        opportunity_describe,
+        None,
+        related_describes={},
+        relations=[],
+        main_object="Opportunity",
+        fetch_object=fetch_object,
+    )
+
+    row = next(r for r in rows if r["列キー"] == "FK_Contact.Email__c")
+    assert row["対応フィールドAPI名"] == "(不明)"
+    assert row["備考"].startswith("複数候補あり: ")
+    # 両方の候補が鎖つきの SOQL セグメントと項目名で出る
+    assert "Contact__r.Email__c（Contact__c）" in row["備考"]
+    assert "Sub_Contact__r.Email__c（Sub_Contact__c）" in row["備考"]
+
+
+def test_build_column_map_falls_back_when_fk_has_no_reference() -> None:
+    """主オブジェクトに FK_ の対象オブジェクトへの参照が無いときは表示名
+    照合にフォールバックし、 照合でも決まらなければ備考に FK_ の理由が出る。
+    """
+    metadata = _make_metadata(
+        detail_columns=["FK_Contact.Email__c"],
+        detail_column_labels={"FK_Contact.Email__c": "Contact Email"},
+    )
+    # Contact__c を持たない Opportunity
+    opportunity_describe = _describe_with_fields(
+        [{"name": "Name", "label": "Name", "type": "Text"}]
+    )
+
+    rows = build_column_map(
+        metadata,
+        opportunity_describe,
+        None,
+        related_describes={},
+        relations=[],
+        main_object="Opportunity",
+        fetch_object=None,
+    )
+
+    row = next(r for r in rows if r["列キー"] == "FK_Contact.Email__c")
+    assert row["対応フィールドAPI名"] == "(不明)"
+    assert "FK_ で Contact を参照する項目が Opportunity にありません" in row["備考"]
+
+
+def test_build_column_map_skips_fk_without_dot() -> None:
+    """``FK_NAME`` のような ``.`` を含まない列キーは FK_ 扱いせず、 表示名
+    照合に任せる。 既存挙動を変えずに「 対応フィールドあり 」 のまま。
+    """
+    metadata = _make_metadata(
+        detail_columns=["FK_NAME"],
+        detail_column_labels={"FK_NAME": "Name"},
+    )
+    opportunity_describe = _describe_with_fields(
+        [{"name": "Name", "label": "Name", "type": "Text"}]
+    )
+
+    rows = build_column_map(
+        metadata,
+        opportunity_describe,
+        None,
+        related_describes={},
+        relations=[],
+        main_object="Opportunity",
+        fetch_object=None,
+    )
+
+    row = next(r for r in rows if r["列キー"] == "FK_NAME")
+    assert row["対応フィールドAPI名"] == "Name"
+    assert row["備考"] == ""
+
+
+def test_build_column_map_resolves_fk_multi_hop() -> None:
+    """``FK_Contact.Account.Name`` は ``Contact__r.Account.Name`` に解決。
+    経路上の Account は ``fetch_object`` が補完する。
+    """
+    metadata = _make_metadata(
+        detail_columns=["FK_Contact.Account.Name"],
+        detail_column_labels={"FK_Contact.Account.Name": "Contact Account Name"},
+    )
+    contact_describe = {
+        "name": "Contact",
+        "fields": [
+            {
+                "name": "AccountId",
+                "label": "Account ID",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "Account",
+            },
+        ],
+    }
+    account_describe = {
+        "name": "Account",
+        "fields": [{"name": "Name", "label": "Name", "type": "Text"}],
+    }
+
+    def fetch_object(name: str) -> dict | None:
+        if name == "Contact":
+            return contact_describe
+        if name == "Account":
+            return account_describe
+        return None
+
+    rows = build_column_map(
+        metadata,
+        _fk_opportunity_with_contact_ref(),
+        None,
+        related_describes={},
+        relations=[],
+        main_object="Opportunity",
+        fetch_object=fetch_object,
+    )
+
+    row = next(r for r in rows if r["列キー"] == "FK_Contact.Account.Name")
+    assert row["対応フィールドAPI名"] == "Contact__r.Account.Name"
+    assert row["備考"] == "FK_ から"
+
+
+def test_build_column_map_fk_falls_back_to_label_when_label_matches() -> None:
+    """FK_ の対象への参照が無いが、 表示名が主オブジェクトの別項目と
+    一致するときは、 そちらが優先される （ 失敗理由は備考に残らない ） 。
+    """
+    metadata = _make_metadata(
+        detail_columns=["FK_Contact.Email__c"],
+        detail_column_labels={"FK_Contact.Email__c": "Email"},
+    )
+    # Contact__c を持たないが、 Email というラベルの Email__c 項目は持つ
+    opportunity_describe = _describe_with_fields(
+        [{"name": "Email__c", "label": "Email", "type": "Email"}]
+    )
+
+    rows = build_column_map(
+        metadata,
+        opportunity_describe,
+        None,
+        related_describes={},
+        relations=[],
+        main_object="Opportunity",
+        fetch_object=None,
+    )
+
+    row = next(r for r in rows if r["列キー"] == "FK_Contact.Email__c")
+    # 表示名照合で決まり、 FK_ の失敗理由は消える
+    assert row["対応フィールドAPI名"] == "Email__c"
+    assert "FK_ で" not in row["備考"]
+
+
+# ── FK_ 実装が落ちると FK_ テスト群が落ちる ─────────────────────────────
+
+
+def test_build_column_map_fk_path_falls_back_when_implementation_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``build_column_map`` の 0b. （ FK_ ） ブロックを空にした壊れた実装に
+    差し替えると、 上記の FK_ テスト群の代表が落ちることを直接確かめる。
+
+    検出方法: ``_resolve_column_key_to_soql`` を常に ``(None, None, None)``
+    を返すようパッチする。 0b. は内部でこれを呼ぶので解けなくなり、 結果
+    として ``FK_Contact.Email__c`` が ``(不明)`` のままになる （ 表示名照合
+    でも解決しないため ） 。
+    """
+    import src.mapping as mapping_module
+
+    def no_resolve(*args: object, **kwargs: object) -> tuple[object, object, object]:
+        return None, None, None
+
+    monkeypatch.setattr(mapping_module, "_resolve_column_key_to_soql", no_resolve)
+
+    # 上の ``test_build_column_map_resolves_fk_single_reference`` と同じ条件
+    metadata = _make_metadata(
+        detail_columns=["FK_Contact.Email__c"],
+        detail_column_labels={"FK_Contact.Email__c": "Contact Email"},
+    )
+
+    def fetch_object(name: str) -> dict | None:
+        return _contact_with_email() if name == "Contact" else None
+
+    rows = mapping_module.build_column_map(
+        metadata,
+        _fk_opportunity_with_contact_ref(),
+        None,
+        related_describes={},
+        relations=[],
+        main_object="Opportunity",
+        fetch_object=fetch_object,
+    )
+
+    row = next(r for r in rows if r["列キー"] == "FK_Contact.Email__c")
+    # 0b を抜くと、 表示名照合でも解決しないので ``(不明)`` のまま
+    assert row["対応フィールドAPI名"] == "(不明)"
+    assert "FK_ から" not in row["備考"]

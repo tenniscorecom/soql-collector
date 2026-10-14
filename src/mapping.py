@@ -588,6 +588,17 @@ def build_column_map(
        ``fetch_object`` で取りに行く。 たどれれば SOQL 列名と最後の型を
        採用し、 備考は「 列キーから 」 。 5 段を超える、または途中で項目
         が見つからない・参照先が取れない場合は表示名の照合にフォールバック
+    0b. **FK_ からたどる** （ 2026-10-14 ）: ``column_key`` が ``FK_``
+       で始まり残りに ``.`` を含む列は、 主オブジェクトの参照項目のうち
+       ``referenceTo`` に対象オブジェクト名（ 大小文字無視 ） を含み
+       ``relationshipName`` が空でないものを全部集める。 1 件で、 残りを
+       既存の ``_resolve_column_key_to_soql`` で解ければ
+       ``<relationshipName>.<SOQL 片>`` を採用し 備考は「 FK_ から 」 。
+       2 件以上で、 経路が解ける候補があれば 対応は ``"(不明)"`` のまま
+       備考に「 複数候補あり: ... （ 最大 5 件 ） 」 を入れ表示名照合には
+       進まない。 対象が主に無い / 対象 describe が取れない / 経路が解け
+       ないときは失敗理由を ``path_failure_note`` に持って表示名照合に
+       フォールバック
     1. 主オブジェクトで、 表示名（ 前後空白除去・小文字 ） が **一意に**
        一致すればそれを採用 （ 今までの挙動 ）
     2. 一致しない列は、 取れた関連オブジェクト（ 段の浅い順 ） の項目
@@ -711,6 +722,128 @@ def build_column_map(
                 rows.append(row)
                 continue
             path_failure_note = failure_note
+
+        # 0b. FK_ からたどる （ 2026-10-14 ） 。
+        # 列キーが ``FK_`` で始まり残りに ``.`` を含む形
+        # （ 例: ``FK_Contact.Email__c`` / ``FK_$Contact.Email__c`` ） は、
+        # 主オブジェクトの参照項目から対象オブジェクトのリレーション名を
+        # 取り、 残りは既存の ``_resolve_column_key_to_soql`` で解く。
+        # 1 件で経路が解ければ採用、 2 件以上で経路が解ける候補があれば
+        # 「 複数候補あり: ... 」 の形で備考だけ入れて表示名照合には
+        # 進まない、 どちらも無ければ失敗理由を ``path_failure_note`` に
+        # 持って表示名照合へフォールバック。
+        if main_object and isinstance(column_key, str) and column_key.startswith("FK_"):
+            fk_body = column_key[3:]
+            if fk_body.startswith("$"):
+                fk_body = fk_body[1:]
+            if "." in fk_body:
+                fk_target, _, fk_remainder = fk_body.partition(".")
+                if fk_target and fk_remainder:
+                    # main_describe の fields から対象オブジェクトを参照する
+                    # 参照項目を全部集める （ ``referenceTo`` は大小無視 ）
+                    main_fields_raw = (
+                        main_describe.get("fields") if isinstance(main_describe, dict) else None
+                    )
+                    main_fields = main_fields_raw if isinstance(main_fields_raw, list) else []
+                    fk_matches: list[dict[str, Any]] = []
+                    for mf in main_fields:
+                        if not isinstance(mf, dict):
+                            continue
+                        if mf.get("type") != "reference":
+                            continue
+                        rel_name = mf.get("relationshipName")
+                        if not isinstance(rel_name, str) or not rel_name:
+                            continue
+                        mf_name = mf.get("name")
+                        if not isinstance(mf_name, str) or not mf_name:
+                            continue
+                        ref_to = mf.get("referenceTo")
+                        if not isinstance(ref_to, list):
+                            continue
+                        if any(
+                            isinstance(r, str) and r.lower() == fk_target.lower() for r in ref_to
+                        ):
+                            fk_matches.append(mf)
+
+                    if not fk_matches:
+                        path_failure_note = (
+                            f"FK_ で {fk_target} を参照する項目が {main_object} にありません"
+                        )
+                    else:
+                        # 対象オブジェクトの describe を取る。 ``fetch_object``
+                        # が優先、 無ければ ``related_describes`` を探す
+                        target_describe: dict[str, Any] | None = None
+                        if fetch_object is not None:
+                            fetched = fetch_object(fk_target)
+                            if isinstance(fetched, dict):
+                                target_describe = fetched
+                        if target_describe is None and related_describes:
+                            rel = related_describes.get(fk_target)
+                            if isinstance(rel, dict):
+                                target_describe = rel
+
+                        if target_describe is None:
+                            path_failure_note = f"FK_ で {fk_target} の項目定義を取得できません"
+                        else:
+                            fk_path_key = f"{fk_target}.{fk_remainder}"
+                            (
+                                fk_sub_soql,
+                                fk_sub_type,
+                                fk_sub_failure,
+                            ) = _resolve_column_key_to_soql(
+                                main_object=fk_target,
+                                column_key=fk_path_key,
+                                main_describe=target_describe,
+                                fetch_object=fetch_object,
+                            )
+
+                            if fk_sub_soql:
+                                if len(fk_matches) == 1:
+                                    fk_field = fk_matches[0]
+                                    fk_rel = fk_field.get("relationshipName") or ""
+                                    row["対応フィールドAPI名"] = f"{fk_rel}.{fk_sub_soql}"
+                                    row["型"] = fk_sub_type or ""
+                                    # 末端の項目の参照先 / リレーション名は
+                                    # 0. と同じく埋める
+                                    fk_last_name = fk_sub_soql.rsplit(".", 1)[-1]
+                                    fk_last = _find_last_field(target_describe, fk_last_name)
+                                    if isinstance(fk_last, dict):
+                                        fk_ref_to = fk_last.get("referenceTo")
+                                        if isinstance(fk_ref_to, list) and fk_ref_to:
+                                            row["参照先オブジェクト"] = "|".join(
+                                                str(item)
+                                                for item in fk_ref_to
+                                                if isinstance(item, str) and item
+                                            )
+                                        fk_last_rel = fk_last.get("relationshipName")
+                                        if isinstance(fk_last_rel, str):
+                                            row["リレーション名"] = fk_last_rel
+                                    row["備考"] = "FK_ から"
+                                    rows.append(row)
+                                    continue
+                                # 2 件以上: 経路が解けたものだけ 「 複数候補あり 」
+                                # の形式で備考に並べる
+                                resolved: list[tuple[str, str]] = []
+                                for fk_field in fk_matches:
+                                    rel_name = fk_field.get("relationshipName")
+                                    field_name = fk_field.get("name")
+                                    if (
+                                        isinstance(rel_name, str)
+                                        and rel_name
+                                        and isinstance(field_name, str)
+                                        and field_name
+                                    ):
+                                        resolved.append((rel_name, field_name))
+                                row["備考"] = "複数候補あり: " + " / ".join(
+                                    f"{rel}.{fk_sub_soql}（{field_name}）"
+                                    for rel, field_name in resolved[:5]
+                                )
+                                rows.append(row)
+                                continue
+                            # 経路が解けない
+                            path_failure_note = fk_sub_failure or (
+                                f"FK_ で {fk_target} の経路 {fk_remainder} が解けません"
+                            )
 
         # 候補を全部集める （ 主 → 関連、 関連は浅い順 ）
         # 各候補は (所属オブジェクト名, 鎖文字列, field_dict) の組

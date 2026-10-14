@@ -1624,6 +1624,9 @@ def _extract_column_key_prefix_candidates(
     ``sortBy`` ） を使う。 ``.`` を含まない列キーは対象外（ 主オブジェクトと
     同じ名前 1 つのキーや、 ``OPPORTUNITY_NAME`` のような値 ）。
 
+    ``FK_`` で始まる列キーの先頭は主オブジェクトではなく主からの参照先を
+    指しているので、 候補からは外す （ 2026-10-14 ） 。
+
     ``_choose_main`` の (b) 段階で主オブジェクトの候補を組み立てるのに使う。
     """
     report_metadata = metadata.get("reportMetadata", {}) if isinstance(metadata, dict) else {}
@@ -1632,6 +1635,9 @@ def _extract_column_key_prefix_candidates(
     first_seen: dict[str, int] = {}
     for index, column_key in enumerate(columns):
         if not isinstance(column_key, str) or "." not in column_key:
+            continue
+        if column_key.startswith("FK_"):
+            # ``FK_`` の先は主オブジェクトではなく主からの参照先
             continue
         prefix = column_key.split(".", 1)[0].strip()
         if not prefix:

@@ -3238,3 +3238,30 @@ def test_extract_column_key_prefix_candidates_orders_by_frequency() -> None:
         "Account",  # 2 件
         "Owner",  # 1 件 ( 出現順が先 )
     ]
+
+
+def test_extract_column_key_prefix_candidates_excludes_fk_prefix() -> None:
+    """``FK_`` で始まる列キーは主オブジェクトの代替候補から除外する。
+
+    ``FK_`` の先は主オブジェクトではなく主からの参照先なので、 主候補
+    には使えない。 除外してもカウントは進めない。
+    """
+    from src.fetch import _extract_column_key_prefix_candidates
+
+    metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "Unknown__c"},
+            "detailColumns": [
+                "Contact.Name",  # Contact 1
+                "FK_Contact.Email",  # FK_ の先は主オブジェクトではない
+                "FK_Account.Name",  # 同上
+                "FK_Contact.X",  # 同じく除外
+                "Account.Name",  # Account 1
+            ],
+            "reportFilters": [{"column": "Account.Owner"}],  # Account 2
+        },
+    }
+    assert _extract_column_key_prefix_candidates(metadata) == [
+        "Account",  # 2 件 ( Account.Name + Account.Owner 、 FK_Account.* は除外 )
+        "Contact",  # 1 件 ( 出現順が先 )
+    ]
