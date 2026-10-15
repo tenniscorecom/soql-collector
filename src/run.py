@@ -73,18 +73,6 @@ class FilePaths:
     diagram_dir: str
 
 
-@dataclass(frozen=True)
-class SurveyConfig:
-    """``config.ini [SURVEY]`` / ``[PII]`` を ``_load_survey_config`` で詰める薄い箱。"""
-
-    related_depth: int
-    related_max: int
-    row_limit_enabled: bool
-    similar_threshold: float
-    pii_keywords: tuple[str, ...]
-    pii_person_objects: tuple[str, ...]
-
-
 def read_file_paths() -> FilePaths:
     """``config.ini [FILES]`` から ``FilePaths`` を読む。"""
     return FilePaths(
@@ -95,21 +83,6 @@ def read_file_paths() -> FilePaths:
         xlsx_name=config.FILES.XLSX_NAME,
         markdown_dir=config.FILES.MARKDOWN_DIR,
         diagram_dir=config.FILES.DIAGRAM_DIR,
-    )
-
-
-def _load_survey_config() -> SurveyConfig:
-    """``config.ini [SURVEY]`` / ``[PII]`` を読んで ``SurveyConfig`` に詰めて返す。
-
-    キー無しは comken の ``ConfigError`` をそのまま上位に流す。
-    """
-    return SurveyConfig(
-        related_depth=config.SURVEY.RELATED_DEPTH,
-        related_max=config.SURVEY.RELATED_MAX,
-        row_limit_enabled=config.SURVEY.ROW_LIMIT_CHECK == "○",
-        similar_threshold=config.SURVEY.SIMILAR_COLUMN_THRESHOLD,
-        pii_keywords=tuple(s.strip() for s in config.PII.KEYWORDS.split(",")),
-        pii_person_objects=tuple(s.strip() for s in config.PII.PERSON_OBJECTS.split(",")),
     )
 
 
@@ -136,7 +109,6 @@ def _load_column_fix_overrides(
 def _fetch(
     file_paths: FilePaths,
     entries: list[MasterEntry],
-    survey: SurveyConfig,
     column_fix_overrides: dict[tuple[str, str], ColumnFixRow],
     site_for: SiteFor | None,
 ) -> list[FetchOutcome]:
@@ -147,11 +119,11 @@ def _fetch(
     outcomes = list(
         run_fetch(
             entries,
-            related_depth=survey.related_depth,
-            related_max=survey.related_max,
-            row_limit=survey.row_limit_enabled,
-            pii_keywords=survey.pii_keywords,
-            pii_person_objects=survey.pii_person_objects,
+            related_depth=config.SURVEY.RELATED_DEPTH,
+            related_max=config.SURVEY.RELATED_MAX,
+            row_limit=config.SURVEY.ROW_LIMIT_CHECK == "○",
+            pii_keywords=tuple(s.strip() for s in config.PII.KEYWORDS.split(",")),
+            pii_person_objects=tuple(s.strip() for s in config.PII.PERSON_OBJECTS.split(",")),
             describe_csv_path=file_paths.describe_csv_path,
             site_for=site_for,
             describe_store=describe_store,
@@ -181,7 +153,6 @@ def _write_output(
     file_paths: FilePaths,
     records: list[ReportRecord],
     ok_keys: list[str],
-    survey: SurveyConfig,
     column_fix_overrides: dict[tuple[str, str], ColumnFixRow],
 ) -> bool:
     """``run_tables`` と ``column_fix_xlsx.merge_and_write_after_run`` を順に呼ぶ。
@@ -196,7 +167,7 @@ def _write_output(
             file_paths.output_dir,
             records,
             only_keys=ok_keys,
-            similar_threshold=survey.similar_threshold,
+            similar_threshold=config.SURVEY.SIMILAR_COLUMN_THRESHOLD,
             xlsx_name=file_paths.xlsx_name,
         )
     except Exception as exc:
@@ -243,75 +214,73 @@ def run(
         logger.error("引数は使いません。取るレポートは管理表の『有効』列が ○ の行で決まります")
         return 2
 
-    if file_paths is None:
-        try:
+    # config.ini のキー欠落 （ ``ConfigError`` ） は全て return 2 にまとめる
+    try:
+        if file_paths is None:
             file_paths = read_file_paths()
-        except ConfigError as exc:
+
+        all_entries = read_master(file_paths.master_xlsx_path)
+        entries = filter_enabled(all_entries)
+        enabled_count = len(entries)
+        total_count = len(all_entries)
+
+        # 設定は ``config.SURVEY.*`` / ``config.PII.*`` を直接読む （
+        # キー欠落ならこの下で ``ConfigError`` ）
+        logger.info(
+            "取得開始: 管理表=%s 全行数=%d 有効=%d 出力先=%s "
+            "RELATED_DEPTH=%d RELATED_MAX=%d ROW_LIMIT=%s SIMILAR=%.2f",
+            file_paths.master_xlsx_path,
+            total_count,
+            enabled_count,
+            file_paths.output_dir,
+            config.SURVEY.RELATED_DEPTH,
+            config.SURVEY.RELATED_MAX,
+            "○" if config.SURVEY.ROW_LIMIT_CHECK == "○" else "×",
+            config.SURVEY.SIMILAR_COLUMN_THRESHOLD,
+        )
+
+        if is_dry_run():
+            _log_dry_run(file_paths, entries)
+            return 0
+
+        if not entries:
+            logger.error("管理表に『有効』が ○ の行がありません")
+            return 2
+
+        # 列の直しを読む（ 見出し違いなら ExcelError で止める ）
+        try:
+            column_fix_overrides = _load_column_fix_overrides(file_paths)
+        except ExcelError as exc:
             logger.error("%s", exc)
             return 2
 
-    all_entries = read_master(file_paths.master_xlsx_path)
-    entries = filter_enabled(all_entries)
-    enabled_count = len(entries)
-    total_count = len(all_entries)
+        # 取得する
+        outcomes = _fetch(
+            file_paths=file_paths,
+            entries=entries,
+            column_fix_overrides=column_fix_overrides,
+            site_for=site_for,
+        )
+        failed_count = sum(1 for o in outcomes if o.status == "failed")
 
-    # 設定を読む（ キー無しは comken の ConfigError ）
-    survey = _load_survey_config()
+        ok_keys = [o.entry.key for o in outcomes if o.status == "ok"]
 
-    logger.info(
-        "取得開始: 管理表=%s 全行数=%d 有効=%d 出力先=%s "
-        "RELATED_DEPTH=%d RELATED_MAX=%d ROW_LIMIT=%s SIMILAR=%.2f",
-        file_paths.master_xlsx_path,
-        total_count,
-        enabled_count,
-        file_paths.output_dir,
-        survey.related_depth,
-        survey.related_max,
-        "○" if survey.row_limit_enabled else "×",
-        survey.similar_threshold,
-    )
+        # 取れた record だけから CSV を組み立てる。 失敗した ID の CSV は作らず
+        # 既存も消さない。
+        records = [o.record for o in outcomes if o.record is not None]
 
-    if is_dry_run():
-        _log_dry_run(file_paths, entries)
-        return 0
+        # 出力する
+        output_failed = _write_output(
+            file_paths=file_paths,
+            records=records,
+            ok_keys=ok_keys,
+            column_fix_overrides=column_fix_overrides,
+        )
 
-    if not entries:
-        logger.error("管理表に『有効』が ○ の行がありません")
-        return 2
-
-    # 列の直しを読む（ 見出し違いなら ExcelError で止める ）
-    try:
-        column_fix_overrides = _load_column_fix_overrides(file_paths)
-    except ExcelError as exc:
+        return 1 if (failed_count or output_failed) else 0
+    except ConfigError as exc:
         logger.error("%s", exc)
         return 2
-
-    # 取得する
-    outcomes = _fetch(
-        file_paths=file_paths,
-        entries=entries,
-        survey=survey,
-        column_fix_overrides=column_fix_overrides,
-        site_for=site_for,
-    )
-    failed_count = sum(1 for o in outcomes if o.status == "failed")
-
-    ok_keys = [o.entry.key for o in outcomes if o.status == "ok"]
-
-    # 取れた record だけから CSV を組み立てる。 失敗した ID の CSV は作らず
-    # 既存も消さない。
-    records = [o.record for o in outcomes if o.record is not None]
-
-    # 出力する
-    output_failed = _write_output(
-        file_paths=file_paths,
-        records=records,
-        ok_keys=ok_keys,
-        survey=survey,
-        column_fix_overrides=column_fix_overrides,
-    )
-
-    return 1 if (failed_count or output_failed) else 0
 
 
 # ── ログ ────────────────────────────────────────────────────────────────

@@ -83,6 +83,25 @@ def _write_ini(tmp_path: Path, master_xlsx: Path, *, extra: str = "") -> None:
             handle.write(extra)
 
 
+def _write_ini_without_survey(tmp_path: Path, master_xlsx: Path) -> None:
+    """``[SURVEY]`` / ``[PII]`` セクションを書かない config.ini を書く。
+
+    設定欠落時の ``ConfigError → return 2`` の経路を検証するために使う。
+    """
+    ini = tmp_path / "config.ini"
+    ini.write_text(
+        "[FILES]\n"
+        f"MASTER_XLSX_PATH = {master_xlsx}\n"
+        "OUTPUT_DIR = ./output\n"
+        "DESCRIBE_CSV_PATH = ./data/項目定義.csv\n"
+        "COLUMN_FIX_XLSX_PATH = ./input/列の直し.xlsx\n"
+        "XLSX_NAME = SOQL調査.xlsx\n"
+        "MARKDOWN_DIR = SOQL資料\n"
+        "DIAGRAM_DIR = 関係図\n",
+        encoding="utf-8",
+    )
+
+
 def _make_file_paths(tmp_path: Path, master: Path) -> Any:
     """``run()`` 用の ``FilePaths`` を作る（ ``read_file_paths`` の差し替えに使う）。"""
     from src.run import FilePaths
@@ -422,6 +441,51 @@ def test_run_no_enabled_rows_returns_2(
     code = run_module.run([], site_for=site_for)
 
     assert code == 2
+    assert called["site_for"] == 0
+
+
+def test_run_returns_2_when_survey_config_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``[SURVEY]`` セクションが欠けている config.ini では ``ConfigError``
+    を 2 にして返す。 ``run_fetch`` / ``site_for`` は呼ばれない。
+    """
+    from src import run as run_module
+
+    master = tmp_path / "master.xlsx"
+    _build_master(
+        master,
+        [
+            {"ID": "1001", "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view", "有効": "○"},
+        ],
+    )
+    _write_ini_without_survey(tmp_path, master)
+    _patch_read_file_paths(
+        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
+    )
+
+    called = {"fetch": 0, "site_for": 0}
+
+    def fake_run_fetch(*args, **kwargs):
+        called["fetch"] += 1
+        raise AssertionError("run_fetch should not be called")
+
+    def site_for(url: str):
+        called["site_for"] += 1
+        raise AssertionError("site_for should not be called")
+
+    monkeypatch.setattr(run_module, "run_fetch", fake_run_fetch)
+    monkeypatch.setattr(
+        run_module,
+        "run_tables",
+        lambda *args, **kwargs: None,
+    )
+
+    code = run_module.run([], site_for=site_for)
+
+    assert code == 2
+    assert called["fetch"] == 0
     assert called["site_for"] == 0
 
 
