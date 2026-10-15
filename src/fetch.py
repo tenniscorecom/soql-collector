@@ -480,13 +480,21 @@ def _slim_report(metadata: object) -> SlimReport:
     for key in ("detailColumns", "aggregates"):
         if key in slimmed_metadata:
             slimmed_metadata[key] = _str_list(slimmed_metadata[key])
-    # 要素の中で文字列として読む値の型もそろえる。 要素は落とさない
-    # （ 絞り込みの並び順は組立式の番号と対応しているため ）
-    for key, text_keys in _TEXT_KEYS_IN_LIST_ITEMS.items():
+    for key in _TEXT_KEYS:
         if key in slimmed_metadata:
-            slimmed_metadata[key] = [
-                _with_text_values(item, text_keys) for item in _dict_list(slimmed_metadata[key])
-            ]
+            slimmed_metadata[key] = _text(slimmed_metadata[key])
+    # 要素の中で文字列として読む値の型もそろえる。 絞り込みは dict でない要素も
+    # 空の dict にして位置を保つ（ 並び順が組立式の番号と対応しているため ）
+    for key, text_keys in _TEXT_KEYS_IN_LIST_ITEMS.items():
+        if key not in slimmed_metadata:
+            continue
+        value = slimmed_metadata[key]
+        items = (
+            [item if isinstance(item, dict) else {} for item in value]
+            if key == "reportFilters" and isinstance(value, list)
+            else _dict_list(value)
+        )
+        slimmed_metadata[key] = [_with_text_values(item, text_keys) for item in items]
     for key, text_keys in _TEXT_KEYS_IN_DICT_VALUES.items():
         if key not in slimmed_metadata:
             continue
@@ -494,6 +502,12 @@ def _slim_report(metadata: object) -> SlimReport:
         slimmed_metadata[key] = (
             _with_text_values(value, text_keys) if isinstance(value, dict) else None
         )
+    top_rows = slimmed_metadata.get("topRows")
+    if top_rows is not None:
+        slimmed_metadata["topRows"] = {
+            **top_rows,
+            "rowLimit": _positive_int(top_rows.get("rowLimit")),
+        }
 
     slimmed_extended = {
         key: {
@@ -506,6 +520,9 @@ def _slim_report(metadata: object) -> SlimReport:
     }
     return {"reportMetadata": slimmed_metadata, "reportExtendedMetadata": slimmed_extended}
 
+
+# 文字列としてそろえる単純な値のキー
+_TEXT_KEYS: tuple[str, ...] = ("id", "name", "reportFormat", "scope", "reportBooleanFilter")
 
 # リストの要素（ dict ）の中で、 文字列として読む値のキー
 _TEXT_KEYS_IN_LIST_ITEMS: dict[str, tuple[str, ...]] = {
@@ -547,6 +564,15 @@ def _dict_list(value: object) -> list[dict[str, Any]]:
     if all(isinstance(item, dict) for item in value):
         return value
     return [item for item in value if isinstance(item, dict)]
+
+
+def _positive_int(value: object) -> int | None:
+    """正の整数（ 数字だけの文字列も可 ）なら int、 それ以外（ bool を含む ）は None。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.isdigit():
+        value = int(value)
+    return value if isinstance(value, int) and value > 0 else None
 
 
 def _text(value: object) -> str:

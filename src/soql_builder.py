@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import TYPE_CHECKING, Any
 
+from src import mapping
 from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
@@ -304,55 +305,12 @@ def _split_values(raw: object) -> list[str]:
     return [part.strip() for part in text.split(",")]
 
 
-def _build_column_lookup(column_map: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
-    """``column_map`` を ``列キー -> 行 dict`` の dict にする ( 出現順を保つ ) 。
-
-    同じ ``列キー`` が複数あるときは先頭を採用。 ``列キー`` が無い行は無視。
-    """
+def _build_column_lookup(column_map: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    """``column_map`` を ``列キー -> 行 dict`` の dict にする。同じ列キーは先頭を採用。"""
     lookup: dict[str, dict[str, str]] = {}
     for entry in column_map:
-        if not isinstance(entry, dict):
-            continue
-        key = _coerce_str(entry.get("列キー"))
-        if not key:
-            continue
-        if key not in lookup:
-            lookup[key] = entry  # type: ignore[assignment]
+        lookup.setdefault(entry["列キー"], entry)
     return lookup
-
-
-def _detail_column_keys(metadata: dict[str, Any]) -> list[str]:
-    """``detailColumns`` の列キーを順番通りに返す。 ``ReportRecord.report`` 形式。"""
-    detail_columns = metadata.get("detailColumns")
-    if not isinstance(detail_columns, list):
-        return []
-    return [key for key in detail_columns if isinstance(key, str) and key]
-
-
-def _grouping_keys(metadata: dict[str, Any]) -> list[str]:
-    """``groupingsDown`` / ``groupingsAcross`` の列キーを順番通り ( 行→列 ) に返す。"""
-    keys: list[str] = []
-    for grouping_key in ("groupingsDown", "groupingsAcross"):
-        groupings = metadata.get(grouping_key)
-        if not isinstance(groupings, list):
-            continue
-        for grouping in groupings:
-            if not isinstance(grouping, dict):
-                continue
-            name = grouping.get("name")
-            if isinstance(name, str) and name:
-                keys.append(name)
-    return keys
-
-
-def _output_column_keys(metadata: dict[str, Any]) -> list[str]:
-    """SELECT に入れる列のキー順 ( detailColumns → groupings )。
-
-    重複は呼び出し側で除く。
-    """
-    keys = _detail_column_keys(metadata)
-    keys.extend(_grouping_keys(metadata))
-    return keys
 
 
 def _build_filter_condition(
@@ -512,70 +470,59 @@ def _build_where_clause(
 
     # 1) reportFilters ( 1 始まり番号 → 条件式 )
     filter_conditions: dict[int, str] = {}
-    filters = metadata.get("reportFilters")
-    if isinstance(filters, list):
-        for index, entry in enumerate(filters, start=1):
-            if not isinstance(entry, dict):
-                missing.append(f"条件 {index}: 形式が不正")
+    for index, entry in enumerate(metadata.get("reportFilters", []), start=1):
+        column = entry.get("column", "")
+        if not column:
+            missing.append(f"条件 {index}: 列キーが無い")
+            continue
+        column_info = column_lookup.get(column)
+        if not column_info or column_info["対応フィールドAPI名"] in ("", "(不明)"):
+            missing.append(f"条件 {index}: {column} ( 省いたので件数が増える可能性 )")
+            continue
+        field_api = column_info["対応フィールドAPI名"]
+        field_type = column_info["型"]
+        operator = entry.get("operator", "")
+        raw_value = _coerce_str(entry.get("value"))
+        # 数値系のときは value を カンマで分割せず 1 つの値として扱う
+        # ( ``1,000`` のような桁区切りが IN で分割事故になる問題 ) 。
+        # カンマが含まれている時点で桁区切りと見なして missing に送る。
+        if field_type.strip().lower() in _NUMERIC_TYPES:
+            if raw_value and "," in raw_value:
+                missing.append(
+                    f"条件 {index}: 数値の値にカンマが含まれる可能性 {raw_value!r}: missing"
+                )
                 continue
-            column = _coerce_str(entry.get("column"))
-            if not column:
-                missing.append(f"条件 {index}: 列キーが無い")
-                continue
-            column_info = column_lookup.get(column)
-            if not column_info or _coerce_str(column_info.get("対応フィールドAPI名")) in (
-                "",
-                "(不明)",
-            ):
-                missing.append(f"条件 {index}: {column} ( 省いたので件数が増える可能性 )")
-                continue
-            field_api = _coerce_str(column_info.get("対応フィールドAPI名"))
-            field_type = _coerce_str(column_info.get("型"))
-            operator = _coerce_str(entry.get("operator"))
-            raw_value = _coerce_str(entry.get("value"))
-            # 数値系のときは value を カンマで分割せず 1 つの値として扱う
-            # ( ``1,000`` のような桁区切りが IN で分割事故になる問題 ) 。
-            # カンマが含まれている時点で桁区切りと見なして missing に送る。
-            if field_type.strip().lower() in _NUMERIC_TYPES:
-                if raw_value and "," in raw_value:
-                    missing.append(
-                        f"条件 {index}: 数値の値にカンマが含まれる可能性 {raw_value!r}: missing"
-                    )
-                    continue
-                values = [raw_value] if raw_value else []
-            else:
-                values = _split_values(raw_value)
-            condition, extra_missing, extra_checks = _build_filter_condition(
-                operator, values, field_api, field_type
-            )
-            if extra_missing:
-                for msg in extra_missing:
-                    missing.append(f"条件 {index}: {msg}")
-            if extra_checks:
-                checks.extend(extra_checks)
-            if condition:
-                filter_conditions[index] = condition
+            values = [raw_value] if raw_value else []
+        else:
+            values = _split_values(raw_value)
+        condition, extra_missing, extra_checks = _build_filter_condition(
+            operator, values, field_api, field_type
+        )
+        if extra_missing:
+            for msg in extra_missing:
+                missing.append(f"条件 {index}: {msg}")
+        if extra_checks:
+            checks.extend(extra_checks)
+        if condition:
+            filter_conditions[index] = condition
 
     # 2) standardDateFilter ( 日付条件は別管理、 start と end を 1 行にまとめない方針 )
     date_lines: list[str] = []
     date_filter = metadata.get("standardDateFilter")
-    if isinstance(date_filter, dict):
-        column = _coerce_str(date_filter.get("column"))
-        duration = _coerce_str(date_filter.get("durationValue"))
-        start = _coerce_str(date_filter.get("startDate"))
-        end = _coerce_str(date_filter.get("endDate"))
+    if date_filter is not None:
+        column = date_filter.get("column", "")
+        duration = date_filter.get("durationValue", "")
+        start = date_filter.get("startDate", "")
+        end = date_filter.get("endDate", "")
         if not column:
             missing.append("日付条件の列が指定されていない")
         else:
             column_info = column_lookup.get(column)
-            if not column_info or _coerce_str(column_info.get("対応フィールドAPI名")) in (
-                "",
-                "(不明)",
-            ):
+            if not column_info or column_info["対応フィールドAPI名"] in ("", "(不明)"):
                 missing.append(f"日付条件の列 {column} に対応が無い ( 省いた )")
             else:
-                field_api = _coerce_str(column_info.get("対応フィールドAPI名"))
-                field_type = _coerce_str(column_info.get("型")).strip().lower()
+                field_api = column_info["対応フィールドAPI名"]
+                field_type = column_info["型"].strip().lower()
                 if duration == "CUSTOM":
                     date_parts: list[str] = []
                     if start:
@@ -628,7 +575,7 @@ def _build_where_clause(
 
     # 5) 組立式 ( 番号で ``( filter_conditions[number] )`` に置換、 行は 1 行にまとめる )
     lines: list[str] = []
-    bool_filter = _coerce_str(metadata.get("reportBooleanFilter"))
+    bool_filter = metadata.get("reportBooleanFilter", "")
     if bool_filter:
         try:
             combined = _replace_boolean_filter_numbers(bool_filter, filter_conditions)
@@ -684,38 +631,22 @@ def _build_order_by_clause(
     checks: list[str] = []
     order_parts: list[str] = []
 
-    sort_by = metadata.get("sortBy")
-    if isinstance(sort_by, list):
-        for index, sb in enumerate(sort_by, start=1):
-            if not isinstance(sb, dict):
-                missing.append(f"並び順 {index}: 形式が不正")
-                continue
-            sort_column = _coerce_str(sb.get("sortColumn"))
-            if not sort_column:
-                missing.append(f"並び順 {index}: 列キーが無い")
-                continue
-            column_info = column_lookup.get(sort_column)
-            if not column_info or _coerce_str(column_info.get("対応フィールドAPI名")) in (
-                "",
-                "(不明)",
-            ):
-                missing.append(f"並び順 {index}: {sort_column} に対応が無い ( 省いた )")
-                continue
-            field_api = _coerce_str(column_info.get("対応フィールドAPI名"))
-            sort_order = _coerce_str(sb.get("sortOrder")).strip().upper()
-            direction = "DESC" if sort_order == "DESC" else "ASC"
-            order_parts.append(f"{field_api} {direction}")
+    for index, sb in enumerate(metadata.get("sortBy", []), start=1):
+        sort_column = sb.get("sortColumn", "")
+        if not sort_column:
+            missing.append(f"並び順 {index}: 列キーが無い")
+            continue
+        column_info = column_lookup.get(sort_column)
+        if not column_info or column_info["対応フィールドAPI名"] in ("", "(不明)"):
+            missing.append(f"並び順 {index}: {sort_column} に対応が無い ( 省いた )")
+            continue
+        field_api = column_info["対応フィールドAPI名"]
+        sort_order = sb.get("sortOrder", "").strip().upper()
+        direction = "DESC" if sort_order == "DESC" else "ASC"
+        order_parts.append(f"{field_api} {direction}")
 
-    top_rows = metadata.get("topRows")
-    limit_part = ""
-    if isinstance(top_rows, dict):
-        row_limit = top_rows.get("rowLimit")
-        if isinstance(row_limit, bool):
-            row_limit = None
-        if isinstance(row_limit, int) and row_limit > 0:
-            limit_part = f"LIMIT {row_limit}"
-        elif isinstance(row_limit, str) and row_limit.isdigit() and int(row_limit) > 0:
-            limit_part = f"LIMIT {int(row_limit)}"
+    row_limit = _extract_top_rows_limit(metadata)
+    limit_part = f"LIMIT {row_limit}" if row_limit else ""
 
     if not order_parts and not limit_part:
         return "", missing, checks
@@ -756,15 +687,9 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
             checks=(),
         )
 
-    # ``record.report`` は ``_slim_report`` の戻り値（ dict[str, Any] ）。
-    # 境界で正規化済みだが、 壊れた record のために dict 形だけ確認する
-    report_dict = record.report if isinstance(record.report, dict) else {}
-    metadata_raw = report_dict.get("reportMetadata")
-    metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
-
-    column_map = record.column_map if isinstance(record.column_map, list) else []
-
-    column_lookup = _build_column_lookup(column_map)
+    # ``record.report`` は入口（ ``_slim_report`` ）で形をそろえてある
+    metadata = record.report["reportMetadata"]
+    column_lookup = _build_column_lookup(record.column_map)
 
     missing: list[str] = []
     checks: list[str] = []
@@ -772,15 +697,14 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
     # ── SELECT 句 ──────────────────────────────────────────────────────
     select_lines: list[str] = []
     seen_fields: set[str] = set()
-    for column_key in _output_column_keys(metadata):
+    for column_key in mapping.select_column_keys(metadata):
         column_info = column_lookup.get(column_key)
         if not column_info:
-            label = column_key
-            missing.append(f"列: {label} ( {column_key} ) — 列対応表に無い")
+            missing.append(f"列: {column_key} ( {column_key} ) — 列対応表に無い")
             continue
-        field_api = _coerce_str(column_info.get("対応フィールドAPI名"))
-        label = _coerce_str(column_info.get("表示名")) or column_key
-        reason = _coerce_str(column_info.get("備考"))
+        field_api = column_info["対応フィールドAPI名"]
+        label = column_info["表示名"] or column_key
+        reason = column_info["備考"]
         if not field_api or field_api == "(不明)":
             if reason:
                 missing.append(f"列: {label} ( {column_key} ) — {reason}")
@@ -820,17 +744,15 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
 
     # 集計 (``aggregates`` の ``"!"`` 形式) は SOQL にしない ( 集計レポートのため ) 、
     # ``RowCount`` だけは missing にも入れない ( 集計行が無いだけ ) 。
-    aggregates = metadata.get("aggregates")
-    if isinstance(aggregates, list):
-        for agg in aggregates:
-            if not (isinstance(agg, str) and "!" in agg):
-                continue
-            target = agg.split("!", 1)[-1]
-            # RowCount は集計行が無いだけ。 SELECT にも入れない ( SOQL でも RowCount は
-            # 単純な関数で取れない )
-            if target == "RowCount":
-                continue
-            missing.append(f"集計 {agg}: 集計レポートのため SOQL にしない ( 明細として取れない )")
+    for agg in metadata.get("aggregates", []):
+        if "!" not in agg:
+            continue
+        target = agg.split("!", 1)[-1]
+        # RowCount は集計行が無いだけ。 SELECT にも入れない ( SOQL でも RowCount は
+        # 単純な関数で取れない )
+        if target == "RowCount":
+            continue
+        missing.append(f"集計 {agg}: 集計レポートのため SOQL にしない ( 明細として取れない )")
 
     # 行レベルの数式 (``historicalSnapshotDates`` は時系列レポート用、 詳細は省略 )
     # は今回は SOQL にしない方針 ( missing にも入れない )
@@ -863,8 +785,8 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
     checks.extend(where_checks)
 
     # ── scope ──────────────────────────────────────────────────────────
-    scope = metadata.get("scope")
-    if isinstance(scope, str) and scope and scope.lower() != "organization":
+    scope = metadata.get("scope", "")
+    if scope and scope.lower() != "organization":
         checks.append(
             f"スコープ={scope}: 実行ユーザーで結果が変わる。 OwnerId 等の条件を足すか確認"
         )
@@ -896,7 +818,7 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
     count_soql = "\n".join(count_lines)
 
     # ── topRows.rowLimit から ``limit`` を抽出 ────────────────────────
-    limit: int | None = _extract_top_rows_limit(metadata.get("topRows"))
+    limit: int | None = _extract_top_rows_limit(metadata)
 
     # ── 状態の決定 ──────────────────────────────────────────────────────
     if missing:
@@ -944,28 +866,13 @@ def build_count_soql(record: ReportRecord) -> tuple[str | None, int | None]:
           ``build_soql`` が ``作れず`` のときは ``None`` 。
         - ``limit`` … ``topRows.rowLimit`` の値。 無い / 読めないときは ``None`` 。
     """
-    soql_draft = record.soql_draft
-    if not isinstance(soql_draft, SoqlDraft):
-        soql_draft = build_soql(record)
+    soql_draft = record.soql_draft or build_soql(record)
 
     if soql_draft.status == STATUS_NONE or not soql_draft.count_soql:
         return None, soql_draft.limit
     return soql_draft.count_soql, soql_draft.limit
 
 
-def _extract_top_rows_limit(top_rows: object) -> int | None:
-    """``reportMetadata.topRows`` から ``rowLimit`` の正の整数を取り出す。
-
-    dict 以外 / rowLimit が無い / 0 以下 / bool のときは ``None`` 。 文字列は
-    数字だけなら int に変換、 それ以外は ``None`` 。
-    """
-    if not isinstance(top_rows, dict):
-        return None
-    row_limit = top_rows.get("rowLimit")
-    if isinstance(row_limit, bool):
-        return None
-    if isinstance(row_limit, int) and row_limit > 0:
-        return row_limit
-    if isinstance(row_limit, str) and row_limit.isdigit() and int(row_limit) > 0:
-        return int(row_limit)
-    return None
+def _extract_top_rows_limit(metadata: dict[str, Any]) -> int | None:
+    """``topRows.rowLimit``（ 入口で正の整数か None にそろえてある ）を返す。"""
+    return (metadata.get("topRows") or {}).get("rowLimit")

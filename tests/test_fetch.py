@@ -1629,6 +1629,28 @@ def test_slim_report_handles_missing_or_bad_input() -> None:
     assert _slim_report("string") == empty
 
 
+def test_slim_report_normalizes_scalars_and_top_rows() -> None:
+    """単純な値は str に、 上位N の件数は正の整数か None にそろえる（ 境界 ）。"""
+    result = _slim_report(
+        {
+            "reportMetadata": {
+                "reportFormat": None,
+                "scope": 3,
+                "reportBooleanFilter": "1 AND 2",
+                "topRows": {"rowLimit": "10", "direction": "Desc"},
+            }
+        }
+    )
+    metadata = result["reportMetadata"]
+    assert metadata["reportFormat"] == ""
+    assert metadata["scope"] == ""
+    assert metadata["reportBooleanFilter"] == "1 AND 2"
+    assert metadata["topRows"] == {"rowLimit": 10, "direction": "Desc"}
+    for bad in (True, 0, -1, "abc", None):
+        top_rows = _slim_report({"reportMetadata": {"topRows": {"rowLimit": bad}}})
+        assert top_rows["reportMetadata"]["topRows"]["rowLimit"] is None, bad
+
+
 def test_slim_report_normalizes_list_items() -> None:
     """リストとして読むキーの中身の型をそろえる（ 境界 ）。 そろっていれば元の参照のまま。"""
     detail_columns = ["A", "B"]
@@ -1650,7 +1672,8 @@ def test_slim_report_normalizes_list_items() -> None:
     metadata = result["reportMetadata"]
     assert metadata["detailColumns"] is detail_columns
     assert metadata["aggregates"] == ["s!Amount"]
-    assert metadata["reportFilters"] == [{"column": "A"}]
+    # 絞り込みは位置を保つ（ 組立式の番号と対応しているため ）
+    assert metadata["reportFilters"] == [{"column": "A"}, {}, {}]
     assert metadata["groupingsDown"] == []
     assert metadata["reportType"] is None
     assert result["reportExtendedMetadata"] == {"detailColumnInfo": {"A": {"label": "A"}}}
