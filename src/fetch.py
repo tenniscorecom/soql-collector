@@ -45,6 +45,8 @@ from typing import Any, TypedDict
 from comken.exceptions import (
     ComkenError,
     SalesforceError,
+    SalesforceReportAccessDeniedError,
+    SalesforceReportFormatError,
     SalesforceReportIDNotFoundError,
     SalesforceReportTruncatedError,
     SalesforceRequestError,
@@ -80,14 +82,6 @@ FATAL_STATUS_CODES: frozenset[int] = frozenset({401, 403})
 # テストで偽の ``Table`` を入れるために ``Any`` を扱う。
 _TableLike = Any
 
-# レポート access denied エラー（ 401 / 403 由来 ） のメッセージ接頭辞
-_REPORT_ACCESS_DENIED_PREFIX = "Salesforce のレポート API（Analytics API）へのアクセスが"
-
-# レポート形式エラー（ 結合レポート・明細の列が無いレポートなど、 取得できない形式 ）
-# の文言マーカー。 comken の ``_report_format_error`` の出力に含まれる 2 つの
-# 部分文字列。 集計 / サマリー / マトリックス形式は comken が取得するので、 こ
-# こに来るのは **取れない形式** だけになる
-_REPORT_FORMAT_MARKERS = ("このレポートは", "形式です")
 
 # 理由欄に出す例外メッセージの最大長（ 行データや機微情報を漏らさない ）
 _ERROR_REASON_MAX_LENGTH = 200
@@ -662,10 +656,10 @@ def _check_row_count(client: Any, report_id: str) -> RowCheck:
         # 2000 行超。 切り捨て検知は正常パスの一部なので reason は None。
         return RowCheck(status=ROW_CHECK_OVER, rows=None, reason=None)
     except SalesforceError as exc:
-        if _is_report_access_denied(exc):
+        if isinstance(exc, SalesforceReportAccessDeniedError):
             # 401 / 403: レポート全体を失敗扱いにするために再送出
             raise
-        if _is_report_format_error(exc):
+        if isinstance(exc, SalesforceReportFormatError):
             return RowCheck(
                 status=ROW_CHECK_UNKNOWN,
                 rows=None,
@@ -687,17 +681,9 @@ def _check_row_count(client: Any, report_id: str) -> RowCheck:
         )
     return RowCheck(
         status=ROW_CHECK_UNDER,
-        rows=_safe_row_count(table),
+        rows=len(table),
         reason=None,
     )
-
-
-def _safe_row_count(table: Any) -> int:
-    """``Table`` 互換オブジェクトの行数を取り出す。 ``len()`` を持たない偽物に備える。"""
-    try:
-        return len(table)
-    except TypeError:
-        return 0
 
 
 def _report_format(metadata: dict[str, Any]) -> str:
@@ -709,20 +695,6 @@ def _report_format(metadata: dict[str, Any]) -> str:
         return ""
     value = report_metadata.get("reportFormat")
     return value if isinstance(value, str) else ""
-
-
-def _is_report_access_denied(exc: SalesforceError) -> bool:
-    """comken の ``_report_access_denied_error`` か（ 401 / 403 ） を判定する。"""
-    message = str(exc)
-    return _REPORT_ACCESS_DENIED_PREFIX in message and ("401" in message or "403" in message)
-
-
-def _is_report_format_error(exc: SalesforceError) -> bool:
-    """comken の ``_report_format_error`` （ 結合レポート・明細の列が無いレポートなど ）
-    を判定する。 集計 / サマリー / マトリックスは comken が取得するので、 ここに
-    来るのは **取れない形式** のときだけ。"""
-    message = str(exc)
-    return all(marker in message for marker in _REPORT_FORMAT_MARKERS)
 
 
 def _format_error_reason(exc: BaseException) -> str:
@@ -956,20 +928,19 @@ def _fetch_one(
                     csv_used_keys=csv_used_keys,
                 )
 
-            # 列対応表: 主オブジェクトで 1 つも決まらないとき用に、 関連
-            # オブジェクトの describe と relations を渡して解決範囲を広げる。
-            column_map = mapping.build_column_map(
-                metadata,
-                main_describe,
-                object_reason,
-                related_describes=related_describes,
-                relations=[],
-                main_object=main_object_name,
-                fetch_object=fetcher,
-            )
-
-            # 主オブジェクト
-            if main_object_name and main_describe is not None:
+            # 主オブジェクトが取れなかったときの列対応表（ 全列が理由つきの (不明) ）。
+            # 取れたときは、 関連オブジェクトを集めてから下で 1 回だけ組み立てる
+            if not (main_object_name and main_describe is not None):
+                column_map = mapping.build_column_map(
+                    metadata,
+                    main_describe,
+                    object_reason,
+                    related_describes=related_describes,
+                    relations=[],
+                    main_object=main_object_name,
+                    fetch_object=fetcher,
+                )
+            else:
                 # 関連オブジェクトを参照先から幅優先で掘る（ ``RELATED_DEPTH`` 段まで ）
                 related_nodes, relations, skipped_names = _collect_related_objects(
                     main_describe,

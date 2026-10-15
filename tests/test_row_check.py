@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 from comken.exceptions import (
     SalesforceError,
+    SalesforceReportAccessDeniedError,
+    SalesforceReportFormatError,
     SalesforceReportTruncatedError,
     SalesforceRequestError,
 )
@@ -201,13 +203,7 @@ def test_format_error_from_get_marks_unknown() -> None:
     """``get()`` が取れない形式（ 結合レポート・明細の列が無いレポートなど ） の
     エラーを上げたら 判定不可、 新しい文言が出る。
     """
-    err = SalesforceError(
-        "このレポートは MULTI_BLOCK 形式です: 00O\n"
-        "取得できるのは明細（TABULAR）・サマリー（SUMMARY）・"
-        "マトリックス（MATRIX）形式のレポートだけです。\n"
-        "レポート形式を確認するか、SOQL（query）で取得してください。\n"
-        "対処: レポート形式を確認するか、管理者へ連絡してください。"
-    )
+    err = SalesforceReportFormatError("00O", "MULTI_BLOCK")
     tabular_metadata = _metadata("TABULAR")
     client = _FakeClient(describe=tabular_metadata, get_error=err)
     result = _check_row_count(client, "00O")
@@ -219,13 +215,7 @@ def test_format_error_from_get_marks_unknown() -> None:
 
 def test_format_error_for_no_detail_columns_marks_unknown() -> None:
     """明細の列が無いサマリーレポートのエラーも 判定不可 （ 新しい文言 ）。"""
-    err = SalesforceError(
-        "このレポートは 明細の列が無い 形式です: 00O\n"
-        "取得できるのは明細（TABULAR）・サマリー（SUMMARY）・"
-        "マトリックス（MATRIX）形式のレポートだけです。\n"
-        "レポート形式を確認するか、SOQL（query）で取得してください。\n"
-        "対処: レポート形式を確認するか、管理者へ連絡してください。"
-    )
+    err = SalesforceReportFormatError("00O", "明細の列が無い")
     summary_metadata = _metadata("SUMMARY")
     client = _FakeClient(describe=summary_metadata, get_error=err)
     result = _check_row_count(client, "00O")
@@ -245,10 +235,7 @@ def test_other_salesforce_error_marks_unknown_with_type_and_message() -> None:
 
 def test_auth_error_propagates_so_report_fails() -> None:
     """401 / 403 の access denied エラーは再送出されて ID 全体が失敗扱い。"""
-    access_denied = SalesforceError(
-        "Salesforce のレポート API（Analytics API）へのアクセスが"
-        "拒否されました（HTTP 401）: 00O\nUnauthorized"
-    )
+    access_denied = SalesforceReportAccessDeniedError("00O", 401, "Unauthorized")
     client = _FakeClient(describe=_metadata(), get_error=access_denied)
     with pytest.raises(SalesforceError):
         _check_row_count(client, "00O")

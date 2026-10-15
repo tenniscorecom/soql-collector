@@ -27,7 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from comken.exceptions import ExcelError
+from comken.exceptions import ExcelError, SalesforceReportIDNotFoundError
 from comken.runtime import is_dry_run
 from comken.toolbox.salesforce.report import report_id_from_url
 
@@ -246,7 +246,7 @@ def _log_dry_run(file_paths: FilePaths, entries: list[MasterEntry]) -> None:
     for entry in entries:
         try:
             report_id = report_id_from_url(entry.url)
-        except Exception:
+        except SalesforceReportIDNotFoundError:
             report_id = "(URL 不正)"
         logger.info(
             "[dry-run] 管理番号=%s 概要=%s レポートID=%s 出力先=%s",
