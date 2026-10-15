@@ -231,8 +231,8 @@ def run(
         logger.exception("CSV の生成に失敗しました: %s", exc)
 
     # ``列の直し.xlsx`` を最後に 1 回書く （ 人が入れた値を壊さない ）。
-    # PermissionError 等は ``_merge_and_write_after_run`` 内で WARNING だけになり、 処理は続く
-    column_fix_xlsx._merge_and_write_after_run(
+    # PermissionError 等は ``merge_and_write_after_run`` 内で WARNING だけになり、 処理は続く
+    column_fix_xlsx.merge_and_write_after_run(
         path=column_fix_path,
         existing=column_fix_overrides,
         records=records,

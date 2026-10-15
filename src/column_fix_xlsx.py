@@ -683,7 +683,7 @@ def _normalize_key(main_object: str, column_key: str) -> tuple[str, str]:
     return (main_object.strip().lower(), column_key)
 
 
-def _merge_and_write_after_run(
+def merge_and_write_after_run(
     *,
     path: Path,
     existing: dict[tuple[str, str], ColumnFixRow],
