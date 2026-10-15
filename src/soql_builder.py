@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import TYPE_CHECKING, Any
@@ -340,6 +341,173 @@ def _build_column_lookup(column_map: list[dict[str, str]]) -> dict[str, dict[str
     return lookup
 
 
+def _build_equality_condition(
+    op: str,
+    values: list[str],
+    field_api: str,
+    field_type: str,
+) -> tuple[str, list[str], list[str]]:
+    """``equals`` / ``notEqual`` を ``=`` / ``!=`` または ``IN`` / ``NOT IN`` に組み立てる。"""
+    missing: list[str] = []
+    checks: list[str] = []
+    parts: list[str] = []
+    for value in values:
+        literal, extra_missing, extra_checks = _format_value_for_field(
+            value, field_type, field_api
+        )
+        if not literal:
+            missing.append(f"演算子 {op} の値が解釈できません: {value!r}")
+            missing.extend(extra_missing)
+            continue
+        checks.extend(extra_checks)
+        parts.append(literal)
+    if not parts:
+        return "", missing, checks
+    if op == "equals":
+        if len(parts) == 1:
+            return f"{field_api} = {parts[0]}", missing, checks
+        return f"{field_api} IN ({', '.join(parts)})", missing, checks
+    if len(parts) == 1:
+        return f"{field_api} != {parts[0]}", missing, checks
+    return f"{field_api} NOT IN ({', '.join(parts)})", missing, checks
+
+
+def _build_comparison_condition(
+    op: str,
+    values: list[str],
+    field_api: str,
+    field_type: str,
+) -> tuple[str, list[str], list[str]]:
+    """``lessThan`` / ``greaterThan`` / ``lessOrEqual`` / ``greaterOrEqual`` を組み立てる。"""
+    missing: list[str] = []
+    checks: list[str] = []
+    if len(values) != 1:
+        missing.append(f"演算子 {op} は単一値のみ対応 ( 値: {values!r} )")
+        return "", missing, checks
+    literal, extra_missing, extra_checks = _format_value_for_field(
+        values[0], field_type, field_api
+    )
+    if not literal:
+        missing.append(f"演算子 {op} の値が解釈できません: {values[0]!r}")
+        missing.extend(extra_missing)
+        return "", missing, checks
+    checks.extend(extra_checks)
+    symbol = _COMPARISON_OP_SYMBOLS[op]
+    return f"{field_api} {symbol} {literal}", missing, checks
+
+
+_COMPARISON_OP_SYMBOLS: dict[str, str] = {
+    "lessThan": "<",
+    "greaterThan": ">",
+    "lessOrEqual": "<=",
+    "greaterOrEqual": ">=",
+}
+
+
+def _build_like_condition(
+    op: str,
+    values: list[str],
+    field_api: str,
+    field_type: str,
+) -> tuple[str, list[str], list[str]]:
+    """``contains`` / ``notContain`` / ``startsWith`` / ``doesNotContain`` を組み立てる。
+
+    全て LIKE 系で、文字列系の項目でのみ使える。 値が無い、 または型が文字列系で
+    無いときは missing。 LIKE 内の ``%`` ``_`` はワイルドカードとしてそのまま機能
+    するので、 checks に注意だけ出す。
+    """
+    missing: list[str] = []
+    checks: list[str] = []
+    if not values:
+        missing.append(f"演算子 {op} の値が無い")
+        return "", missing, checks
+    if field_type.strip().lower() not in _STRING_TYPES:
+        missing.append(f"演算子 {op} は文字列系の項目でのみ使用可 ( 型: {field_type!r} )")
+        return "", missing, checks
+    pieces: list[tuple[str, str]] = []  # (value, literal)
+    for value in values:
+        if "%" in value or "_" in value:
+            checks.append(f"LIKE のワイルドカード '%' '_' が値に含まれる: {value!r}")
+        literal = _escape_string_literal(f"%{value}%")
+        pieces.append((value, literal))
+    return _format_like_expression(op, pieces, field_api, missing, checks)
+
+
+def _format_like_expression(
+    op: str,
+    pieces: list[tuple[str, str]],
+    field_api: str,
+    missing: list[str],
+    checks: list[str],
+) -> tuple[str, list[str], list[str]]:
+    """組み立て済みの ``(value, '%v%' literal)`` 群から SOQL の LIKE 式にする。"""
+    if op == "startsWith":
+        if len(pieces) != 1:
+            missing.append(f"演算子 startsWith は単一値のみ対応 ( 値: {[p[0] for p in pieces]!r} )")
+            return "", missing, checks
+        value, _ = pieces[0]
+        if "%" in value or "_" in value:
+            checks.append(f"LIKE のワイルドカード '%' '_' が値に含まれる: {value!r}")
+        # pieces の literal は '%value%' 形式。 startsWith なので '%value' に直す
+        starts_literal = _escape_string_literal(f"{value}%")
+        return f"{field_api} LIKE {starts_literal}", missing, checks
+    if op == "contains":
+        # 複数なら (A OR B)、 単数ならそのまま
+        parts_str = " OR ".join(f"{field_api} LIKE {piece[1]}" for piece in pieces)
+        if len(pieces) == 1:
+            return parts_str, missing, checks
+        return f"( {parts_str} )", missing, checks
+    # notContain / doesNotContain は同じ形 ( ``NOT (X LIKE '%v%')`` を AND で並べる )
+    parts_str = " AND ".join(f"NOT ({field_api} LIKE {piece[1]})" for piece in pieces)
+    return f"( {parts_str} )", missing, checks
+
+
+def _build_picklist_inclusion_condition(
+    op: str,
+    values: list[str],
+    field_api: str,
+    field_type: str,
+) -> tuple[str, list[str], list[str]]:
+    """``includes`` / ``excludes`` を ``INCLUDES`` / ``EXCLUDES`` に組み立てる。"""
+    missing: list[str] = []
+    checks: list[str] = []
+    if field_type.strip().lower() not in ("multipicklist", "picklist"):
+        missing.append(
+            f"演算子 {op} は multipicklist / picklist のみで使用可 ( 型: {field_type!r} )"
+        )
+        return "", missing, checks
+    if not values:
+        missing.append(f"演算子 {op} の値が無い")
+        return "", missing, checks
+    value_literals = ", ".join(_escape_string_literal(v) for v in values)
+    if op == "includes":
+        return f"{field_api} INCLUDES ({value_literals})", missing, checks
+    return f"{field_api} EXCLUDES ({value_literals})", missing, checks
+
+
+# 演算子ごとのディスパッチ表。 ``_build_filter_condition`` から 1 度だけ
+# 引いて、 各演算子の組み立ては専用関数に任せる。 ``equals`` / ``notEqual``
+# の空値 (``null``) への置換は本体側で先に済ませてあるので、 各関数では
+# 通常パスだけを扱う
+_FILTER_OP_HANDLERS: dict[
+    str,
+    Callable[[str, list[str], str, str], tuple[str, list[str], list[str]]],
+] = {
+    "equals": _build_equality_condition,
+    "notEqual": _build_equality_condition,
+    "lessThan": _build_comparison_condition,
+    "greaterThan": _build_comparison_condition,
+    "lessOrEqual": _build_comparison_condition,
+    "greaterOrEqual": _build_comparison_condition,
+    "contains": _build_like_condition,
+    "notContain": _build_like_condition,
+    "startsWith": _build_like_condition,
+    "doesNotContain": _build_like_condition,
+    "includes": _build_picklist_inclusion_condition,
+    "excludes": _build_picklist_inclusion_condition,
+}
+
+
 def _build_filter_condition(
     operator: str,
     values: list[str],
@@ -353,120 +521,16 @@ def _build_filter_condition(
         演算子が未対応 / 値が解釈不可のときは条件式は空文字で missing に
         入った要素を返す。
     """
-    missing: list[str] = []
-    checks: list[str] = []
-
     op = operator.strip()
-
     # 空値のときは ``equals`` / ``notEqual`` だけ ``null`` 比較に変換する
     if not values and op in ("equals", "notEqual"):
-        if op == "equals":
-            return f"{field_api} = null", missing, checks
-        return f"{field_api} != null", missing, checks
+        symbol = "=" if op == "equals" else "!="
+        return f"{field_api} {symbol} null", [], []
 
-    if op in ("equals", "notEqual"):
-        # 値の書き方は型で決める
-        parts: list[str] = []
-        for value in values:
-            literal, extra_missing, extra_checks = _format_value_for_field(
-                value, field_type, field_api
-            )
-            if not literal:
-                missing.append(f"演算子 {op} の値が解釈できません: {value!r}")
-                missing.extend(extra_missing)
-                continue
-            checks.extend(extra_checks)
-            parts.append(literal)
-        if not parts:
-            return "", missing, checks
-        if op == "equals":
-            if len(parts) == 1:
-                return f"{field_api} = {parts[0]}", missing, checks
-            return f"{field_api} IN ({', '.join(parts)})", missing, checks
-        if len(parts) == 1:
-            return f"{field_api} != {parts[0]}", missing, checks
-        return f"{field_api} NOT IN ({', '.join(parts)})", missing, checks
-
-    if op in ("lessThan", "greaterThan", "lessOrEqual", "greaterOrEqual"):
-        op_map = {
-            "lessThan": "<",
-            "greaterThan": ">",
-            "lessOrEqual": "<=",
-            "greaterOrEqual": ">=",
-        }
-        symbol = op_map[op]
-        if len(values) != 1:
-            missing.append(f"演算子 {op} は単一値のみ対応 ( 値: {values!r} )")
-            return "", missing, checks
-        literal, extra_missing, extra_checks = _format_value_for_field(
-            values[0], field_type, field_api
-        )
-        if not literal:
-            missing.append(f"演算子 {op} の値が解釈できません: {values[0]!r}")
-            missing.extend(extra_missing)
-            return "", missing, checks
-        checks.extend(extra_checks)
-        return f"{field_api} {symbol} {literal}", missing, checks
-
-    if op in ("contains", "notContain", "startsWith", "doesNotContain"):
-        if not values:
-            missing.append(f"演算子 {op} の値が無い")
-            return "", missing, checks
-        if field_type.strip().lower() not in _STRING_TYPES:
-            missing.append(f"演算子 {op} は文字列系の項目でのみ使用可 ( 型: {field_type!r} )")
-            return "", missing, checks
-        pieces: list[tuple[str, str]] = []  # (value, literal)
-        for value in values:
-            # LIKE 内の '%' '_' はワイルドカードだがエスケープはしない ( そのまま機能する ) 。
-            if "%" in value or "_" in value:
-                checks.append(f"LIKE のワイルドカード '%' '_' が値に含まれる: {value!r}")
-            literal = _escape_string_literal(f"%{value}%")
-            pieces.append((value, literal))
-        if op == "contains":
-            # 複数なら (A OR B)、 単数ならそのまま
-            parts_str = " OR ".join(f"{field_api} LIKE {piece[1]}" for piece in pieces)
-            if len(pieces) == 1:
-                return parts_str, missing, checks
-            return f"( {parts_str} )", missing, checks
-        if op == "notContain":
-            # ``NOT (X LIKE '%v%')`` を AND で並べる
-            parts_str = " AND ".join(f"NOT ({field_api} LIKE {piece[1]})" for piece in pieces)
-            return f"( {parts_str} )", missing, checks
-        if op == "startsWith":
-            if len(pieces) != 1:
-                missing.append(f"演算子 startsWith は単一値のみ対応 ( 値: {values!r} )")
-                return "", missing, checks
-            value, literal = pieces[0]
-            if "%" in value or "_" in value:
-                checks.append(f"LIKE のワイルドカード '%' '_' が値に含まれる: {value!r}")
-            # pieces の literal は '%value%' 形式。 startsWith なので '%value' に直す
-            starts_literal = _escape_string_literal(f"{value}%")
-            return f"{field_api} LIKE {starts_literal}", missing, checks
-        # doesNotContain は treats 同じ
-        if op == "doesNotContain":
-            parts_str = " AND ".join(f"NOT ({field_api} LIKE {piece[1]})" for piece in pieces)
-            return f"( {parts_str} )", missing, checks
-
-    if op in ("includes", "excludes"):
-        if field_type.strip().lower() not in ("multipicklist", "picklist"):
-            missing.append(
-                f"演算子 {op} は multipicklist / picklist のみで使用可 ( 型: {field_type!r} )"
-            )
-            return "", missing, checks
-        if not values:
-            missing.append(f"演算子 {op} の値が無い")
-            return "", missing, checks
-        value_literals = ", ".join(_escape_string_literal(v) for v in values)
-        if op == "includes":
-            return f"{field_api} INCLUDES ({value_literals})", missing, checks
-        return f"{field_api} EXCLUDES ({value_literals})", missing, checks
-
-    if op == "within":
-        missing.append("演算子 within は未対応 ( 手動で補ってください )")
-        return "", missing, checks
-
-    missing.append(f"未対応の演算子: {op!r}")
-    return "", missing, checks
+    handler = _FILTER_OP_HANDLERS.get(op)
+    if handler is None:
+        return "", [f"未対応の演算子: {op!r}"], []
+    return handler(op, values, field_api, field_type)
 
 
 def _build_where_clause(
