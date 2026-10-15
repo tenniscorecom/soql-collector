@@ -584,95 +584,172 @@ def _walk_soql_path(
     （ 人が ``Account.Name`` と書いても 主オブジェクト ``Account`` 起点で
     辿れるように ）
     """
-    if not soql_name or not main_object:
+    parts = _split_path_parts(soql_name, main_object, column_key, warnings)
+    if parts is None:
         return ""
-    parts = soql_name.split(".")
-    if parts and parts[0].lower() == main_object.lower():
-        parts = parts[1:]
     if not parts:
-        return ""
-    if len(parts) > 5:
-        warnings.append(
-            f"列の直し.xlsx の直したSOQL列名をたどれません: "
-            f"{main_object} / {column_key} / {soql_name}"
-            f" — 経路が長すぎます（5 段まで）。打ち間違い？"
-        )
         return ""
 
     current_object = main_object
     for index, part in enumerate(parts):
         describe = objects.get(current_object)
         if describe is None:
-            warnings.append(
-                f"列の直し.xlsx の直したSOQL列名をたどれません: "
-                f"{main_object} / {column_key} / {soql_name}"
-                f" — {current_object} の項目定義が無いためたどれません。打ち間違い？"
-            )
+            _warn_missing_describe(main_object, column_key, soql_name, current_object, warnings)
             return ""
         fields: list[dict[str, Any]] = describe.get("fields", [])
 
-        # 優先順: relationshipName → name
-        matched = next((field for field in fields if field.get("relationshipName") == part), None)
+        matched = _find_matching_field(fields, part)
         if matched is None:
-            matched = next((field for field in fields if field.get("name") == part), None)
-
-        if matched is None:
-            candidates = mapping.candidate_relationship_names(fields)
-            candidate_text = ", ".join(candidates) if candidates else "(なし)"
-            warnings.append(
-                f"列の直し.xlsx の直したSOQL列名をたどれません: "
-                f"{main_object} / {column_key} / {soql_name}"
-                f" — 「{part}」が {current_object} に見つかりません"
-                f"（リレーション名の候補: {candidate_text}）。打ち間違い？"
+            _warn_field_not_found(
+                main_object, column_key, soql_name, current_object, part, fields, warnings
             )
             return ""
 
         if index == len(parts) - 1:
             return matched.get("type") or ""
 
-        # 次のオブジェクトを決める
-        reference_to: list[str] = matched.get("referenceTo") or []
-        relationship = matched.get("relationshipName")
-        is_polymorphic = len(reference_to) > 1
-
-        candidates_for_next: list[str] = []
-        if is_polymorphic:
-            for ref in reference_to:
-                if ref not in candidates_for_next:
-                    candidates_for_next.append(ref)
-        else:
-            if relationship and relationship in objects and not candidates_for_next:
-                candidates_for_next.append(relationship)
-            if not candidates_for_next:
-                for ref in reference_to:
-                    if ref not in candidates_for_next:
-                        candidates_for_next.append(ref)
-
-        next_object: str | None = None
-        for cand in candidates_for_next:
-            if cand in objects:
-                next_object = cand
-                break
-            if fetch_object is not None:
-                fetched = fetch_object(cand)
-                if fetched is not None:
-                    objects[cand] = fetched
-                    next_object = cand
-                    break
-
+        next_object = _resolve_next_object(matched, objects, fetch_object)
         if next_object is None:
-            target = candidates_for_next[0] if candidates_for_next else ""
-            target_text = target if target else "(対象不明)"
-            warnings.append(
-                f"列の直し.xlsx の直したSOQL列名をたどれません: "
-                f"{main_object} / {column_key} / {soql_name}"
-                f" — 参照先 {target_text} の項目定義を取得できません。打ち間違い？"
-            )
+            _warn_target_unresolved(main_object, column_key, soql_name, matched, warnings)
             return ""
-
         current_object = next_object
 
     return ""
+
+
+def _split_path_parts(
+    soql_name: str,
+    main_object: str,
+    column_key: str,
+    warnings: list[str],
+) -> list[str] | None:
+    """``soql_name`` を ``.`` で分割し、 ``main_object`` と同名の先頭セグメントを落とす。
+
+    戻り値: 辿るべきセグメントのリスト。 ``None`` のときは ``warnings`` に
+    経路が長すぎる旨を入れて探索を打ち切る。 空リストは 「 辿る必要が無い 」
+    ( 先頭が ``main_object`` だけだった等 ) ことを示す。
+    """
+    if not soql_name or not main_object:
+        return []
+    parts = soql_name.split(".")
+    if parts and parts[0].lower() == main_object.lower():
+        parts = parts[1:]
+    if not parts:
+        return []
+    if len(parts) > 5:
+        warnings.append(
+            f"列の直し.xlsx の直したSOQL列名をたどれません: "
+            f"{main_object} / {column_key} / {soql_name}"
+            f" — 経路が長すぎます（5 段まで）。打ち間違い？"
+        )
+        return None
+    return parts
+
+
+def _find_matching_field(
+    fields: list[dict[str, Any]],
+    part: str,
+) -> dict[str, Any] | None:
+    """``part`` に一致する項目を ``relationshipName`` 優先、 無ければ ``name`` で探す。"""
+    matched = next((field for field in fields if field.get("relationshipName") == part), None)
+    if matched is not None:
+        return matched
+    return next((field for field in fields if field.get("name") == part), None)
+
+
+def _resolve_next_object(
+    matched_field: dict[str, Any],
+    objects: dict[str, dict[str, Any]],
+    fetch_object: Callable[[str], dict[str, Any] | None] | None,
+) -> str | None:
+    """参照項目 ``matched_field`` の次段のオブジェクト名を解決する。"""
+    candidates = _candidate_next_refs(matched_field, objects)
+    for cand in candidates:
+        if cand in objects:
+            return cand
+        if fetch_object is not None:
+            fetched = fetch_object(cand)
+            if fetched is not None:
+                objects[cand] = fetched
+                return cand
+    return None
+
+
+def _candidate_next_refs(
+    matched_field: dict[str, Any],
+    objects: dict[str, dict[str, Any]],
+) -> list[str]:
+    """次段候補の参照オブジェクト名 ( 重複なし ) を並べる。"""
+    reference_to: list[str] = matched_field.get("referenceTo") or []
+    relationship = matched_field.get("relationshipName")
+    is_polymorphic = len(reference_to) > 1
+    candidates: list[str] = []
+    if is_polymorphic:
+        for ref in reference_to:
+            if ref not in candidates:
+                candidates.append(ref)
+        return candidates
+    # 非ポリモーフィック: ``relationshipName`` が既に手元にあればそれを優先
+    if relationship and relationship in objects and not candidates:
+        candidates.append(relationship)
+    if not candidates:
+        for ref in reference_to:
+            if ref not in candidates:
+                candidates.append(ref)
+    return candidates
+
+
+def _warn_missing_describe(
+    main_object: str,
+    column_key: str,
+    soql_name: str,
+    current_object: str,
+    warnings: list[str],
+) -> None:
+    """``current_object`` の項目定義が無いときの WARNING を積む。"""
+    warnings.append(
+        f"列の直し.xlsx の直したSOQL列名をたどれません: "
+        f"{main_object} / {column_key} / {soql_name}"
+        f" — {current_object} の項目定義が無いためたどれません。打ち間違い？"
+    )
+
+
+def _warn_field_not_found(
+    main_object: str,
+    column_key: str,
+    soql_name: str,
+    current_object: str,
+    part: str,
+    fields: list[dict[str, Any]],
+    warnings: list[str],
+) -> None:
+    """``part`` が ``current_object`` に見つからないときの WARNING を積む。"""
+    candidates = mapping.candidate_relationship_names(fields)
+    candidate_text = ", ".join(candidates) if candidates else "(なし)"
+    warnings.append(
+        f"列の直し.xlsx の直したSOQL列名をたどれません: "
+        f"{main_object} / {column_key} / {soql_name}"
+        f" — 「{part}」が {current_object} に見つかりません"
+        f"（リレーション名の候補: {candidate_text}）。打ち間違い？"
+    )
+
+
+def _warn_target_unresolved(
+    main_object: str,
+    column_key: str,
+    soql_name: str,
+    matched_field: dict[str, Any],
+    warnings: list[str],
+) -> None:
+    """参照先の項目定義を取得できないときの WARNING を積む。"""
+    candidates = _candidate_next_refs(matched_field, {})
+    target = candidates[0] if candidates else ""
+    target_text = target if target else "(対象不明)"
+    warnings.append(
+        f"列の直し.xlsx の直したSOQL列名をたどれません: "
+        f"{main_object} / {column_key} / {soql_name}"
+        f" — 参照先 {target_text} の項目定義を取得できません。打ち間違い？"
+    )
 
 
 # ── 内部ヘルパー ─────────────────────────────────────────────────
