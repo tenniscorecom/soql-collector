@@ -45,8 +45,9 @@ from comken.runtime import is_dry_run
 from comken.toolbox.salesforce.report import report_id_from_url
 
 from src import column_fix_xlsx
+from src.column_fix_xlsx import ColumnFixRow
 from src.describe_store import DescribeStore
-from src.fetch import run_fetch
+from src.fetch import FetchOutcome, ReportRecord, run_fetch
 from src.master import MasterEntry, filter_enabled, read_master
 from src.tables import run_tables
 
@@ -72,6 +73,18 @@ class FilePaths:
     diagram_dir: str
 
 
+@dataclass(frozen=True)
+class SurveyConfig:
+    """``config.ini [SURVEY]`` / ``[PII]`` を ``_load_survey_config`` で詰める薄い箱。"""
+
+    related_depth: int
+    related_max: int
+    row_limit_enabled: bool
+    similar_threshold: float
+    pii_keywords: tuple[str, ...]
+    pii_person_objects: tuple[str, ...]
+
+
 def read_file_paths() -> FilePaths:
     """``config.ini [FILES]`` から ``FilePaths`` を読む。"""
     return FilePaths(
@@ -83,6 +96,124 @@ def read_file_paths() -> FilePaths:
         markdown_dir=config.FILES.MARKDOWN_DIR,
         diagram_dir=config.FILES.DIAGRAM_DIR,
     )
+
+
+def _load_survey_config() -> SurveyConfig:
+    """``config.ini [SURVEY]`` / ``[PII]`` を読んで ``SurveyConfig`` に詰めて返す。
+
+    キー無しは comken の ``ConfigError`` をそのまま上位に流す。
+    """
+    return SurveyConfig(
+        related_depth=config.SURVEY.RELATED_DEPTH,
+        related_max=config.SURVEY.RELATED_MAX,
+        row_limit_enabled=config.SURVEY.ROW_LIMIT_CHECK == "○",
+        similar_threshold=config.SURVEY.SIMILAR_COLUMN_THRESHOLD,
+        pii_keywords=tuple(s.strip() for s in config.PII.KEYWORDS.split(",")),
+        pii_person_objects=tuple(s.strip() for s in config.PII.PERSON_OBJECTS.split(",")),
+    )
+
+
+def _load_column_fix_overrides(
+    file_paths: FilePaths,
+) -> dict[tuple[str, str], ColumnFixRow]:
+    """``列の直し.xlsx`` を読み、 旧 ``data/列の対応.csv`` からの移行もまとめて
+    ``column_fix_overrides`` を返す。 見出し違いは ``ExcelError`` をそのまま上げる。
+    """
+    column_fix_path = file_paths.column_fix_xlsx_path
+    overrides = column_fix_xlsx.load_column_fix(column_fix_path)
+    legacy_csv_path = file_paths.describe_csv_path.parent / "列の対応.csv"
+    if not column_fix_path.exists() and legacy_csv_path.exists():
+        legacy_rows = column_fix_xlsx.migrate_legacy_csv(legacy_csv_path)
+        if legacy_rows:
+            overrides = {**overrides, **legacy_rows}
+            logger.info(
+                "旧 data/列の対応.csv から %d 件の人の入力を引き継ぎました",
+                len(legacy_rows),
+            )
+    return overrides
+
+
+def _fetch(
+    file_paths: FilePaths,
+    entries: list[MasterEntry],
+    survey: SurveyConfig,
+    column_fix_overrides: dict[tuple[str, str], ColumnFixRow],
+    site_for: SiteFor | None,
+) -> list[FetchOutcome]:
+    """``run_fetch`` を呼び ``outcomes`` を返す。 所要時間と describe の集計ログもここで出す。"""
+    started_at = time.perf_counter()
+    describe_store = DescribeStore.load(file_paths.describe_csv_path)
+    refresh_set: set[tuple[str, str]] = set()
+    outcomes = list(
+        run_fetch(
+            entries,
+            related_depth=survey.related_depth,
+            related_max=survey.related_max,
+            row_limit=survey.row_limit_enabled,
+            pii_keywords=survey.pii_keywords,
+            pii_person_objects=survey.pii_person_objects,
+            describe_csv_path=file_paths.describe_csv_path,
+            site_for=site_for,
+            describe_store=describe_store,
+            refresh_set=refresh_set,
+            column_fix_overrides=column_fix_overrides,
+        )
+    )
+    total_elapsed = time.perf_counter() - started_at
+    ok_count = sum(1 for o in outcomes if o.status == "ok")
+    failed_count = sum(1 for o in outcomes if o.status == "failed")
+    logger.info(
+        "取得終了: 成功=%d 失敗=%d 所要秒=%.1f",
+        ok_count,
+        failed_count,
+        total_elapsed,
+    )
+    logger.info(
+        "オブジェクトの describe: 保存データから %d 件 / Salesforce から %d 件 / 取り直し %d 件",
+        describe_store.csv_hit_count,
+        describe_store.api_count,
+        describe_store.refresh_count,
+    )
+    return outcomes
+
+
+def _write_output(
+    file_paths: FilePaths,
+    records: list[ReportRecord],
+    ok_keys: list[str],
+    survey: SurveyConfig,
+    column_fix_overrides: dict[tuple[str, str], ColumnFixRow],
+) -> bool:
+    """``run_tables`` と ``column_fix_xlsx.merge_and_write_after_run`` を順に呼ぶ。
+
+    ``run_tables`` が例外を出したら ``True`` を返す （ ``run()`` の終了コードが
+    1 になる判定材料 ）。 ``column_fix_xlsx.merge_and_write_after_run`` 内の
+    ``PermissionError`` は WARNING に縮退する。
+    """
+    output_failed = False
+    try:
+        run_tables(
+            file_paths.output_dir,
+            records,
+            only_keys=ok_keys,
+            similar_threshold=survey.similar_threshold,
+            xlsx_name=file_paths.xlsx_name,
+        )
+    except Exception as exc:
+        # xlsx / CSV のどちらも作れていないので、 終了コードは 1 にする
+        output_failed = True
+        logger.exception("CSV の生成に失敗しました: %s", exc)
+
+    # ``列の直し.xlsx`` を最後に 1 回書く （ 人が入れた値を壊さない ）。
+    # PermissionError 等は ``merge_and_write_after_run`` 内で WARNING だけになり、 処理は続く
+    column_fix_xlsx.merge_and_write_after_run(
+        path=file_paths.column_fix_xlsx_path,
+        existing=column_fix_overrides,
+        records=records,
+        today=column_fix_xlsx.today_local(),
+    )
+
+    return output_failed
 
 
 def run(
@@ -124,13 +255,8 @@ def run(
     enabled_count = len(entries)
     total_count = len(all_entries)
 
-    # config.ini の値読み取り （ キー無しは comken の ConfigError ）
-    related_depth = config.SURVEY.RELATED_DEPTH
-    related_max = config.SURVEY.RELATED_MAX
-    row_limit_enabled = config.SURVEY.ROW_LIMIT_CHECK == "○"
-    similar_threshold = config.SURVEY.SIMILAR_COLUMN_THRESHOLD
-    pii_keywords = tuple(s.strip() for s in config.PII.KEYWORDS.split(","))
-    pii_person_objects = tuple(s.strip() for s in config.PII.PERSON_OBJECTS.split(","))
+    # 設定を読む（ キー無しは comken の ConfigError ）
+    survey = _load_survey_config()
 
     logger.info(
         "取得開始: 管理表=%s 全行数=%d 有効=%d 出力先=%s "
@@ -139,10 +265,10 @@ def run(
         total_count,
         enabled_count,
         file_paths.output_dir,
-        related_depth,
-        related_max,
-        "○" if row_limit_enabled else "×",
-        similar_threshold,
+        survey.related_depth,
+        survey.related_max,
+        "○" if survey.row_limit_enabled else "×",
+        survey.similar_threshold,
     )
 
     if is_dry_run():
@@ -153,89 +279,36 @@ def run(
         logger.error("管理表に『有効』が ○ の行がありません")
         return 2
 
-    # ``列の直し.xlsx`` を 1 回の実行の最初に読む。
-    # 見出し違いなら ``ExcelError`` で止める （ 出力物に壊せない位置 ） 。
-    # ファイルが無いときは空 dict （ 新規扱い ） 。
-    column_fix_path = file_paths.column_fix_xlsx_path
+    # 列の直しを読む（ 見出し違いなら ExcelError で止める ）
     try:
-        column_fix_overrides = column_fix_xlsx.load_column_fix(column_fix_path)
+        column_fix_overrides = _load_column_fix_overrides(file_paths)
     except ExcelError as exc:
         logger.error("%s", exc)
         return 2
 
-    # 旧 ``data/列の対応.csv`` からの移行
-    legacy_csv_path = file_paths.describe_csv_path.parent / "列の対応.csv"
-    if not column_fix_path.exists() and legacy_csv_path.exists():
-        legacy_rows = column_fix_xlsx.migrate_legacy_csv(legacy_csv_path)
-        if legacy_rows:
-            # 既存の dict にマージ
-            column_fix_overrides = {**column_fix_overrides, **legacy_rows}
-            logger.info(
-                "旧 data/列の対応.csv から %d 件の人の入力を引き継ぎました",
-                len(legacy_rows),
-            )
-
-    # レポートの取得 （ 同じ実行内で ``describe_object`` を 1 回にまとめる ）
-    started_at = time.perf_counter()
-    describe_store = DescribeStore.load(file_paths.describe_csv_path)
-    refresh_set: set[tuple[str, str]] = set()
-    outcomes = list(
-        run_fetch(
-            entries,
-            related_depth=related_depth,
-            related_max=related_max,
-            row_limit=row_limit_enabled,
-            pii_keywords=pii_keywords,
-            pii_person_objects=pii_person_objects,
-            describe_csv_path=file_paths.describe_csv_path,
-            site_for=site_for,
-            describe_store=describe_store,
-            refresh_set=refresh_set,
-            column_fix_overrides=column_fix_overrides,
-        )
+    # 取得する
+    outcomes = _fetch(
+        file_paths=file_paths,
+        entries=entries,
+        survey=survey,
+        column_fix_overrides=column_fix_overrides,
+        site_for=site_for,
     )
-    total_elapsed = time.perf_counter() - started_at
-    ok_count = sum(1 for o in outcomes if o.status == "ok")
     failed_count = sum(1 for o in outcomes if o.status == "failed")
-    logger.info(
-        "取得終了: 成功=%d 失敗=%d 所要秒=%.1f",
-        ok_count,
-        failed_count,
-        total_elapsed,
-    )
-    logger.info(
-        "オブジェクトの describe: 保存データから %d 件 / Salesforce から %d 件 / 取り直し %d 件",
-        describe_store.csv_hit_count,
-        describe_store.api_count,
-        describe_store.refresh_count,
-    )
 
     ok_keys = [o.entry.key for o in outcomes if o.status == "ok"]
 
     # 取れた record だけから CSV を組み立てる。 失敗した ID の CSV は作らず
     # 既存も消さない。
     records = [o.record for o in outcomes if o.record is not None]
-    output_failed = False
-    try:
-        run_tables(
-            file_paths.output_dir,
-            records,
-            only_keys=ok_keys,
-            similar_threshold=similar_threshold,
-            xlsx_name=file_paths.xlsx_name,
-        )
-    except Exception as exc:
-        # xlsx / CSV のどちらも作れていないので、 終了コードは 1 にする
-        output_failed = True
-        logger.exception("CSV の生成に失敗しました: %s", exc)
 
-    # ``列の直し.xlsx`` を最後に 1 回書く （ 人が入れた値を壊さない ）。
-    # PermissionError 等は ``merge_and_write_after_run`` 内で WARNING だけになり、 処理は続く
-    column_fix_xlsx.merge_and_write_after_run(
-        path=column_fix_path,
-        existing=column_fix_overrides,
+    # 出力する
+    output_failed = _write_output(
+        file_paths=file_paths,
         records=records,
-        today=column_fix_xlsx.today_local(),
+        ok_keys=ok_keys,
+        survey=survey,
+        column_fix_overrides=column_fix_overrides,
     )
 
     return 1 if (failed_count or output_failed) else 0
