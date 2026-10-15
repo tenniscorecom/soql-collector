@@ -826,218 +826,30 @@ def _fetch_one(
 
     JSON は書かない。 失敗したら ``status="failed"`` を返し ``record`` は ``None`` 。
     """
-    warnings: list[str] = []
     if column_fix_overrides is None:
         column_fix_overrides = {}
     org = org_from_url(entry.url)
 
-    # URL → レポート ID
+    report_id, site_error = _resolve_report_id_and_site(entry, site_for)
+    if site_error is not None:
+        return site_error
+    assert report_id is not None  # 上の分岐で必ず代入される
+
+    state = _FetchState()
     try:
-        report_id = report_id_from_url(entry.url)
-    except SalesforceReportIDNotFoundError:
-        return FetchOutcome(
-            entry=entry,
-            status="failed",
-            record=None,
-            warnings=(),
-            error=(
-                f"管理表の URL からレポート ID を取り出せません: {entry.url}"
-                f"（管理番号 {entry.key}）"
-            ),
-        )
-
-    # 接続先決定。``site_for`` が ``SalesforceError``（未登録組織）などの
-    # ``ComkenError`` を出すと、その ID だけの失敗にする（他の ID は続ける）
-    try:
-        site_class = site_for(entry.url)
-    except ComkenError as exc:
-        return FetchOutcome(
-            entry=entry,
-            status="failed",
-            record=None,
-            warnings=(),
-            error=f"Salesforce の接続先を決定できません: {exc}",
-        )
-
-    # 接続〜取得
-    # ``objects`` はオブジェクト名 → ``_slim_object`` で整えた describe。 取ってきた
-    # describe は入口（ ``_fetch_object_cached`` / fetcher / 取り直し ）で必ず整え、
-    # 以後は整えた値だけを扱う（ 生の describe は項目定義のキャッシュにだけ書く ）
-    objects: dict[str, dict[str, Any]] = {}
-    main_object_name: str | None = None
-    metadata: dict[str, Any] = {}
-    slim_report: SlimReport = _slim_report(None)
-    column_map: list[dict[str, Any]] = []
-    related_describes: dict[str, dict[str, Any]] = {}
-    related_nodes: list[RelatedNode] = []
-    relations: list[RelationRecord] = []
-    row_check: RowCheck | None = None
-    object_reason: str | None = None
-
-    # CSV から読んだ （ 今回 API で取ったものではない ） オブジェクトのキー。
-    # 取り直し判定に使う。
-    csv_used_keys: set[tuple[str, str]] = set()
-
-    try:
-        with site_class() as client:
-            try:
-                metadata = client.report.describe(report_id)
-            except SalesforceRequestError as exc:
-                return FetchOutcome(
-                    entry=entry,
-                    status="failed",
-                    record=None,
-                    warnings=(),
-                    error=(
-                        f"レポート describe に失敗（HTTP {exc.status_code}）: {report_id}"
-                        f"\n{exc.detail}"
-                    ),
-                )
-
-            # 境界: レポート定義はここで 1 回だけ整え、 以後は整えた値だけを使う
-            slim_report = _slim_report(metadata)
-
-            # 2000 行チェック: ``row_limit`` が True のときだけ実行。
-            # 401 / 403 のような致命エラーは外側の except に伝播させて ID 全体を
-            # 失敗扱いにする。 その他のエラーは ``RowCheck`` に縮退する。
-            row_check = _check_row_count(client, report_id) if row_limit else None
-            _log_row_check(row_check)
-
-            # 主オブジェクトの解決。 ``describe_object`` が 401 / 403 を返したら
-            # ``_fetch_object_cached`` がそのまま上位へ ``SalesforceRequestError``
-            # を送出し、 ID 全体を失敗扱いにする。
-            main_object_name, main_describe, object_reason, csv_used_keys = _choose_main(
-                client, org, slim_report, store, warnings
-            )
-            if object_reason:
-                warnings.append(object_reason)
-            _log_report_contents(slim_report, main_object_name)
-
-            # 主オブジェクトが確定したら ``objects`` の
-            # 種を蒔いて、 列キーからのたどりに使う fetcher を作る。 同じ
-            # fetcher を後の関連オブジェクト収集後にも ``build_column_map`` /
-            # ``apply_overrides`` に渡すので、 1 度作った dict を使い回す。
-            fetcher: Callable[[str], dict[str, Any] | None] | None = None
-            if main_object_name and main_describe is not None:
-                objects[main_object_name] = main_describe
-                fetcher = _make_overrides_fetcher(
-                    client=client,
-                    org=org,
-                    store=store,
-                    objects=objects,
-                    csv_used_keys=csv_used_keys,
-                )
-
-            # 主オブジェクトが取れなかったときの列対応表（ 全列が理由つきの (不明) ）。
-            # 取れたときは、 関連オブジェクトを集めてから下で 1 回だけ組み立てる
-            if not (main_object_name and main_describe is not None):
-                column_map = mapping.build_column_map(
-                    slim_report,
-                    main_describe,
-                    object_reason,
-                    related_describes=related_describes,
-                    relations=[],
-                    main_object=main_object_name,
-                    fetch_object=fetcher,
-                )
-            else:
-                # 関連オブジェクトを参照先から幅優先で掘る（ ``RELATED_DEPTH`` 段まで ）
-                related_nodes, relations, skipped_names = _collect_related_objects(
-                    main_describe,
-                    fetcher=lambda name: _fetch_object_cached(
-                        client, org, name, store, warnings, csv_used_keys
-                    ),
-                    related_depth=related_depth,
-                    related_max=related_max,
-                )
-                if skipped_names:
-                    collected_count = len(related_nodes)
-                    total = collected_count + len(skipped_names)
-                    warnings.append(
-                        f"関連オブジェクトが {total} 件あり"
-                        f"上限 {related_max} を超えたため、"
-                        f"次の {len(skipped_names)} 件は取得しません: {', '.join(skipped_names)}"
-                    )
-                _log_related_objects(related_nodes, skipped_names)
-                for node in related_nodes:
-                    if node.describe is not None:
-                        objects[node.name] = node.describe
-                        related_describes[node.name] = node.describe
-
-                # 列対応表を取り直す（ 関連オブジェクトが取れてから解く ）
-                column_map = mapping.build_column_map(
-                    slim_report,
-                    main_describe,
-                    object_reason,
-                    related_describes=related_describes,
-                    relations=relations,
-                    main_object=main_object_name,
-                    fetch_object=fetcher,
-                )
-
-            # 取り直し: 列対応に (不明) が残り、 CSV から読んだオブジェクトが
-            # このレポートで使われているなら API で取り直す。
-            if (
-                main_object_name
-                and main_describe is not None
-                and _has_unresolved_columns(column_map, object_reason)
-            ):
-                refresh_keys = csv_used_keys - refresh_set
-                if refresh_keys:
-                    refresh_set.update(refresh_keys)
-                    for key in refresh_keys:
-                        object_name = _api_name_from_store(store, key)
-                        if object_name is None:
-                            continue
-                        logger.info(
-                            "取り直し: 管理番号=%s 組織=%s オブジェクト=%s",
-                            entry.key,
-                            key[0],
-                            object_name,
-                        )
-                        refreshed_raw = store.refresh_from_api(
-                            client, key[0], object_name, warnings
-                        )
-                        if refreshed_raw is None:
-                            continue
-                        # 境界: 取り直した describe もここで整えてからメモリに反映
-                        refreshed = _slim_object(refreshed_raw)
-                        if main_object_name and _object_key(org, main_object_name) == key:
-                            main_describe = refreshed
-                            objects[main_object_name] = refreshed
-                        else:
-                            for obj_name in list(objects):
-                                if _object_key(org, obj_name) == key:
-                                    objects[obj_name] = refreshed
-                                    related_describes[obj_name] = refreshed
-                                    break
-
-                    # 列対応表を取り直す（ 取り直し後 ）
-                    column_map = mapping.build_column_map(
-                        slim_report,
-                        main_describe,
-                        object_reason,
-                        related_describes=related_describes,
-                        relations=relations,
-                        main_object=main_object_name,
-                        fetch_object=fetcher,
-                    )
-                # 1 パス内では取り直しは 1 度きり （ 取り直し後も (不明) が
-                # 残るケースは API 側でも解決できないので、 無限ループを避ける ）
-                # ※ 同じ実行の中で複数レポートがある場合は refresh_set で
-                #   同じ (org, object) を 1 度しか取り直さない
-
-            # 人が ``列の直し.xlsx`` に入れた値で ``column_map`` を上書きする。
-            # ``apply_overrides`` が ``Account.Owner.Name`` のような経路を辿る
-            # ときに、 その経路上に無いオブジェクトは fetcher が取りに行く。
-            # 取れたオブジェクトは ``objects`` に加わる
-            column_map = column_fix_xlsx.apply_overrides(
-                column_map_rows=column_map,
-                existing=column_fix_overrides,
-                main_object=main_object_name or "",
-                objects=objects,
-                warnings=warnings,
-                fetch_object=fetcher,
+        with site_for(entry.url)() as client:
+            _run_within_site(
+                client=client,
+                entry=entry,
+                org=org,
+                report_id=report_id,
+                store=store,
+                row_limit=row_limit,
+                refresh_set=refresh_set,
+                related_depth=related_depth,
+                related_max=related_max,
+                column_fix_overrides=column_fix_overrides,
+                state=state,
             )
     except SalesforceRequestError as exc:
         # 接続失敗・認証失敗・致命 HTTP
@@ -1057,14 +869,348 @@ def _fetch_one(
             error=f"Salesforce エラー: {exc}",
         )
 
+    return _build_fetch_outcome(
+        entry=entry,
+        report_id=report_id,
+        state=state,
+        pii_keywords=pii_keywords,
+        pii_person_objects=pii_person_objects,
+    )
+
+
+@dataclass
+class _FetchState:
+    """``_fetch_one`` の ``with site_class()`` 内で共有する作業用状態。
+
+    dataclass は「 入力が複雑 」 とは言えないが、 多くの変数を 1 つの関数に
+    持ち回さずに済むようにするためだけに使っている。 dataclass のフィールドは
+    ``_fetch_one`` 内 ( 関数引数として ) でのみ触る。
+    """
+
+    objects: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
+    main_object_name: str | None = None
+    main_describe: dict[str, Any] | None = None
+    object_reason: str | None = None
+    csv_used_keys: set[tuple[str, str]] = dc_field(default_factory=set)
+    column_map: list[dict[str, Any]] = dc_field(default_factory=list)
+    related_describes: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
+    related_nodes: list[RelatedNode] = dc_field(default_factory=list)
+    relations: list[RelationRecord] = dc_field(default_factory=list)
+    row_check: RowCheck | None = None
+    slim_report: SlimReport = dc_field(default_factory=lambda: _slim_report(None))
+    raw_metadata: dict[str, Any] = dc_field(default_factory=dict)
+    warnings: list[str] = dc_field(default_factory=list)
+
+
+def _resolve_report_id_and_site(
+    entry: MasterEntry,
+    site_for: SiteFor,
+) -> tuple[str | None, FetchOutcome | None]:
+    """``entry.url`` からレポート ID を取る。 ``site_class`` は呼び出し側で別途取得。
+
+    失敗時は ``FetchOutcome(status="failed")`` を返して呼び出し側で停止。
+    """
+    try:
+        report_id = report_id_from_url(entry.url)
+    except SalesforceReportIDNotFoundError:
+        return None, FetchOutcome(
+            entry=entry,
+            status="failed",
+            record=None,
+            warnings=(),
+            error=(
+                f"管理表の URL からレポート ID を取り出せません: {entry.url}"
+                f"（管理番号 {entry.key}）"
+            ),
+        )
+    try:
+        # ``site_for`` が ``ComkenError`` を出すと ``_fetch_one`` 側で個別失敗にする
+        # ( 接続先を確定させるだけ。 実際の ``with site_class()`` は呼び出し側で行う )
+        site_for(entry.url)
+    except ComkenError as exc:
+        return None, FetchOutcome(
+            entry=entry,
+            status="failed",
+            record=None,
+            warnings=(),
+            error=f"Salesforce の接続先を決定できません: {exc}",
+        )
+    return report_id, None
+
+
+def _run_within_site(
+    *,
+    client: Any,
+    entry: MasterEntry,
+    org: str,
+    report_id: str,
+    store: DescribeStore,
+    row_limit: bool,
+    refresh_set: set[tuple[str, str]],
+    related_depth: int,
+    related_max: int,
+    column_fix_overrides: dict[tuple[str, str], Any],
+    state: _FetchState,
+) -> None:
+    """``with site_class() as client:`` の中で行う一連の取得・組み立てを行う。"""
+    try:
+        metadata = client.report.describe(report_id)
+    except SalesforceRequestError as exc:
+        state.warnings.append(
+            f"レポート describe に失敗（HTTP {exc.status_code}）: {report_id}\n{exc.detail}"
+        )
+        return
+
+    state.raw_metadata = metadata
+    # 境界: レポート定義はここで 1 回だけ整え、 以後は整えた値だけを使う
+    state.slim_report = _slim_report(metadata)
+
+    # 2000 行チェック: ``row_limit`` が True のときだけ実行
+    state.row_check = _check_row_count(client, report_id) if row_limit else None
+    _log_row_check(state.row_check)
+
+    # 主オブジェクトの解決。 ``describe_object`` が 401 / 403 を返したら
+    # ``_fetch_object_cached`` がそのまま上位へ ``SalesforceRequestError``
+    # を送出し、 ID 全体を失敗扱いにする。
+    main_object_name, main_describe, object_reason, csv_used_keys = _choose_main(
+        client, org, state.slim_report, store, state.warnings
+    )
+    state.main_object_name = main_object_name
+    state.main_describe = main_describe
+    state.object_reason = object_reason
+    state.csv_used_keys = csv_used_keys
+    if object_reason:
+        state.warnings.append(object_reason)
+    _log_report_contents(state.slim_report, main_object_name)
+
+    # 主オブジェクトが確定したら ``objects`` の
+    # 種を蒔いて、 列キーからのたどりに使う fetcher を作る
+    fetcher: Callable[[str], dict[str, Any] | None] | None = None
+    if main_object_name and main_describe is not None:
+        state.objects[main_object_name] = main_describe
+        fetcher = _make_overrides_fetcher(
+            client=client,
+            org=org,
+            store=store,
+            objects=state.objects,
+            csv_used_keys=state.csv_used_keys,
+        )
+
+    # 列対応表を組み立てる ( 主が取れるときは関連オブジェクト収集もここで行う )
+    column_map = _build_initial_column_map(
+        client=client,
+        org=org,
+        entry=entry,
+        state=state,
+        store=store,
+        fetcher=fetcher,
+        related_depth=related_depth,
+        related_max=related_max,
+    )
+    state.column_map = column_map
+
+    # 取り直し: 列対応に (不明) が残り、 CSV から読んだオブジェクトが
+    # このレポートで使われているなら API で取り直す
+    _refresh_unresolved_columns(
+        client=client,
+        org=org,
+        entry=entry,
+        state=state,
+        store=store,
+        refresh_set=refresh_set,
+        fetcher=fetcher,
+    )
+
+    # 人が ``列の直し.xlsx`` に入れた値で ``column_map`` を上書きする
+    state.column_map = column_fix_xlsx.apply_overrides(
+        column_map_rows=state.column_map,
+        existing=column_fix_overrides,
+        main_object=main_object_name or "",
+        objects=state.objects,
+        warnings=state.warnings,
+        fetch_object=fetcher,
+    )
+
+
+def _build_initial_column_map(
+    *,
+    client: Any,
+    org: str,
+    entry: MasterEntry,
+    state: _FetchState,
+    store: DescribeStore,
+    fetcher: Callable[[str], dict[str, Any] | None] | None,
+    related_depth: int,
+    related_max: int,
+) -> list[dict[str, Any]]:
+    """主オブジェクトが取れたときは関連オブジェクトも掘ってから列対応表を作る。"""
+    main_object_name = state.main_object_name
+    main_describe = state.main_describe
+    if not (main_object_name and main_describe is not None):
+        # 主オブジェクトが取れなかったときの列対応表（ 全列が理由つきの (不明) ）
+        return mapping.build_column_map(
+            state.slim_report,
+            main_describe,
+            state.object_reason,
+            related_describes=state.related_describes,
+            relations=[],
+            main_object=main_object_name,
+            fetch_object=fetcher,
+        )
+    # 関連オブジェクトを参照先から幅優先で掘る（ ``RELATED_DEPTH`` 段まで ）
+    new_nodes, new_relations, skipped_names = _collect_related_objects(
+        main_describe,
+        fetcher=lambda name: _fetch_object_cached(
+            client, org, name, store, state.warnings, state.csv_used_keys
+        ),
+        related_depth=related_depth,
+        related_max=related_max,
+    )
+    state.related_nodes = new_nodes
+    state.relations = new_relations
+    if skipped_names:
+        collected_count = len(new_nodes)
+        total = collected_count + len(skipped_names)
+        state.warnings.append(
+            f"関連オブジェクトが {total} 件あり"
+            f"上限 {related_max} を超えたため、"
+            f"次の {len(skipped_names)} 件は取得しません: {', '.join(skipped_names)}"
+        )
+    _log_related_objects(new_nodes, skipped_names)
+    for node in new_nodes:
+        if node.describe is not None:
+            state.objects[node.name] = node.describe
+            state.related_describes[node.name] = node.describe
+    # 列対応表を取り直す（ 関連オブジェクトが取れてから解く ）
+    return mapping.build_column_map(
+        state.slim_report,
+        main_describe,
+        state.object_reason,
+        related_describes=state.related_describes,
+        relations=state.relations,
+        main_object=main_object_name,
+        fetch_object=fetcher,
+    )
+
+
+def _refresh_unresolved_columns(
+    *,
+    client: Any,
+    org: str,
+    entry: MasterEntry,
+    state: _FetchState,
+    store: DescribeStore,
+    refresh_set: set[tuple[str, str]],
+    fetcher: Callable[[str], dict[str, Any] | None] | None,
+) -> None:
+    """列対応に ``(不明)`` が残るなら、 CSV から読んだオブジェクトを API で取り直す。
+
+    1 パス内では 1 度きり ( 取り直し後も (不明) が残るケースは API 側でも
+    解決できないので、 無限ループを避ける ) 。
+    """
+    main_object_name = state.main_object_name
+    if not (
+        main_object_name
+        and state.main_describe is not None
+        and _has_unresolved_columns(state.column_map, state.object_reason)
+    ):
+        return
+    refresh_keys = state.csv_used_keys - refresh_set
+    if not refresh_keys:
+        return
+    refresh_set.update(refresh_keys)
+    refreshed_main = _refresh_keys_in_store(
+        client=client,
+        org=org,
+        entry=entry,
+        main_object_name=main_object_name,
+        store=store,
+        warnings=state.warnings,
+        refresh_keys=refresh_keys,
+        objects=state.objects,
+        related_describes=state.related_describes,
+    )
+    if refreshed_main is not None:
+        state.main_describe = refreshed_main
+    # 列対応表を取り直す（ 取り直し後 ）
+    state.column_map = mapping.build_column_map(
+        state.slim_report,
+        state.main_describe,
+        state.object_reason,
+        related_describes=state.related_describes,
+        relations=state.relations,
+        main_object=main_object_name,
+        fetch_object=fetcher,
+    )
+
+
+def _refresh_keys_in_store(
+    *,
+    client: Any,
+    org: str,
+    entry: MasterEntry,
+    main_object_name: str,
+    store: DescribeStore,
+    warnings: list[str],
+    refresh_keys: set[tuple[str, str]],
+    objects: dict[str, dict[str, Any]],
+    related_describes: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """``refresh_keys`` のオブジェクトを API で取り直し、 メモリに反映する。
+
+    主オブジェクトが該当すれば最新値を返し、 それ以外は ``objects`` /
+    ``related_describes`` を直接更新する。
+    """
+    refreshed_main: dict[str, Any] | None = None
+    for key in refresh_keys:
+        object_name = _api_name_from_store(store, key)
+        if object_name is None:
+            continue
+        logger.info(
+            "取り直し: 管理番号=%s 組織=%s オブジェクト=%s",
+            entry.key,
+            key[0],
+            object_name,
+        )
+        refreshed_raw = store.refresh_from_api(
+            client, key[0], object_name, warnings
+        )
+        if refreshed_raw is None:
+            continue
+        # 境界: 取り直した describe もここで整えてからメモリに反映
+        refreshed = _slim_object(refreshed_raw)
+        if _object_key(org, main_object_name) == key:
+            objects[main_object_name] = refreshed
+            refreshed_main = refreshed
+            continue
+        for obj_name in list(objects):
+            if _object_key(org, obj_name) == key:
+                objects[obj_name] = refreshed
+                related_describes[obj_name] = refreshed
+                break
+    return refreshed_main
+
+
+def _build_fetch_outcome(
+    *,
+    entry: MasterEntry,
+    report_id: str,
+    state: _FetchState,
+    pii_keywords: tuple[str, ...],
+    pii_person_objects: tuple[str, ...],
+) -> FetchOutcome:
+    """``_fetch_one`` の終端処理 ( PII / 警告 / SOQL / FetchOutcome 組み立て ) を行う。"""
+    main_object_name = state.main_object_name
+    objects = state.objects
     main_object = main_object_name if main_object_name and main_object_name in objects else None
+    warnings = state.warnings
     if main_object_name and main_object_name not in objects:
         warnings.append(
             f"主オブジェクト {main_object_name} の describe に失敗したため"
             f"関連オブジェクトは取得していません"
         )
 
-    dropped_keys = _collect_dropped_keys(metadata)
+    dropped_keys = _collect_dropped_keys(state.raw_metadata)
     dropped_keys_warning = _dropped_keys_warning_text(dropped_keys)
     if dropped_keys_warning:
         warnings.append(dropped_keys_warning)
@@ -1074,17 +1220,17 @@ def _fetch_one(
         keywords=pii_keywords,
         person_objects=pii_person_objects,
     )
-    pii_result = _evaluate_record_pii(slim_report, column_map, objects, pii_config)
+    pii_result = _evaluate_record_pii(state.slim_report, state.column_map, objects, pii_config)
     _log_pii(pii_result)
 
     # 2000 件超判定が 判定不可 なら、 警告表にも 1 行入れる
-    if row_check is not None and row_check.status == ROW_CHECK_UNKNOWN and row_check.reason:
-        warnings.append(f"2000件超の判定ができませんでした: {row_check.reason}")
+    if (
+        state.row_check is not None
+        and state.row_check.status == ROW_CHECK_UNKNOWN
+        and state.row_check.reason
+    ):
+        warnings.append(f"2000件超の判定ができませんでした: {state.row_check.reason}")
 
-    # SOQL の下書きを組み立てる （ 2026-10-15 復活 ） 。 取れた record 1 件につき
-    # 1 回 ``build_soql`` を呼び、 結果は record の ``soql_draft`` に詰める。
-    # 一部作れずの SOQL は先頭に ``INCOMPLETE_MARKER`` が付き、 Salesforce に
-    # 投げると必ず止まる形になる （ 詳しくは ``src/soql_builder.py`` ）
     soql_draft = soql_builder.build_soql(
         ReportRecord(
             key=entry.key,
@@ -1092,10 +1238,10 @@ def _fetch_one(
             report_id=report_id,
             url=entry.url,
             main_object=main_object,
-            report=slim_report,
+            report=state.slim_report,
             objects=objects,
-            relations=tuple(relations),
-            column_map=column_map,
+            relations=tuple(state.relations),
+            column_map=state.column_map,
             warnings=tuple(warnings),
         )
     )
@@ -1106,16 +1252,15 @@ def _fetch_one(
         report_id=report_id,
         url=entry.url,
         main_object=main_object,
-        report=slim_report,
+        report=state.slim_report,
         objects=objects,
-        relations=tuple(relations),
-        column_map=column_map,
+        relations=tuple(state.relations),
+        column_map=state.column_map,
         warnings=tuple(warnings),
-        row_check=row_check,
+        row_check=state.row_check,
         pii=pii_result,
         soql_draft=soql_draft,
     )
-
     return FetchOutcome(
         entry=entry,
         status="ok",
