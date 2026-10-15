@@ -149,22 +149,14 @@ def _starts_with_main_object(column_key: str, main_object: str) -> bool:
     return column_key[: len(main_object)].lower() == main_object.lower()
 
 
-def _candidate_relationship_names_from_fields(fields: list[Any], limit: int = 10) -> list[str]:
+def _candidate_relationship_names_from_fields(
+    fields: list[dict[str, Any]], limit: int = 10
+) -> list[str]:
     """``fields`` の ``relationshipName`` を出現順で最大 ``limit`` 個返す。
 
-    候補が無い （ もしくは dict でない要素しかない ） ときは空 list。
     列キーからの経路たどりに失敗したときの備考で使う。
     """
-    candidates: list[str] = []
-    for field in fields:
-        if not isinstance(field, dict):
-            continue
-        rn = field.get("relationshipName")
-        if isinstance(rn, str) and rn:
-            candidates.append(rn)
-            if len(candidates) >= limit:
-                break
-    return candidates
+    return [field["relationshipName"] for field in fields if field.get("relationshipName")][:limit]
 
 
 def _resolve_name_field_for_reference(
@@ -195,22 +187,15 @@ def _resolve_name_field_for_reference(
         return "Name", "string"
     target = reference_to[0]
     target_describe = objects.get(target)
-    if not isinstance(target_describe, dict) and fetch_object is not None:
-        fetched = fetch_object(target)
-        if isinstance(fetched, dict):
-            objects[target] = fetched
-            target_describe = fetched
-    if not isinstance(target_describe, dict):
+    if target_describe is None and fetch_object is not None:
+        target_describe = fetch_object(target)
+        if target_describe is not None:
+            objects[target] = target_describe
+    if target_describe is None:
         return "Name", "string"
-    fields_raw = target_describe.get("fields")
-    fields: list[Any] = fields_raw if isinstance(fields_raw, list) else []
-    for field in fields:
-        if not isinstance(field, dict):
-            continue
-        if field.get("nameField") is True:
-            name = field.get("name")
-            if isinstance(name, str) and name:
-                return name, "string"
+    for field in target_describe.get("fields", []):
+        if field.get("nameField") is True and field.get("name"):
+            return field["name"], "string"
     return "Name", "string"
 
 
@@ -279,32 +264,19 @@ def _resolve_column_key_to_soql(
     current_object = main_object
     for index, part in enumerate(parts):
         describe = objects.get(current_object)
-        if not isinstance(describe, dict):
+        if describe is None:
             return (
                 None,
                 None,
                 (f"列キーで「{part}」を扱う {current_object} の項目定義が無いためたどれません"),
                 None,
             )
-        fields_raw = describe.get("fields")
-        fields: list[Any] = fields_raw if isinstance(fields_raw, list) else []
+        fields: list[dict[str, Any]] = describe.get("fields", [])
 
-        matched: dict[str, Any] | None = None
-        for field in fields:
-            if not isinstance(field, dict):
-                continue
-            relationship = field.get("relationshipName")
-            if isinstance(relationship, str) and relationship == part:
-                matched = field
-                break
+        # 参照項目のリレーション名で一致するものを先に、 無ければ項目名で探す
+        matched = next((field for field in fields if field.get("relationshipName") == part), None)
         if matched is None:
-            for field in fields:
-                if not isinstance(field, dict):
-                    continue
-                name = field.get("name")
-                if isinstance(name, str) and name == part:
-                    matched = field
-                    break
+            matched = next((field for field in fields if field.get("name") == part), None)
 
         if matched is None:
             candidates = _candidate_relationship_names_from_fields(fields)
@@ -324,17 +296,12 @@ def _resolve_column_key_to_soql(
             # かつ ``relationshipName`` が空でない参照項目のときは、 レポート
             # 表示と同じになるよう参照先の名前項目に置き換える
             field_name = matched.get("name")
-            if not isinstance(field_name, str) or not field_name:
+            if not field_name:
                 return None, None, None, None  # 形式が壊れている。 表示名引き当てに任せる
-            field_type = matched.get("type")
+            field_type = matched.get("type") or ""
             relationship = matched.get("relationshipName")
-            if field_type == "reference" and isinstance(relationship, str) and relationship:
-                reference_to_raw = matched.get("referenceTo")
-                reference_to: list[str] = (
-                    [r for r in reference_to_raw if isinstance(r, str) and r]
-                    if isinstance(reference_to_raw, list)
-                    else []
-                )
+            if field_type == "reference" and relationship:
+                reference_to: list[str] = matched.get("referenceTo") or []
                 name_field_name, name_field_type = _resolve_name_field_for_reference(
                     reference_to, objects, fetch_object
                 )
@@ -344,16 +311,11 @@ def _resolve_column_key_to_soql(
                 soql_segments.append(name_field_name)
                 return ".".join(soql_segments), name_field_type, None, id_column
             soql_segments.append(field_name)
-            return (
-                ".".join(soql_segments),
-                field_type if isinstance(field_type, str) else "",
-                None,
-                None,
-            )
+            return ".".join(soql_segments), field_type, None, None
 
         # 途中の段: SOQL は ``relationshipName`` （ 参照項目の名前空間 ）
         relationship = matched.get("relationshipName")
-        if not isinstance(relationship, str) or not relationship:
+        if not relationship:
             return (
                 None,
                 None,
@@ -367,12 +329,7 @@ def _resolve_column_key_to_soql(
 
         # 次のオブジェクトを決める。 単一参照は ``referenceTo`` の先頭、
         # ``objects`` にある候補があればそれを優先
-        reference_to_raw = matched.get("referenceTo")
-        reference_to: list[str] = (
-            [r for r in reference_to_raw if isinstance(r, str) and r]
-            if isinstance(reference_to_raw, list)
-            else []
-        )
+        reference_to = matched.get("referenceTo") or []
         next_object: str | None = None
         for cand in reference_to:
             if cand in objects:
@@ -380,7 +337,7 @@ def _resolve_column_key_to_soql(
                 break
             if fetch_object is not None:
                 fetched = fetch_object(cand)
-                if isinstance(fetched, dict):
+                if fetched is not None:
                     objects[cand] = fetched
                     next_object = cand
                     break
@@ -472,7 +429,7 @@ def build_relation_chains(
         for child, rel_name, _ in adjacency.get(current, []):
             if child in visited:
                 continue
-            if not isinstance(rel_name, str) or not rel_name:
+            if not rel_name:
                 # リレーション名が空の辺は鎖に使わない
                 continue
             new_chain = f"{chain}.{rel_name}" if chain else rel_name
@@ -494,92 +451,66 @@ def build_relation_chains(
     return result
 
 
-def _build_field_index(describe: object) -> dict[str, list[dict[str, Any]]]:
+def _build_field_index(describe: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     """Object Describe の ``fields`` を ``{正規化表示名: [field, ...]}`` に組み立てる。
 
     同じ表示名を持つフィールドが複数ある場合は最初に見つかった 1 件だけを
     選ばず **リストのまま** 残す。 呼び出し側で件数を判定し、 1 件なら
-    採用、 2 件以上なら「複数候補あり」として注記する。
-
-    Object Describe が ``fields`` を返さなかった場合（壊れたレスポンス等）
-    は空の辞書を返し、 全列が「対応フィールドなし」になる。 例外にはしない
-    （ ``build_column_map()`` のポリシーと揃えるため ） 。
-
-    2026-10-14: 複数候補ありの文言に項目の表示名（ ``label`` ） を添える
-    ため、 ``label`` も一緒に蓄える。
+    採用、 2 件以上なら「複数候補あり」として注記する。 名前か表示名が空の
+    項目は照合に使えないので入れない。
     """
-    fields = describe.get("fields", []) if isinstance(describe, dict) else []
     index: dict[str, list[dict[str, Any]]] = {}
-    for field in fields:
-        if not isinstance(field, dict):
-            continue
+    for field in describe.get("fields", []):
         name = field.get("name")
         label = field.get("label")
-        field_type = field.get("type")
-        if not isinstance(name, str) or not isinstance(label, str):
+        if not name or not label:
             continue
         index.setdefault(_normalize_label(label), []).append(
             {
                 "name": name,
                 "label": label,
-                "type": field_type if isinstance(field_type, str) else "",
-                "referenceTo": field.get("referenceTo", []),
-                "relationshipName": field.get("relationshipName"),
+                "type": field.get("type") or "",
+                "referenceTo": field.get("referenceTo") or [],
+                "relationshipName": field.get("relationshipName") or "",
             }
         )
     return index
 
 
-def _filter_only_columns(report_filters: object) -> list[str]:
+def _filter_only_columns(report_filters: list[dict[str, Any]]) -> list[str]:
     """``reportFilters`` にだけ現れる列キーを返す（SELECT には出ない列）。"""
-    if not isinstance(report_filters, list):
-        return []
     return [
-        column_key
-        for report_filter in report_filters
-        if isinstance(report_filter, dict)
-        and isinstance(column_key := report_filter.get("column"), str)
+        report_filter["column"] for report_filter in report_filters if report_filter.get("column")
     ]
 
 
 def _grouping_columns(report_metadata: dict[str, Any]) -> list[str]:
     """``groupingsDown`` / ``groupingsAcross`` （ ``SUMMARY`` / ``MATRIX`` ）の列キー。"""
-    columns = []
-    for grouping_key in ("groupingsDown", "groupingsAcross"):
-        for grouping in report_metadata.get(grouping_key, []) or []:
-            if isinstance(grouping, dict) and isinstance(grouping.get("name"), str):
-                columns.append(grouping["name"])
-    return columns
-
-
-def _aggregate_field_columns(aggregates: object) -> list[str]:
-    """``aggregates`` の集計対象列キーを返す。
-
-    集計キーは ``"s!Amount"`` のように「関数!列キー」の形。 ``"!"`` が無い
-    ものは列キーとして扱えないため無視する。
-    """
-    if not isinstance(aggregates, list):
-        return []
     return [
-        aggregate_key.split("!", 1)[-1]
-        for aggregate_key in aggregates
-        if isinstance(aggregate_key, str) and "!" in aggregate_key
+        grouping["name"]
+        for grouping_key in ("groupingsDown", "groupingsAcross")
+        for grouping in report_metadata.get(grouping_key, [])
+        if grouping.get("name")
     ]
 
 
-def _date_filter_column(report_metadata: dict[str, Any]) -> str | None:
-    """``standardDateFilter`` の列キーを 1 件だけ返す。 無い / 形式不正は ``None`` 。
+def _aggregate_field_columns(aggregates: list[str]) -> list[str]:
+    """``aggregates`` の集計対象列キーを返す。
 
-    レポート describe では日付条件の対象列は 1 つだけ。 ``column`` キーが無い
-    ものは無視。 SOQL 組立時に対応を取るために列対応表に含める必要がある。
+    集計キーは ``"s!Amount"`` のように「関数!列キー」の形。 ``"!"`` が無い
+    もの（ ``RowCount`` など ）は列キーとして扱えないため無視する。
     """
-    date_filter = report_metadata.get("standardDateFilter")
-    if not isinstance(date_filter, dict):
-        return None
-    column = date_filter.get("column")
-    if isinstance(column, str) and column:
-        return column
-    return None
+    return [key.split("!", 1)[-1] for key in aggregates if "!" in key]
+
+
+def _date_filter_column(report_metadata: dict[str, Any]) -> str | None:
+    """``standardDateFilter`` の列キーを 1 件だけ返す。 無ければ ``None`` 。
+
+    レポート describe では日付条件の対象列は 1 つだけ。 SOQL 組立時に対応を
+    取るために列対応表に含める必要がある。
+    """
+    date_filter = report_metadata.get("standardDateFilter") or {}
+    return date_filter.get("column") or None
 
 
 def _sort_by_columns(report_metadata: dict[str, Any]) -> list[str]:
@@ -588,63 +519,68 @@ def _sort_by_columns(report_metadata: dict[str, Any]) -> list[str]:
     SELECT には出ないが ``ORDER BY`` で使う列も列対応表に含める
     ( ``build_column_map()`` がラベルで解決するため) 。
     """
-    sort_by = report_metadata.get("sortBy")
-    if not isinstance(sort_by, list):
-        return []
-    keys: list[str] = []
-    for entry in sort_by:
-        if not isinstance(entry, dict):
-            continue
-        sort_column = entry.get("sortColumn")
-        if isinstance(sort_column, str) and sort_column:
-            keys.append(sort_column)
-    return keys
+    return [
+        entry["sortColumn"]
+        for entry in report_metadata.get("sortBy", [])
+        if entry.get("sortColumn")
+    ]
 
 
 def collect_describable_columns(report_metadata: dict[str, Any]) -> list[str]:
     """``build_column_map()`` が解決を試みる列キーの一覧を組み立てる（重複除去済み）。
 
-    ``detailColumns`` （SELECT に出す列） に加え、 SELECT には出ないが
-    ``reportFilters`` だけで使う列、 ``SUMMARY`` / ``MATRIX`` の
-    ``groupingsDown`` / ``groupingsAcross`` のグルーピング列、 ``aggregates``
-    の集計対象列、 ``standardDateFilter`` の列、 ``sortBy`` の列も含める。
-
-    ``standardDateFilter`` と ``sortBy`` の列を加えたことで、 「 取得でき
-    なかった項目 」 シートや ``列名の対応.csv`` にも出るようになり、 SOQL
-    組立時に WHERE / ORDER BY で使えるようになる。
+    出力に出る列（ ``output_column_keys`` ）に加え、 SELECT には出ないが
+    ``reportFilters`` だけで使う列、 ``standardDateFilter`` の列、 ``sortBy`` の
+    列も含める（ WHERE / ORDER BY で使うため ）。
     """
-    columns = list(report_metadata.get("detailColumns", []))
+    columns: list[str] = []
     for column_key in (
-        _filter_only_columns(report_metadata.get("reportFilters"))
+        report_metadata.get("detailColumns", [])
+        + _filter_only_columns(report_metadata.get("reportFilters", []))
         + _grouping_columns(report_metadata)
-        + _aggregate_field_columns(report_metadata.get("aggregates"))
+        + _aggregate_field_columns(report_metadata.get("aggregates", []))
+        + [column for column in [_date_filter_column(report_metadata)] if column]
+        + _sort_by_columns(report_metadata)
     ):
-        if column_key not in columns:
-            columns.append(column_key)
-    date_column = _date_filter_column(report_metadata)
-    if date_column and date_column not in columns:
-        columns.append(date_column)
-    for column_key in _sort_by_columns(report_metadata):
         if column_key not in columns:
             columns.append(column_key)
     return columns
 
 
-def _collect_column_info(metadata: dict[str, Any]) -> dict[str, Any]:
+def select_column_keys(report_metadata: dict[str, Any]) -> list[str]:
+    """SELECT に入れる列のキー（ ``detailColumns`` → グルーピング列 ）。重複は除かない。"""
+    return report_metadata.get("detailColumns", []) + _grouping_columns(report_metadata)
+
+
+def output_column_keys(report_metadata: dict[str, Any]) -> list[str]:
+    """レポートの出力に出る列のキー（ SELECT の列 → 集計の対象列 ）。重複は除かない。
+
+    個人情報の判定など「 出力に出る列 」 だけを見るときに使う。 絞り込みにだけ
+    使う列は含まない。
+    """
+    return select_column_keys(report_metadata) + _aggregate_field_columns(
+        report_metadata.get("aggregates", [])
+    )
+
+
+def field_name_from_soql(soql_name: str) -> str:
+    """``"Account.Owner.Name"`` から末端の ``"Name"`` を取り出す。 ``(不明)`` は空文字。"""
+    if not soql_name or soql_name == "(不明)":
+        return ""
+    return soql_name.rsplit(".", 1)[-1]
+
+
+def _collect_column_info(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """``build_column_map()`` の表示名引き当てに使う列情報を組み立てる。
 
     グルーピング列・集計列の表示名は ``detailColumnInfo`` ではなく
     ``groupingColumnInfo`` / ``aggregateColumnInfo`` 側に入っているため、
     同じ列キー空間としてマージする（キーの重複は無い前提）。
     """
-    extended_metadata: dict[str, Any] = (
-        metadata.get("reportExtendedMetadata", {}) if isinstance(metadata, dict) else {}
-    )
-    column_info: dict[str, Any] = dict(extended_metadata.get("detailColumnInfo", {}) or {})
-    for info_key in ("groupingColumnInfo", "aggregateColumnInfo"):
-        info = extended_metadata.get(info_key)
-        if isinstance(info, dict):
-            column_info.update(info)
+    extended_metadata: dict[str, dict[str, Any]] = metadata.get("reportExtendedMetadata", {})
+    column_info: dict[str, dict[str, Any]] = {}
+    for info_key in ("detailColumnInfo", "groupingColumnInfo", "aggregateColumnInfo"):
+        column_info.update(extended_metadata.get(info_key, {}))
     return column_info
 
 
@@ -754,15 +690,14 @@ def build_column_map(
     related_describes = related_describes or {}
     relations = relations or []
 
-    report_metadata = metadata.get("reportMetadata", {}) if isinstance(metadata, dict) else {}
+    report_metadata = metadata.get("reportMetadata", {})
     columns = collect_describable_columns(report_metadata)
     column_info = _collect_column_info(metadata)
     field_index = _build_field_index(main_describe) if main_describe is not None else None
 
     # ``main_object`` が未指定なら ``main_describe.get("name")`` から取る
-    if main_object is None and isinstance(main_describe, dict):
-        candidate = main_describe.get("name")
-        main_object = candidate if isinstance(candidate, str) else None
+    if main_object is None and main_describe is not None:
+        main_object = main_describe.get("name")
     main_object = main_object or ""
 
     # 鎖を事前計算
@@ -782,22 +717,16 @@ def build_column_map(
     rows: list[dict[str, str]] = []
     # オブジェクトの表示名 → API 名のマップ （ 「 タスク: 作業会社名 」 形式の照合用 ）
     object_label_to_api: dict[str, str] = {}
-    if field_index is not None:
-        # 主オブジェクト自身の表示名
-        main_label = main_describe.get("label") if isinstance(main_describe, dict) else None
-        if isinstance(main_label, str) and main_label:
-            object_label_to_api[_normalize_label(main_label)] = main_object or ""
-        # 関連オブジェクトの表示名
-        for related_name, related_describe in related_describes.items():
-            if not isinstance(related_describe, dict):
-                continue
-            rel_label = related_describe.get("label")
-            if isinstance(rel_label, str) and rel_label and isinstance(related_name, str):
-                object_label_to_api[_normalize_label(rel_label)] = related_name
+    if main_describe is not None:
+        # 主オブジェクト自身の表示名と、 関連オブジェクトの表示名
+        labeled = [(main_object, main_describe), *related_describes.items()]
+        for object_name, describe in labeled:
+            object_label = describe.get("label")
+            if object_label:
+                object_label_to_api[_normalize_label(object_label)] = object_name
 
     for column_key in columns:
-        info = column_info.get(column_key, {}) if isinstance(column_info, dict) else {}
-        label = info.get("label", column_key) if isinstance(info, dict) else column_key
+        label = column_info.get(column_key, {}).get("label", column_key)
         # 表示名が 「 オブジェクト: 項目名 」 の形なら分解して、 コロン前の
         # オブジェクト表示名に一致するオブジェクト内の項目表示名で照合する
         # （ 2026-10-15 ） 。 コロン前が見つからないときは従来どおり後ろだけで照合
@@ -817,7 +746,7 @@ def build_column_map(
             "備考": "",
         }
 
-        if field_index is None or reason is not None:
+        if main_describe is None or field_index is None or reason is not None:
             row["備考"] = reason or ""
             rows.append(row)
             continue
@@ -827,15 +756,7 @@ def build_column_map(
         # 始まり ``.`` を含むときだけ試す。 たどれが漏れたら表示名の照合
         # に進むので、 失敗の理由は保持しておく。
         path_failure_note: str | None = None
-        if (
-            main_object
-            and isinstance(column_key, str)
-            and "." in column_key
-            and _starts_with_main_object(column_key, main_object)
-        ):
-            # ``main_describe`` はこの分岐に到達する時点で dict
-            # （ ``field_index is None`` を上で弾いている ）
-            assert isinstance(main_describe, dict)
+        if main_object and "." in column_key and _starts_with_main_object(column_key, main_object):
             (
                 soql_name,
                 field_type,
@@ -859,20 +780,9 @@ def build_column_map(
                     # 最後の項目の参照先 / リレーション名は表示名引き当てと
                     # 同じく埋める （ 表示の一貫性 ） 。 末端の項目は
                     # ``main_describe`` から同じ name を探して再利用する。
-                    last_field_name = soql_name.rsplit(".", 1)[-1]
-                    # ``main_describe`` はここに来る時点で必ず dict
-                    # （ 上で ``field_index is None`` を弾いている ）
-                    assert isinstance(main_describe, dict)
-                    last_field = _find_last_field(main_describe, last_field_name)
-                    if isinstance(last_field, dict):
-                        ref_to = last_field.get("referenceTo")
-                        if isinstance(ref_to, list) and ref_to:
-                            row["参照先オブジェクト"] = "|".join(
-                                str(item) for item in ref_to if isinstance(item, str) and item
-                            )
-                        rel_name = last_field.get("relationshipName")
-                        if isinstance(rel_name, str):
-                            row["リレーション名"] = rel_name
+                    last_field = _find_last_field(main_describe, field_name_from_soql(soql_name))
+                    if last_field is not None:
+                        _fill_reference(row, last_field)
                     row["備考"] = "列キーから"
                 rows.append(row)
                 continue
@@ -887,7 +797,7 @@ def build_column_map(
         # 「 複数候補あり: ... 」 の形で備考だけ入れて表示名照合には
         # 進まない、 どちらも無ければ失敗理由を ``path_failure_note`` に
         # 持って表示名照合へフォールバック。
-        if main_object and isinstance(column_key, str) and column_key.startswith("FK_"):
+        if main_object and column_key.startswith("FK_"):
             fk_body = column_key[3:]
             if fk_body.startswith("$"):
                 fk_body = fk_body[1:]
@@ -896,29 +806,14 @@ def build_column_map(
                 if fk_target and fk_remainder:
                     # main_describe の fields から対象オブジェクトを参照する
                     # 参照項目を全部集める （ ``referenceTo`` は大小無視 ）
-                    main_fields_raw = (
-                        main_describe.get("fields") if isinstance(main_describe, dict) else None
-                    )
-                    main_fields = main_fields_raw if isinstance(main_fields_raw, list) else []
-                    fk_matches: list[dict[str, Any]] = []
-                    for mf in main_fields:
-                        if not isinstance(mf, dict):
-                            continue
-                        if mf.get("type") != "reference":
-                            continue
-                        rel_name = mf.get("relationshipName")
-                        if not isinstance(rel_name, str) or not rel_name:
-                            continue
-                        mf_name = mf.get("name")
-                        if not isinstance(mf_name, str) or not mf_name:
-                            continue
-                        ref_to = mf.get("referenceTo")
-                        if not isinstance(ref_to, list):
-                            continue
-                        if any(
-                            isinstance(r, str) and r.lower() == fk_target.lower() for r in ref_to
-                        ):
-                            fk_matches.append(mf)
+                    fk_matches = [
+                        mf
+                        for mf in main_describe.get("fields", [])
+                        if mf.get("type") == "reference"
+                        and mf.get("relationshipName")
+                        and mf.get("name")
+                        and any(r.lower() == fk_target.lower() for r in mf.get("referenceTo") or [])
+                    ]
 
                     if not fk_matches:
                         path_failure_note = (
@@ -927,15 +822,9 @@ def build_column_map(
                     else:
                         # 対象オブジェクトの describe を取る。 ``fetch_object``
                         # が優先、 無ければ ``related_describes`` を探す
-                        target_describe: dict[str, Any] | None = None
-                        if fetch_object is not None:
-                            fetched = fetch_object(fk_target)
-                            if isinstance(fetched, dict):
-                                target_describe = fetched
-                        if target_describe is None and related_describes:
-                            rel = related_describes.get(fk_target)
-                            if isinstance(rel, dict):
-                                target_describe = rel
+                        target_describe = fetch_object(fk_target) if fetch_object else None
+                        if target_describe is None:
+                            target_describe = related_describes.get(fk_target)
 
                         if target_describe is None:
                             path_failure_note = f"FK_ で {fk_target} の項目定義を取得できません"
@@ -971,35 +860,20 @@ def build_column_map(
                                     else:
                                         # 末端の項目の参照先 / リレーション名は
                                         # 0. と同じく埋める
-                                        fk_last_name = fk_sub_soql.rsplit(".", 1)[-1]
-                                        fk_last = _find_last_field(target_describe, fk_last_name)
-                                        if isinstance(fk_last, dict):
-                                            fk_ref_to = fk_last.get("referenceTo")
-                                            if isinstance(fk_ref_to, list) and fk_ref_to:
-                                                row["参照先オブジェクト"] = "|".join(
-                                                    str(item)
-                                                    for item in fk_ref_to
-                                                    if isinstance(item, str) and item
-                                                )
-                                            fk_last_rel = fk_last.get("relationshipName")
-                                            if isinstance(fk_last_rel, str):
-                                                row["リレーション名"] = fk_last_rel
+                                        fk_last = _find_last_field(
+                                            target_describe, field_name_from_soql(fk_sub_soql)
+                                        )
+                                        if fk_last is not None:
+                                            _fill_reference(row, fk_last)
                                         row["備考"] = "FK_ から"
                                     rows.append(row)
                                     continue
                                 # 2 件以上: 経路が解けたものだけ 「 複数候補あり 」
                                 # の形式で備考に並べる
-                                resolved: list[tuple[str, str]] = []
-                                for fk_field in fk_matches:
-                                    rel_name = fk_field.get("relationshipName")
-                                    field_name = fk_field.get("name")
-                                    if (
-                                        isinstance(rel_name, str)
-                                        and rel_name
-                                        and isinstance(field_name, str)
-                                        and field_name
-                                    ):
-                                        resolved.append((rel_name, field_name))
+                                resolved = [
+                                    (fk_field["relationshipName"], fk_field["name"])
+                                    for fk_field in fk_matches
+                                ]
                                 row["備考"] = "複数候補あり: " + " / ".join(
                                     f"{rel}.{fk_sub_soql}（{field_name}）"
                                     for rel, field_name in resolved[:5]
@@ -1026,7 +900,7 @@ def build_column_map(
         # 関連から
         for chain in ordered_chains:
             related_describe = related_describes.get(chain.object_name)
-            if not isinstance(related_describe, dict):
+            if related_describe is None:
                 continue
             if target_object_hint is not None and chain.object_name != target_object_hint:
                 continue
@@ -1045,35 +919,7 @@ def build_column_map(
 
         if len(all_candidates) == 1:
             owner, soql_chain, field, from_main = all_candidates[0]
-            row["所属オブジェクト"] = owner
-            if from_main:
-                row["対応フィールドAPI名"] = field["name"]
-                row["型"] = field["type"]
-                # 参照先 / リレーション名は主オブジェクトの項目のもの
-                ref_to = field.get("referenceTo")
-                if isinstance(ref_to, list) and ref_to:
-                    row["参照先オブジェクト"] = "|".join(
-                        str(item) for item in ref_to if isinstance(item, str) and item
-                    )
-                rel_name = field.get("relationshipName")
-                if isinstance(rel_name, str):
-                    row["リレーション名"] = rel_name
-                row["備考"] = ""
-            else:
-                row["対応フィールドAPI名"] = (
-                    f"{soql_chain}.{field['name']}" if soql_chain else field["name"]
-                )
-                row["型"] = field["type"]
-                # 参照先 / リレーション名は関連オブジェクト側の項目のもの
-                ref_to = field.get("referenceTo")
-                if isinstance(ref_to, list) and ref_to:
-                    row["参照先オブジェクト"] = "|".join(
-                        str(item) for item in ref_to if isinstance(item, str) and item
-                    )
-                rel_name = field.get("relationshipName")
-                if isinstance(rel_name, str):
-                    row["リレーション名"] = rel_name
-                row["備考"] = "関連オブジェクト経由"
+            _apply_candidate(row, owner, soql_chain, field, from_main, "関連オブジェクト経由")
             rows.append(row)
             continue
 
@@ -1098,33 +944,7 @@ def build_column_map(
 
         if len(filtered) == 1:
             owner, soql_chain, field, from_main, _ = filtered[0]
-            row["所属オブジェクト"] = owner
-            if from_main:
-                row["対応フィールドAPI名"] = field["name"]
-                row["型"] = field["type"]
-                ref_to = field.get("referenceTo")
-                if isinstance(ref_to, list) and ref_to:
-                    row["参照先オブジェクト"] = "|".join(
-                        str(item) for item in ref_to if isinstance(item, str) and item
-                    )
-                rel_name = field.get("relationshipName")
-                if isinstance(rel_name, str):
-                    row["リレーション名"] = rel_name
-                row["備考"] = ""
-            else:
-                row["対応フィールドAPI名"] = (
-                    f"{soql_chain}.{field['name']}" if soql_chain else field["name"]
-                )
-                row["型"] = field["type"]
-                ref_to = field.get("referenceTo")
-                if isinstance(ref_to, list) and ref_to:
-                    row["参照先オブジェクト"] = "|".join(
-                        str(item) for item in ref_to if isinstance(item, str) and item
-                    )
-                rel_name = field.get("relationshipName")
-                if isinstance(rel_name, str):
-                    row["リレーション名"] = rel_name
-                row["備考"] = "列キーの接頭辞で絞り込み"
+            _apply_candidate(row, owner, soql_chain, field, from_main, "列キーの接頭辞で絞り込み")
             rows.append(row)
             continue
 
@@ -1157,6 +977,31 @@ def build_column_map(
     return rows
 
 
+def _fill_reference(row: dict[str, str], field: dict[str, Any]) -> None:
+    """``row`` に項目の参照先（ ``|`` 区切り ）とリレーション名を書く。"""
+    row["参照先オブジェクト"] = "|".join(field.get("referenceTo") or [])
+    row["リレーション名"] = field.get("relationshipName") or ""
+
+
+def _apply_candidate(
+    row: dict[str, str],
+    owner: str,
+    soql_chain: str,
+    field: dict[str, Any],
+    from_main: bool,
+    related_note: str,
+) -> None:
+    """1 つに決まった候補を ``row`` に書く。 関連由来なら鎖つきの SOQL 名と ``related_note``。"""
+    row["所属オブジェクト"] = owner
+    if from_main or not soql_chain:
+        row["対応フィールドAPI名"] = field["name"]
+    else:
+        row["対応フィールドAPI名"] = f"{soql_chain}.{field['name']}"
+    row["型"] = field["type"]
+    _fill_reference(row, field)
+    row["備考"] = "" if from_main else related_note
+
+
 def _format_multiple_candidate(
     owner: str, soql_chain: str, field: dict[str, Any], from_main: bool
 ) -> str:
@@ -1168,34 +1013,24 @@ def _format_multiple_candidate(
     表示名を添える。 SOQL 列名として ``Account.Name`` のようにそのまま
     貼れる形にする。
     """
-    label = field.get("label", "")
-    label_text = label if isinstance(label, str) and label else ""
-    if from_main:
-        soql_segment = field.get("name", "")
-        soql_segment = soql_segment if isinstance(soql_segment, str) else ""
-    else:
-        soql_segment = f"{soql_chain}.{field['name']}" if soql_chain else field.get("name", "")
-        soql_segment = soql_segment if isinstance(soql_segment, str) else ""
-    owner_text = owner if isinstance(owner, str) and owner else ""
-    return f"{soql_segment}（{owner_text} {label_text}）"
+    name = field.get("name", "")
+    soql_segment = f"{soql_chain}.{name}" if soql_chain and not from_main else name
+    return f"{soql_segment}（{owner} {field.get('label', '')}）"
 
 
 def _find_last_field(main_describe: dict[str, Any], last_field_name: str) -> dict[str, Any] | None:
     """``main_describe`` の ``fields`` から ``name == last_field_name`` の項目を返す。
 
     列キー経路の最後の項目は多くの場合 **主オブジェクトの** フィールド
-    （ ``Contact.Name`` / ``Contact.Account.Name`` など ） か、 経路の
-    途中で ``fetch_object`` が補完してくれたオブジェクト側。 主オブジェクト
-    に同名の項目があればそれを、 無ければ ``None`` を返します（ 経路上の
-    他のオブジェクトは ``slim_objects`` 側に居るが、 ここでの参照先 /
+    （ ``Contact.Name`` / ``Contact.Account.Name`` など ）。 主オブジェクト
+    に同名の項目があればそれを、 無ければ ``None`` を返す（ 参照先 /
     リレーション名 は主オブジェクト上の項目に対してだけ埋める ） 。
     """
-    fields_raw = main_describe.get("fields") if isinstance(main_describe, dict) else None
-    if not isinstance(fields_raw, list):
-        return None
-    for field in fields_raw:
-        if not isinstance(field, dict):
-            continue
-        if field.get("name") == last_field_name:
-            return field
-    return None
+    return next(
+        (
+            field
+            for field in main_describe.get("fields", [])
+            if field.get("name") == last_field_name
+        ),
+        None,
+    )
