@@ -54,7 +54,7 @@ from comken.exceptions import (
 from comken.toolbox.salesforce.report import report_id_from_url
 
 from src import column_fix_xlsx, mapping, pii, soql_builder
-from src.describe_store import DescribeStore, org_from_url
+from src.describe_store import DescribeStore, active_picklist_values, org_from_url
 from src.master import MasterEntry
 
 logger = logging.getLogger(__name__)
@@ -651,22 +651,8 @@ def _slim_field(field: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_picklist(picklist_values: object) -> tuple[list[str], int]:
-    """``picklistValues`` から ``active`` が真の ``value`` を取り出す。
-
-    Returns:
-        (最大 30 件の値リスト, active な選択肢の総数)
-    """
-    if not isinstance(picklist_values, list):
-        return [], 0
-    active: list[str] = []
-    for entry in picklist_values:
-        if not isinstance(entry, dict):
-            continue
-        if not entry.get("active"):
-            continue
-        value = entry.get("value")
-        if isinstance(value, str) and value:
-            active.append(value)
+    """``picklistValues`` の active な ``value`` を、 最大 30 件と総数で返す。"""
+    active = active_picklist_values(picklist_values)
     return active[:30], len(active)
 
 

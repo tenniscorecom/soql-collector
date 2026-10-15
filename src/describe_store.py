@@ -91,9 +91,9 @@ def _key(org: str, object_name: str) -> tuple[str, str]:
     return (org.strip().lower(), _normalize_object(object_name))
 
 
-def _bool_mark(value: object) -> bool:
+def _bool_mark(value: str) -> bool:
     """CSV から読んだ真偽値 （ ``"○"`` ） を ``bool`` にする。"""
-    return isinstance(value, str) and value.strip() == TRUE_MARK
+    return value.strip() == TRUE_MARK
 
 
 def _join_pipe(values: list[str]) -> str:
@@ -109,21 +109,22 @@ def _split_pipe(text: str) -> list[str]:
 # ── describe dict ⇄ CSV 行 ──────────────────────────────────────────────
 
 
-def _format_picklist_active(field: dict[str, Any]) -> list[str]:
-    """``field`` の ``picklistValues`` から active な ``value`` だけを取り出す。"""
-    picklist_raw = field.get("picklistValues")
-    if not isinstance(picklist_raw, list):
+def active_picklist_values(picklist_values: object) -> list[str]:
+    """API の ``picklistValues`` から active な ``value`` だけを取り出す（ 境界 ）。
+
+    ``fetch._slim_field``（ 最大 30 件に切る ）と、 項目定義.csv への書き出しの
+    両方がこれを使う。
+    """
+    if not isinstance(picklist_values, list):
         return []
-    active: list[str] = []
-    for entry in picklist_raw:
-        if not isinstance(entry, dict):
-            continue
-        if not entry.get("active"):
-            continue
-        value = entry.get("value")
-        if isinstance(value, str) and value:
-            active.append(value)
-    return active
+    return [
+        entry["value"]
+        for entry in picklist_values
+        if isinstance(entry, dict)
+        and entry.get("active")
+        and isinstance(entry.get("value"), str)
+        and entry["value"]
+    ]
 
 
 def _describe_to_csv_rows(
@@ -156,7 +157,7 @@ def _describe_to_csv_rows(
         )
         custom_raw = raw_field.get("custom")
         custom_mark = TRUE_MARK if isinstance(custom_raw, bool) and custom_raw else ""
-        active = _format_picklist_active(raw_field)
+        active = active_picklist_values(raw_field.get("picklistValues"))
         rows.append(
             {
                 "組織": org,
@@ -196,44 +197,30 @@ def describe_to_csv_rows(
 def csv_rows_to_describe(rows: list[dict[str, str]]) -> dict[str, Any]:
     """CSV の行 dict から ``describe_object`` 戻り値と同じ形の dict を組み立てる。
 
-    ``_slim_object`` と ``_related_ref_pairs`` が読むキー
-    （ ``name`` / ``label`` / ``custom`` / ``fields`` と、 各 field の
-    ``name`` / ``label`` / ``type`` / ``custom`` / ``referenceTo`` /
-    ``relationshipName`` / ``picklistValues`` ） を **そのまま** 持たせる。
-    これで CSV から読んだ値を ``_slim_object`` に通しても API 直呼びと
-    同じ出力が得られる （ 既存のテストの期待結果を変えない ） 。
+    ``_slim_object`` が読むキー（ ``name`` / ``label`` / ``custom`` / ``fields`` と、
+    各 field の ``name`` / ``label`` / ``type`` / ``custom`` / ``referenceTo`` /
+    ``relationshipName`` / ``picklistValues`` ）を持たせる。 これで CSV から読んだ値を
+    ``_slim_object`` に通しても API 直呼びと同じ出力が得られる。 ``rows`` は comken の
+    ``CSV`` で読んだ行（ 見出しを確かめてあり、 値はすべて str ）。
     """
     if not rows:
         return {"name": "", "label": "", "custom": False, "fields": []}
-    object_name = _coerce_str(rows[0].get("オブジェクト"))
-    object_label = _coerce_str(rows[0].get("オブジェクト表示名"))
-    obj_custom = _bool_mark(rows[0].get("カスタムオブジェクト"))
-    fields: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        active_values = _split_pipe(_coerce_str(row.get("選択肢")))
-        picklist_values: list[dict[str, Any]] = [
-            {"active": True, "value": v} for v in active_values
-        ]
-        reference_to = _split_pipe(_coerce_str(row.get("参照先")))
-        rel_text = _coerce_str(row.get("リレーション名")).strip()
-        relationship_name: str | None = rel_text if rel_text else None
-        fields.append(
-            {
-                "name": _coerce_str(row.get("項目API名")),
-                "label": _coerce_str(row.get("項目表示名")),
-                "type": _coerce_str(row.get("型")),
-                "custom": _bool_mark(row.get("カスタム項目")),
-                "referenceTo": reference_to,
-                "relationshipName": relationship_name,
-                "picklistValues": picklist_values,
-            }
-        )
+    fields = [
+        {
+            "name": row["項目API名"],
+            "label": row["項目表示名"],
+            "type": row["型"],
+            "custom": _bool_mark(row["カスタム項目"]),
+            "referenceTo": _split_pipe(row["参照先"]),
+            "relationshipName": row["リレーション名"].strip() or None,
+            "picklistValues": [{"active": True, "value": v} for v in _split_pipe(row["選択肢"])],
+        }
+        for row in rows
+    ]
     return {
-        "name": object_name,
-        "label": object_label,
-        "custom": obj_custom,
+        "name": rows[0]["オブジェクト"],
+        "label": rows[0]["オブジェクト表示名"],
+        "custom": _bool_mark(rows[0]["カスタムオブジェクト"]),
         "fields": fields,
     }
 
@@ -264,8 +251,8 @@ def load_describe_index(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
         )
     rows_by_object: dict[tuple[str, str], list[dict[str, str]]] = {}
     for row in table.to_rows():
-        org_raw = _coerce_str(row.get("組織")).strip().lower()
-        obj_raw = _coerce_str(row.get("オブジェクト")).strip()
+        org_raw = row["組織"].strip().lower()
+        obj_raw = row["オブジェクト"].strip()
         if not org_raw or not obj_raw:
             # 想定外の行は読み飛ばす
             continue
@@ -274,7 +261,7 @@ def load_describe_index(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
     for key, rows in rows_by_object.items():
         # 同じ (org, object) の行は 1 つの describe に集約
         # （ 通常は 1 グループだけだが、 古いログ混入時の保険 ）
-        object_rows = sorted(rows, key=lambda r: _coerce_str(r.get("取得日時")))
+        object_rows = sorted(rows, key=lambda r: r["取得日時"])
         result[key] = csv_rows_to_describe(object_rows)
     return result
 
@@ -312,22 +299,15 @@ def upsert_object_rows(
                 "対処: ファイルを別名に退避してから再実行してください。"
             )
         for row in table.to_rows():
-            row_org = _coerce_str(row.get("組織")).strip().lower()
-            row_obj = _coerce_str(row.get("オブジェクト")).strip()
+            row_org = row["組織"].strip().lower()
+            row_obj = row["オブジェクト"].strip()
             if row_org == org_key and _normalize_object(row_obj) == obj_key:
                 continue
             rows.append(row)
 
     rows.extend(describe_to_csv_rows(org_key, object_name, describe, ts))
 
-    rows.sort(
-        key=lambda r: (
-            _coerce_str(r.get("組織")),
-            _coerce_str(r.get("オブジェクト")),
-            _coerce_str(r.get("取得日時")),
-            _coerce_str(r.get("項目API名")),
-        )
-    )
+    rows.sort(key=lambda r: (r["組織"], r["オブジェクト"], r["取得日時"], r["項目API名"]))
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with CSV(path, columns=list(DESCRIBE_CSV_COLUMNS)) as csv:
@@ -468,8 +448,6 @@ class DescribeStore:
             self.record_api_failure(org, object_name, warning)
             return None
 
-        if not isinstance(describe, dict):
-            describe = {}
         self.record_api_success(org, object_name, describe)
         self.refresh_count += 1
         return describe

@@ -338,14 +338,6 @@ def _is_person_owner(
     if owner_object in person_objects:
         return True
     if owner_object == "Account":
-        describe = objects.get("Account")
-        if isinstance(describe, dict):
-            fields = describe.get("fields")
-            if isinstance(fields, list):
-                for field in fields:
-                    if not isinstance(field, dict):
-                        continue
-                    name = field.get("name")
-                    if isinstance(name, str) and name == _IS_PERSON_ACCOUNT_FIELD:
-                        return True
+        fields = (objects.get("Account") or {}).get("fields", [])
+        return any(field.get("name") == _IS_PERSON_ACCOUNT_FIELD for field in fields)
     return False

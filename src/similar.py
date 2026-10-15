@@ -205,121 +205,50 @@ def _compare_pair(
 
 
 def _extract(record: ReportRecord) -> tuple[_Structure | None, _Condition | None]:
-    """``ReportRecord`` から 構造と条件を取り出す。 取れなければ ``(None, None)``。
-
-    ``record.report`` は ``_slim_report`` の戻り値で ``dict[str, Any]`` 。
-    壊れた record のために ``dict`` 形だけ確認する
-    """
-    report = record.report
-    if not isinstance(report, dict):
-        return None, None
-    metadata = report.get("reportMetadata")
-    if not isinstance(metadata, dict):
-        return None, None
-    structure = _extract_structure(metadata)
-    condition = _extract_condition(metadata)
-    return structure, condition
+    """``ReportRecord`` から 構造と条件を取り出す（ ``record.report`` は入口でそろえてある ）。"""
+    metadata = record.report["reportMetadata"]
+    return _extract_structure(metadata), _extract_condition(metadata)
 
 
 def _extract_structure(metadata: dict[str, Any]) -> _Structure:
     """``reportMetadata`` から 構造の正規形を作る。"""
-    report_type = ""
-    report_type_raw = metadata.get("reportType")
-    if isinstance(report_type_raw, dict):
-        type_value = report_type_raw.get("type")
-        if isinstance(type_value, str):
-            report_type = type_value
-
-    format_value = metadata.get("reportFormat")
-    format_str = format_value if isinstance(format_value, str) else ""
-
     return _Structure(
-        report_type=report_type,
-        format=format_str,
-        detail_columns=_string_tuple(metadata.get("detailColumns")),
-        groupings_down=_grouping_names(metadata.get("groupingsDown")),
-        groupings_across=_grouping_names(metadata.get("groupingsAcross")),
-        aggregates=_string_tuple(metadata.get("aggregates")),
-        sort_by=_sort_pairs(metadata.get("sortBy")),
+        report_type=(metadata.get("reportType") or {}).get("type", ""),
+        format=metadata.get("reportFormat", ""),
+        detail_columns=tuple(metadata.get("detailColumns", [])),
+        groupings_down=_grouping_names(metadata.get("groupingsDown", [])),
+        groupings_across=_grouping_names(metadata.get("groupingsAcross", [])),
+        aggregates=tuple(metadata.get("aggregates", [])),
+        sort_by=tuple(
+            (item.get("sortColumn", ""), item.get("sortOrder", ""))
+            for item in metadata.get("sortBy", [])
+        ),
     )
 
 
 def _extract_condition(metadata: dict[str, Any]) -> _Condition:
     """``reportMetadata`` から 条件の正規形を作る。"""
-    filters_raw = metadata.get("reportFilters")
-    filters: list[tuple[str, str, str]] = []
-    if isinstance(filters_raw, list):
-        for filt in filters_raw:
-            if not isinstance(filt, dict):
-                continue
-            column = filt.get("column", "")
-            operator = filt.get("operator", "")
-            value = filt.get("value", "")
-            filters.append(
-                (
-                    column if isinstance(column, str) else "",
-                    operator if isinstance(operator, str) else "",
-                    _normalize_value(value),
-                )
-            )
-    filters_tuple = tuple(sorted(filters))
-
-    boolean_filter = metadata.get("reportBooleanFilter")
-    boolean_str = boolean_filter if isinstance(boolean_filter, str) else ""
-
+    filters = sorted(
+        (filt.get("column", ""), filt.get("operator", ""), _normalize_value(filt.get("value", "")))
+        for filt in metadata.get("reportFilters", [])
+    )
     return _Condition(
-        filters=filters_tuple,
-        boolean_filter=boolean_str,
+        filters=tuple(filters),
+        boolean_filter=metadata.get("reportBooleanFilter", ""),
         standard_date=_normalize_json(metadata.get("standardDateFilter")),
         standard_filters=_normalize_json(metadata.get("standardFilters")),
         cross_filters=_normalize_json(metadata.get("crossFilters")),
         top_rows=_normalize_json(metadata.get("topRows")),
-        scope=_scope(metadata.get("scope")),
+        scope=metadata.get("scope", ""),
     )
 
 
 # ── 構造の比較用ヘルパー ──────────────────────────────────────────────
 
 
-def _string_tuple(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(item for item in value if isinstance(item, str))
-
-
-def _grouping_names(value: object) -> tuple[str, ...]:
+def _grouping_names(value: list[dict[str, Any]]) -> tuple[str, ...]:
     """``groupingsDown`` / ``groupingsAcross`` から ``name`` だけ集める。"""
-    if not isinstance(value, list):
-        return ()
-    names: list[str] = []
-    for grouping in value:
-        if isinstance(grouping, dict):
-            name = grouping.get("name")
-            if isinstance(name, str):
-                names.append(name)
-    return tuple(names)
-
-
-def _sort_pairs(value: object) -> tuple[tuple[str, str], ...]:
-    if not isinstance(value, list):
-        return ()
-    pairs: list[tuple[str, str]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        column = item.get("sortColumn", "")
-        order = item.get("sortOrder", "")
-        pairs.append(
-            (
-                column if isinstance(column, str) else "",
-                order if isinstance(order, str) else "",
-            )
-        )
-    return tuple(pairs)
-
-
-def _scope(value: object) -> str:
-    return value if isinstance(value, str) else ""
+    return tuple(grouping.get("name", "") for grouping in value)
 
 
 def _normalize_value(value: object) -> str:
