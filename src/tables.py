@@ -45,7 +45,7 @@ from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
 from openpyxl.utils import get_column_letter
 
-from src import ai_markdown, pii, similar
+from src import ai_markdown, pii, relation_diagram, similar
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,8 @@ SHEET_SIMILAR = "似たレポート"
 SHEET_WARNING = "警告"
 SHEET_FIELDS = "項目一覧"
 SHEET_RELATED = "関連"
+SHEET_RELATION_DIAGRAM = "関係図"
+SHEET_SOQL = "SOQL"
 
 SHEET_NAMES_IN_ORDER: tuple[str, ...] = (
     SHEET_OVERVIEW,
@@ -89,6 +91,8 @@ SHEET_NAMES_IN_ORDER: tuple[str, ...] = (
     SHEET_WARNING,
     SHEET_FIELDS,
     SHEET_RELATED,
+    SHEET_RELATION_DIAGRAM,
+    SHEET_SOQL,
 )
 
 # 一覧シートの列名
@@ -105,6 +109,7 @@ SURVEY_COLUMNS: tuple[str, ...] = (
     "2000件超の補足",
     "個人情報",
     "個人情報の該当列",
+    "SOQLの状態",
     "類似グループ",
     "統合の見込み",
     "取得できなかった項目数",
@@ -203,6 +208,27 @@ RELATED_COLUMNS: tuple[str, ...] = (
     "リレーション名",
     "子オブジェクト",
     "段",
+)
+
+# 関係図シートの列名 （ 主オブジェクト単位の木を Excel で見やすくしたもの ）
+RELATION_DIAGRAM_COLUMNS: tuple[str, ...] = (
+    "主オブジェクト",
+    "段",
+    "図",
+    "行き先オブジェクト",
+    "SOQLでの書き方",
+    "参照項目API名",
+)
+
+# SOQL シートの列名 （ 人が AI に渡す前にも、 そのまま実行前にも使える下書き ）
+SOQL_COLUMNS: tuple[str, ...] = (
+    "管理番号",
+    "概要",
+    "主オブジェクト",
+    "状態",
+    "SOQL",
+    "作れなかった部分",
+    "要確認",
 )
 
 # 列名の対応.csv の列名 （ ダウンローダー固定 ）
@@ -340,6 +366,10 @@ def run_tables(
     warning_rows = _build_warning_table_rows_from_records(sorted_records)
     field_rows = _build_field_table_rows_from_records(sorted_records)
     related_rows = _build_related_table_rows_from_records(sorted_records)
+    # 関係図: 同じ主オブジェクトの ``relations`` が合わさった木
+    diagrams = relation_diagram.build_main_object_diagrams(sorted_records)
+    relation_diagram_rows = _build_relation_diagram_rows(diagrams)
+    soql_rows = _build_soql_table_rows_from_records(sorted_records)
 
     wrote: list[Path] = []
 
@@ -356,12 +386,14 @@ def run_tables(
             warning=warning_rows,
             field=field_rows,
             related=related_rows,
+            relation_diagram=relation_diagram_rows,
+            soql=soql_rows,
         )
         wrote.append(xlsx_path)
         logger.info(
             "Excel を書き出し: %s（ 一覧=%d / 取得できなかった項目=%d / "
             "項目の対応=%d / 条件=%d / 集計=%d / 似たレポート=%d / "
-            "警告=%d / 項目一覧=%d / 関連=%d ）",
+            "警告=%d / 項目一覧=%d / 関連=%d / 関係図=%d / SOQL=%d ）",
             xlsx_path,
             len(survey_rows),
             len(unresolved_rows),
@@ -372,6 +404,8 @@ def run_tables(
             len(warning_rows),
             len(field_rows),
             len(related_rows),
+            len(relation_diagram_rows),
+            len(soql_rows),
         )
 
     # 列名の対応.csv （ 積み上げ ）
@@ -400,6 +434,10 @@ def run_tables(
     # 残し、 今回取れた record の分だけ上書きする。 xlsx / csv の挙動は
     # 変えない
     wrote.extend(ai_markdown.write_ai_markdowns(output_dir, sorted_records))
+
+    # 関係図の Markdown を ``OUTPUT_DIR/関係図/{主オブジェクト}.md`` に書く。
+    # 既存のファイルはそのまま残し、 今回取れた主オブジェクト分だけ上書きする
+    wrote.extend(relation_diagram.write_main_object_diagrams(output_dir, diagrams))
 
     return TableOutcome(wrote=tuple(wrote), skipped=())
 
@@ -488,13 +526,17 @@ def _survey_pii_display(record: object) -> tuple[str, str]:
 
 
 def soql_status_for_record(record: object) -> str:
-    """``None`` 固定 （ SOQL 自動組み立てを撤去したため、状態は出さない ）。
+    """``record.soql_draft.status`` をそのまま返す （ 無ければ空文字 ） 。
 
-    旧コードで使われていたヘルパー。 ``SURVEY_COLUMNS`` にはもう ``SOQL状態``
-    列が無く、 呼ばれないが ``getattr`` 系のテストや古い呼び出しが残った場合
-    に ``AttributeError`` で全体を落とさないために残している。
+    一覧シートの ``SOQLの状態`` 列で使う。 ``STATUS_NONE`` /
+    ``STATUS_PARTIAL`` / ``STATUS_NEEDS_CHECK`` / ``STATUS_CREATED`` の
+    いずれかが返る。 ``soql_draft`` が無い record は空文字。
     """
-    return ""
+    draft = getattr(record, "soql_draft", None)
+    if draft is None:
+        return ""
+    status = getattr(draft, "status", "")
+    return status if isinstance(status, str) else ""
 
 
 def _build_survey_table_rows_from_records(
@@ -542,6 +584,7 @@ def _build_survey_table_rows_from_records(
                 "2000件超の補足": reason,
                 "個人情報": pii_status,
                 "個人情報の該当列": pii_columns,
+                "SOQLの状態": soql_status_for_record(record),
                 "類似グループ": group_text,
                 "統合の見込み": integration,
                 "取得できなかった項目数": str(unresolved_count),
@@ -1324,6 +1367,181 @@ def _build_related_table_rows_from_records(
     return rows
 
 
+def _build_relation_diagram_rows(
+    diagrams: dict[str, relation_diagram.Diagram],
+) -> list[dict[str, str]]:
+    """``diagrams`` （ 主オブジェクト → ``Diagram`` ） から 関係図シートの行を作る。
+
+    各 ``Diagram`` の木を深さごとに展開し、 1 ノード 1 行の形式にする。
+    主オブジェクト自身は段 0、 子は段階 1 と数える。 「 （上に出ています）」
+    の注記は ``行き先オブジェクト`` にそのまま添え、 ``SOQLでの書き方`` は
+    主オブジェクトからのリレーション鎖を ``.`` 区切りで書く （ 末端は ``.(項目)``
+    ） 。
+    """
+    rows: list[dict[str, str]] = []
+    for main_object, diagram in diagrams.items():
+        for depth, label, soql_hint, field_api, note, target in _iter_diagram_rows(
+            diagram, depth=0
+        ):
+            rows.append(
+                {
+                    "主オブジェクト": main_object,
+                    "段": str(depth),
+                    "図": label,
+                    "行き先オブジェクト": target,
+                    "SOQLでの書き方": soql_hint,
+                    "参照項目API名": field_api,
+                }
+            )
+            # 注記は 行き先 側に添える （ ``"図"`` 列の label は注釈付き）
+            if note:
+                # 既に ``図`` 側に注釈を含めたので、 行き先 列には追加しない
+                pass
+    return rows
+
+
+def _iter_diagram_rows(
+    diagram: relation_diagram.Diagram,
+    *,
+    depth: int,
+) -> list[tuple[int, str, str, str, str, str]]:
+    """``Diagram`` の木を ``(段, 図, SOQLでの書き方, 参照項目API名, 注記, 行き先)``
+    のリストに展開する。 注記 （ 「（上に出ています）」 ） は 図の文字列に含めて、
+    行き先 列はそのまま オブジェクト名だけにする
+    """
+    out: list[tuple[int, str, str, str, str, str]] = []
+    if depth == 0:
+        # 主オブジェクト自身
+        out.append((0, diagram.root.label, "", "", "", diagram.main_object))
+    for child in diagram.root.children:
+        target = _extract_target(child.label)
+        soql_hint = _build_soql_hint(diagram.main_object, child, diagram)
+        note = child.note
+        label_with_note = _format_label_with_note(child)
+        out.append((depth + 1, label_with_note, soql_hint, child.field_api, note, target))
+        # 孫以下
+        if child.children and not child.note:
+            for grandchild in child.children:
+                _emit_descendants(out, child, grandchild, diagram, current_depth=depth + 2)
+    return out
+
+
+def _emit_descendants(
+    out: list[tuple[int, str, str, str, str, str]],
+    parent: relation_diagram.DiagramNode,
+    child: relation_diagram.DiagramNode,
+    diagram: relation_diagram.Diagram,
+    *,
+    current_depth: int,
+) -> None:
+    """``child`` の ``DiagramNode`` を行のリストに追加し、 孫があれば再帰する。
+
+    ``parent`` は子に辿るまでの文脈用。 現状は再帰時の ``diagram`` 取得にしか
+    使わないので 「 参照 」 のみで処理パスは無い （ 将来の拡張用 ） 。
+    """
+    _ = parent  # 現状は参照のみ。 将来の拡張で使うかもしれない
+    target = _extract_target(child.label)
+    note = child.note
+    soql_hint = _build_soql_hint(diagram.main_object, child, diagram)
+    label_with_note = _format_label_with_note(child)
+    out.append((current_depth, label_with_note, soql_hint, child.field_api, note, target))
+    if child.children and not child.note:
+        for grandchild in child.children:
+            _emit_descendants(out, child, grandchild, diagram, current_depth=current_depth + 1)
+
+
+def _extract_target(label: str) -> str:
+    """``"What → Account"`` から ``"Account"`` を取り出す。 ``" → "`` が
+    無いときはラベル全体を返す。
+    """
+    if " → " in label:
+        return label.split(" → ", 1)[1]
+    return label
+
+
+def _format_label_with_note(node: relation_diagram.DiagramNode) -> str:
+    """``DiagramNode.label`` に 注記 （ ``（上に出ています）`` ） が有れば添える。
+    Excel のセルで字下げ罫線が揃うように、 注記は半角スペース 1 個で離す
+    """
+    if node.note:
+        return f"{node.label} {node.note}"
+    return node.label
+
+
+def _build_soql_hint(
+    main_object: str,
+    child: relation_diagram.DiagramNode,
+    diagram: relation_diagram.Diagram,
+) -> str:
+    """``主オブジェクト → … → child`` のリレーション鎖を ``.`` 区切りで書く。
+
+    末端は ``.(項目)`` を添えて、 そこに項目名を書く式にする。
+    """
+    path: list[str] = []
+    _collect_rel_path(diagram.root, child, path)
+    if not path:
+        return f"{main_object}.(項目)"
+    return ".".join(path) + ".(項目)"
+
+
+def _collect_rel_path(
+    node: relation_diagram.DiagramNode,
+    target: relation_diagram.DiagramNode,
+    path: list[str],
+) -> bool:
+    """``node`` から ``target`` までのリレーション名鎖を ``path`` に集める。"""
+    for child in node.children:
+        rel = child.label.split(" → ", 1)[0] if " → " in child.label else child.label
+        if child is target:
+            if rel:
+                path.append(rel)
+            return True
+        if child.children:
+            path.append(rel)
+            if _collect_rel_path(child, target, path):
+                return True
+            path.pop()
+    return False
+
+
+def _build_soql_table_rows_from_records(
+    records: Sequence[object],
+) -> list[dict[str, str]]:
+    """全 record の ``soql_draft`` から SOQL シートの行を作る。
+
+    各 record について ``管理番号 / 概要 / 主オブジェクト / 状態 / SOQL /
+    作れなかった部分 / 要確認`` の 1 行を組み立てる。 ``soql_draft`` が無い
+    record は行を出さない （ 失敗した record など ） 。
+    ``soql`` の 1 行目にある ``【未完成】…`` の印はそのまま残し、 Excel で
+    見た人が 「 この SOQL は未完成で実行できない 」 と一目で分かるようにする。
+    ``missing`` と ``checks`` は ``\\n`` 区切りで 1 セルにまとめる。
+    """
+    rows: list[dict[str, str]] = []
+    for record in records:
+        key = getattr(record, "key", "")
+        summary = getattr(record, "summary", "")
+        main_object = getattr(record, "main_object", "") or ""
+        draft = getattr(record, "soql_draft", None)
+        if draft is None:
+            continue
+        status = getattr(draft, "status", "") or ""
+        soql = getattr(draft, "soql", "") or ""
+        missing = getattr(draft, "missing", ()) or ()
+        checks = getattr(draft, "checks", ()) or ()
+        rows.append(
+            {
+                "管理番号": key,
+                "概要": summary,
+                "主オブジェクト": main_object or "(不明)",
+                "状態": status,
+                "SOQL": soql,
+                "作れなかった部分": "\n".join(str(item) for item in missing),
+                "要確認": "\n".join(str(item) for item in checks),
+            }
+        )
+    return rows
+
+
 def _build_similar_table_rows(
     records: Sequence[object],
     groups: list[similar.SimilarGroup],
@@ -1464,12 +1682,14 @@ def _write_xlsx(
     warning: list[dict[str, str]],
     field: list[dict[str, str]],
     related: list[dict[str, str]],
+    relation_diagram: list[dict[str, str]],
+    soql: list[dict[str, str]],
 ) -> None:
     """``SOQL調査.xlsx`` を書く。
 
     毎回丸ごと作り直すため、 既存ファイルがあれば消す。 comken の ``Excel``
     は新規ファイルを開くときに既定の ``Sheet`` を作る。 一覧シートは新規
-    ブックの既定シートを改名し、 残り 8 枚は ``create_sheet`` で追加する
+    ブックの既定シートを改名し、 残り 10 枚は ``create_sheet`` で追加する
     ( openpyxl のシート順 = 表示順 ) 。
     """
     if path.exists():
@@ -1486,6 +1706,8 @@ def _write_xlsx(
         SHEET_WARNING: (WARNING_COLUMNS, warning),
         SHEET_FIELDS: (FIELD_COLUMNS, field),
         SHEET_RELATED: (RELATED_COLUMNS, related),
+        SHEET_RELATION_DIAGRAM: (RELATION_DIAGRAM_COLUMNS, relation_diagram),
+        SHEET_SOQL: (SOQL_COLUMNS, soql),
     }
 
     with Excel(path) as excel:

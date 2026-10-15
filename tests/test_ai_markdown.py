@@ -7,6 +7,7 @@ record だけでネットワークには繋がない ） 。 仕様の見出し�
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from src import pii
@@ -136,6 +137,7 @@ def _make_record(
     row_check: RowCheck | None = None,
     pii_status: str = "なし",
     report_metadata_override: dict | None = None,
+    soql_draft: object | None = None,
 ) -> ReportRecord:
     """TABULAR シナリオ用の典型 ``ReportRecord`` を作る。"""
     summary_text = summary if summary is not None else f"テスト{key}"
@@ -211,6 +213,7 @@ def _make_record(
         warnings=warnings,
         row_check=row_check,
         pii=pii.ReportPIIResult(status=pii_status, matching_columns=()),
+        soql_draft=soql_draft,
     )
 
 
@@ -298,6 +301,14 @@ def test_ai_markdown_tabular_full_text() -> None:
         "\n"
         "## 関連オブジェクトの経路\n"
         "- Task → What（Account）\n"
+        "\n"
+        "関係図 （ Mermaid ）: \n"
+        "../関係図/Task.md\n"
+        "\n"
+        "```\n"
+        "Task\n"
+        "└ What → Account\n"
+        "```\n"
         "\n"
         "## SOQL を組むときの注意\n"
         "\n"
@@ -438,6 +449,104 @@ def test_run_tables_writes_markdown_per_record(tmp_path: Path) -> None:
     assert (output_dir / "列名の対応.csv").exists()
     # 書き出したファイル群に含まれている
     assert new_file in outcome.wrote
+
+
+# ── SOQL の下書き ──────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _SimpleSoqlDraft:
+    """``SoqlDraft`` 互換のテスト用 dataclass。"""
+
+    soql: str
+    status: str
+    missing: tuple[str, ...] = ()
+    checks: tuple[str, ...] = ()
+    count_soql: str = ""
+    limit: int | None = None
+
+
+def test_markdown_has_soql_section_for_created_draft() -> None:
+    """``作成済み`` のドラフトなら ``## SOQL の下書き`` 節が出る。"""
+    record = _make_record(
+        soql_draft=_SimpleSoqlDraft(
+            soql="SELECT Subject, What.Name\nFROM Task\nWHERE Subject LIKE '%A%'",
+            status="作成済み",
+            missing=(),
+            checks=(),
+        ),
+    )
+    rendered = build_markdown(record)
+    assert "## SOQL の下書き" in rendered
+    assert "状態: 作成済み" in rendered
+    # SOQL 本文は ```sql コードブロックで囲む
+    assert "```sql" in rendered
+    assert "SELECT Subject, What.Name" in rendered
+    assert "FROM Task" in rendered
+    # AI への補い方の指示も添える
+    assert "この下書きを、下の資料と照らして直してください" in rendered
+
+
+def test_markdown_soql_section_keeps_incomplete_marker_for_partial() -> None:
+    """``一部作れず`` のドラフトは SOQL の 1 行目に未完成の印をそのまま残す。
+
+    AI に渡す Markdown で 「 この SOQL はそのままでは実行できない 」 と一目で
+    分かるように、 印はそのまま載せる。 ``作れなかった部分`` のリストも出る。
+    """
+    record = _make_record(
+        soql_draft=_SimpleSoqlDraft(
+            soql=(
+                "【未完成】作れなかった部分があります。このままでは実行できません。\n"
+                "SELECT Subject\nFROM Task"
+            ),
+            status="一部作れず",
+            missing=("列: 商談名 ( Opp.Name ) — 対応フィールドなし",),
+            checks=(),
+        ),
+    )
+    rendered = build_markdown(record)
+    assert "状態: 一部作れず" in rendered
+    assert "【未完成】" in rendered
+    assert "作れなかった部分:" in rendered
+    assert "列: 商談名" in rendered
+
+
+def test_markdown_soql_section_omits_body_for_none_status() -> None:
+    """``作れず`` は本文が無いので 「 SOQL: なし 」 と書く。"""
+    record = _make_record(
+        soql_draft=_SimpleSoqlDraft(
+            soql="",
+            status="作れず",
+            missing=("主オブジェクトが不明のため作れず",),
+            checks=(),
+        ),
+    )
+    rendered = build_markdown(record)
+    assert "状態: 作れず" in rendered
+    assert "SOQL: なし" in rendered
+
+
+def test_markdown_soql_section_omitted_without_draft() -> None:
+    """``soql_draft`` が無い record はセクションを出さない。"""
+    record = _make_record()  # soql_draft=None
+    rendered = build_markdown(record)
+    assert "## SOQL の下書き" not in rendered
+
+
+def test_markdown_soql_section_includes_checks_when_needs_check() -> None:
+    """``要確認`` には SOQL 本文は出るが 「 要確認: 」 のリストも添える。"""
+    record = _make_record(
+        soql_draft=_SimpleSoqlDraft(
+            soql="SELECT Subject FROM Task",
+            status="要確認",
+            missing=(),
+            checks=("スコープ=MyTerritory: 実行ユーザーで結果が変わる。",),
+        ),
+    )
+    rendered = build_markdown(record)
+    assert "状態: 要確認" in rendered
+    assert "要確認:" in rendered
+    assert "スコープ=MyTerritory" in rendered
 
 
 # ── 壊れた実装でテストが落ちることを確かめる ────────────────────────────────

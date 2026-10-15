@@ -51,7 +51,7 @@ from comken.exceptions import (
 )
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src import column_map_csv, mapping, pii
+from src import column_map_csv, mapping, pii, soql_builder
 from src.describe_store import DescribeStore, org_from_url
 from src.master import MasterEntry
 
@@ -219,6 +219,12 @@ class ReportRecord:
     #: レポート単位の PII 判定結果。 調査表と 対応表の 個人情報 列で使う
     pii: pii.ReportPIIResult = dc_field(
         default_factory=lambda: pii.ReportPIIResult(status="なし", matching_columns=())
+    )
+    #: SOQL の下書き。 ``tables`` が組み立てて持たせ、 次段 （ AI に渡す
+    #: Markdown / xlsx ） で読む。 ``None`` のときは下書き未組み立て
+    #: （ 主オブジェクト不明など、 組み立てそのものが走らなかったケース ）
+    soql_draft: Any = dc_field(
+        default=None,
     )
 
 
@@ -1102,9 +1108,24 @@ def _fetch_one(
     if row_check is not None and row_check.status == ROW_CHECK_UNKNOWN and row_check.reason:
         warnings.append(f"2000件超の判定ができませんでした: {row_check.reason}")
 
-    # SOQL の自動組み立てと件数チェックは 2026-10-14 に撤去した。 代わりに
-    # ``条件`` ``集計`` ``項目の対応`` ``一覧`` シートを人が見て組み立てる
-    # （ 詳しくは ``docs/使い方.md`` ） 。
+    # SOQL の下書きを組み立てる （ 2026-10-15 復活 ） 。 取れた record 1 件につき
+    # 1 回 ``build_soql`` を呼び、 結果は record の ``soql_draft`` に詰める。
+    # 一部作れずの SOQL は先頭に ``INCOMPLETE_MARKER`` が付き、 Salesforce に
+    # 投げると必ず止まる形になる （ 詳しくは ``src/soql_builder.py`` ）
+    soql_draft = soql_builder.build_soql(
+        ReportRecord(
+            key=entry.key,
+            summary=entry.summary,
+            report_id=report_id,
+            url=entry.url,
+            main_object=main_object,
+            report=slim_report,
+            objects=slim_objects,
+            relations=tuple(relations),
+            column_map=column_map,
+            warnings=tuple(warnings),
+        )
+    )
 
     record = ReportRecord(
         key=entry.key,
@@ -1119,6 +1140,7 @@ def _fetch_one(
         warnings=tuple(warnings),
         row_check=row_check,
         pii=pii_result,
+        soql_draft=soql_draft,
     )
 
     return FetchOutcome(

@@ -24,6 +24,8 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
+from src import relation_diagram
+
 logger = logging.getLogger(__name__)
 
 # Markdown を配置するサブディレクトリ名
@@ -148,6 +150,24 @@ def build_markdown(record: Any) -> str:
     else:
         parts.append("なし")
     parts.append("")
+
+    # 関係図ファイルへの相対リンクと、 字下げ版のツリーを添える
+    diagram_tree = relation_diagram.render_inline_tree_for_record(record)
+    if diagram_tree:
+        parts.append("関係図 （ Mermaid ）: ")
+        main_object = getattr(record, "main_object", "") or ""
+        if main_object:
+            parts.append(f"../関係図/{main_object}.md")
+        parts.append("")
+        parts.append("```")
+        parts.extend(diagram_tree)
+        parts.append("```")
+        parts.append("")
+
+    # SOQL の下書き （ 2026-10-15 復活 ）
+    soql_section = _build_soql_section(record)
+    if soql_section:
+        parts.extend(soql_section)
 
     # 注意
     notes = _build_notes(record, metadata)
@@ -551,6 +571,56 @@ def _walk_chain(
         chain.append((rel_name, next_child))
         current = next_child
     return chain
+
+
+# ── SOQL の下書き ───────────────────────────────────────────────────────
+
+
+def _build_soql_section(record: Any) -> list[str]:
+    """``record.soql_draft`` から ``## SOQL の下書き`` セクションを組み立てる。
+
+    AI が下書きを直しやすいように、 状態・SOQL本文（ 印付き ） ・作れなかった
+    部分・要確認をそのまま載せる。 ``soql_draft`` が無い record は空リスト
+    （ セクションを出さない ） 。 ``作れず`` は本文が無いので状態・行だけ。
+    """
+    draft = getattr(record, "soql_draft", None)
+    if draft is None:
+        return []
+    status = _coerce_str(getattr(draft, "status", "")) or "(不明)"
+    soql = _coerce_str(getattr(draft, "soql", ""))
+    missing = getattr(draft, "missing", ()) or ()
+    checks = getattr(draft, "checks", ()) or ()
+
+    lines: list[str] = ["## SOQL の下書き", ""]
+    lines.append(f"状態: {status}")
+    lines.append("")
+    if soql:
+        lines.append("```sql")
+        lines.append(soql)
+        lines.append("```")
+        lines.append("")
+        lines.append(
+            "この下書きを、下の資料と照らして直してください。"
+            "作れなかった部分は資料から補ってください。"
+        )
+    else:
+        # ``作れず`` は本文が無いので、 「 なし」 の代わりに理由を残す
+        lines.append("SOQL: なし")
+    lines.append("")
+
+    if missing:
+        lines.append("作れなかった部分:")
+        lines.append("")
+        for item in missing:
+            lines.append(f"- {item}")
+        lines.append("")
+    if checks:
+        lines.append("要確認:")
+        lines.append("")
+        for item in checks:
+            lines.append(f"- {item}")
+        lines.append("")
+    return lines
 
 
 # ── 注意 ───────────────────────────────────────────────────────────────────

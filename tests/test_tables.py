@@ -6,13 +6,15 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openpyxl import load_workbook
 
-from src.fetch import ReportRecord
+from src.fetch import RelationRecord, ReportRecord
 from src.tables import (
     AGGREGATE_COLUMNS,
     COLUMN_NAMES_COLUMNS,
@@ -20,16 +22,20 @@ from src.tables import (
     CONDITION_COLUMNS,
     FIELD_COLUMNS,
     RELATED_COLUMNS,
+    RELATION_DIAGRAM_COLUMNS,
     SHEET_AGGREGATE,
     SHEET_CONDITION,
     SHEET_FIELDS,
     SHEET_OVERVIEW,
     SHEET_RELATED,
+    SHEET_RELATION_DIAGRAM,
     SHEET_RESOLVED,
     SHEET_SIMILAR,
+    SHEET_SOQL,
     SHEET_UNRESOLVED,
     SHEET_WARNING,
     SIMILAR_COLUMNS,
+    SOQL_COLUMNS,
     SURVEY_COLUMNS,
     WARNING_COLUMNS,
     XLSX_NAME,
@@ -176,6 +182,32 @@ def _make_record(
     )
 
 
+def _make_soql_draft(
+    *,
+    status: str = "作成済み",
+    soql: str = "SELECT Id FROM Opportunity",
+    missing: tuple[str, ...] = (),
+    checks: tuple[str, ...] = (),
+) -> Any:
+    """``ReportRecord.soql_draft`` 用の ``SoqlDraft`` 風オブジェクトを作る。
+
+    テストでは ``src.soql_builder.SoqlDraft`` を直接作らずに、 最低限の属性だけ
+    持つ入れ物を用意して ``soql_status_for_record`` と SOQL シートの組み立てが
+    想定どおり動くかを確認する。
+    """
+    return _SimpleSoqlDraft(status=status, soql=soql, missing=missing, checks=checks)
+
+
+@dataclass(frozen=True)
+class _SimpleSoqlDraft:
+    """``SoqlDraft`` 互換のテスト用 dataclass。"""
+
+    status: str
+    soql: str
+    missing: tuple[str, ...] = ()
+    checks: tuple[str, ...] = ()
+
+
 def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
     """``SOQL調査.xlsx`` を ``{シート名: [行 dict, ...]}`` で読む。
 
@@ -263,6 +295,8 @@ def test_sheet_names_in_order(tmp_path: Path) -> None:
         SHEET_WARNING,
         SHEET_FIELDS,
         SHEET_RELATED,
+        SHEET_RELATION_DIAGRAM,
+        SHEET_SOQL,
     ]
 
 
@@ -936,6 +970,202 @@ def test_related_columns_match(tmp_path: Path) -> None:
     sheets = _read_xlsx(output / XLSX_NAME)
     headers = list(sheets[SHEET_RELATED][0].keys())
     assert headers == list(RELATED_COLUMNS)
+
+
+# ── SOQL シート ─────────────────────────────────────────────────────
+
+
+def test_soql_sheet_columns_match(tmp_path: Path) -> None:
+    """SOQL シートの列順。"""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    record = _make_record("1001")
+    record = dataclasses.replace(
+        record,
+        main_object="Opportunity",
+        soql_draft=_make_soql_draft(status="作成済み", soql="SELECT Name FROM Opportunity"),
+    )
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    assert SHEET_SOQL in sheets
+    headers = list(sheets[SHEET_SOQL][0].keys())
+    assert headers == list(SOQL_COLUMNS)
+
+
+def test_soql_sheet_written_for_partial_with_incomplete_marker(tmp_path: Path) -> None:
+    """``一部作れず`` の SOQL はシートに書かれ、 1 行目に未完成の印が残る。
+
+    人が Excel で見たときに 「 この SOQL は未完成で実行できない 」 と
+    一目で分かるように、 印はそのまま残す。
+    """
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001")
+    record = dataclasses.replace(
+        record,
+        main_object="Opportunity",
+        soql_draft=_make_soql_draft(
+            status="一部作れず",
+            soql="【未完成】作れなかった部分があります。このままでは実行できません。\nSELECT Name FROM Opportunity",
+            missing=("列: 商談名 ( Opp.Name ) — 対応フィールドなし",),
+        ),
+    )
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    rows = sheets[SHEET_SOQL]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["管理番号"] == "1001"
+    assert row["状態"] == "一部作れず"
+    assert row["SOQL"].startswith("【未完成】")
+    assert "SELECT Name FROM Opportunity" in row["SOQL"]
+    assert "列: 商談名" in row["作れなかった部分"]
+
+
+def test_soql_sheet_omits_records_without_soql_draft(tmp_path: Path) -> None:
+    """``soql_draft`` が無い record は行を出さない （ 失敗した record など ） 。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001")
+    # soql_draft はそのまま （ ``_make_record`` は None を作る ）
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    assert sheets[SHEET_SOQL] == []
+
+
+# ── 関係図シート ──────────────────────────────────────────────────────
+
+
+def test_relation_diagram_sheet_columns_match(tmp_path: Path) -> None:
+    """関係図シートの列順。"""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    record = _make_record("1001")
+    record = dataclasses.replace(
+        record,
+        main_object="Opportunity",
+        relations=(
+            RelationRecord(
+                parent="Opportunity",
+                field="AccountId",
+                relationship_name="Account",
+                child="Account",
+                depth=1,
+            ),
+        ),
+    )
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    assert SHEET_RELATION_DIAGRAM in sheets
+    headers = list(sheets[SHEET_RELATION_DIAGRAM][0].keys())
+    assert headers == list(RELATION_DIAGRAM_COLUMNS)
+
+
+def test_relation_diagram_sheet_writes_tree_with_polymorphic(tmp_path: Path) -> None:
+    """Task → Account / Opportunity のポリモーフィックが 1 行ずつ出、 段が上がる。"""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    record = _make_record("1001")
+    record = dataclasses.replace(
+        record,
+        main_object="Task",
+        relations=(
+            RelationRecord(
+                parent="Task", field="WhatId", relationship_name="What", child="Account", depth=1
+            ),
+            RelationRecord(
+                parent="Task",
+                field="WhatId",
+                relationship_name="What",
+                child="Opportunity",
+                depth=1,
+            ),
+        ),
+    )
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    rows = sheets[SHEET_RELATION_DIAGRAM]
+    # 主オブジェクト Task は 段 0
+    task_row = next(r for r in rows if r["主オブジェクト"] == "Task" and r["段"] == "0")
+    assert task_row["行き先オブジェクト"] == "Task"
+    # 子は 段 1 で 2 行
+    children = [r for r in rows if r["主オブジェクト"] == "Task" and r["段"] == "1"]
+    targets = {r["行き先オブジェクト"] for r in children}
+    assert targets == {"Account", "Opportunity"}
+    for r in children:
+        # 図 は ``What → Account`` / ``What → Opportunity``
+        assert r["図"].startswith("What → ")
+        # SOQLでの書き方は主からのリレーション鎖
+        assert "What" in r["SOQLでの書き方"]
+
+
+def test_relation_diagram_sheet_records_already_above_for_self_reference(
+    tmp_path: Path,
+) -> None:
+    """Account → Account（Parent） の自己参照は図に 「 （上に出ています）」 が残る。"""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    record = _make_record("1001")
+    record = dataclasses.replace(
+        record,
+        main_object="Account",
+        relations=(
+            RelationRecord(
+                parent="Account",
+                field="ParentId",
+                relationship_name="Parent",
+                child="Account",
+                depth=1,
+            ),
+        ),
+    )
+    run_tables(output, [record])
+
+    sheets = _read_xlsx(output / XLSX_NAME)
+    rows = sheets[SHEET_RELATION_DIAGRAM]
+    self_rows = [
+        r
+        for r in rows
+        if r["主オブジェクト"] == "Account"
+        and r["行き先オブジェクト"] == "Account"
+        and r["段"] != "0"
+    ]
+    assert self_rows, "自己参照の行が無い"
+    for r in self_rows:
+        assert "（上に出ています）" in r["図"]
+
+
+def test_relation_diagram_markdown_files_written(tmp_path: Path) -> None:
+    """``OUTPUT_DIR/関係図/{主オブジェクト}.md`` が作られる。"""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    record = _make_record("1001")
+    record = dataclasses.replace(
+        record,
+        main_object="Task",
+        relations=(
+            RelationRecord(
+                parent="Task", field="WhatId", relationship_name="What", child="Account", depth=1
+            ),
+        ),
+    )
+    run_tables(output, [record])
+
+    diagram_path = output / "関係図" / "Task.md"
+    assert diagram_path.exists()
+    content = diagram_path.read_text(encoding="utf-8")
+    assert "```mermaid" in content
+    assert "flowchart LR" in content
 
 
 def test_similar_sheet_has_only_header_when_no_groups(tmp_path: Path) -> None:
