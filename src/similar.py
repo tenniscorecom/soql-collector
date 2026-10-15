@@ -444,13 +444,29 @@ def _group_pairs(
     if not pairs:
         return []
 
-    # 隣接リスト
+    adjacency = _build_adjacency(pairs)
+    components = _connected_components(adjacency)
+    # 管理番号の昇順で基準を決める
+    components.sort(key=lambda comp: min(comp))
+
+    pair_by_keys = _index_pairs_by_sorted_keys(pairs)
+    return [
+        _make_group(group_index, component, pair_by_keys)
+        for group_index, component in enumerate(components, start=1)
+    ]
+
+
+def _build_adjacency(pairs: list[_PairResult]) -> dict[str, set[str]]:
+    """``_PairResult`` のペアを無向グラフの隣接リストにする。"""
     adjacency: dict[str, set[str]] = {}
     for pair in pairs:
         adjacency.setdefault(pair.key_a, set()).add(pair.key_b)
         adjacency.setdefault(pair.key_b, set()).add(pair.key_a)
+    return adjacency
 
-    # 連結成分
+
+def _connected_components(adjacency: dict[str, set[str]]) -> list[list[str]]:
+    """``adjacency`` の連結成分 ( 深さ優先 ) を、 ノード順で並べて返す。"""
     visited: set[str] = set()
     components: list[list[str]] = []
     for node in adjacency:
@@ -468,45 +484,51 @@ def _group_pairs(
                 if neighbor not in visited:
                     stack.append(neighbor)
         components.append(component)
+    return components
 
-    # 管理番号の昇順で基準を決める
-    components.sort(key=lambda comp: min(comp))
 
-    # ペアをコンポーネントごとに振り分け
+def _index_pairs_by_sorted_keys(
+    pairs: list[_PairResult],
+) -> dict[tuple[str, str], _PairResult]:
+    """``(key_a, key_b)`` をソートしたタプルをキーにした ``_PairResult`` の dict にする。"""
     pair_by_keys: dict[tuple[str, str], _PairResult] = {}
     for pair in pairs:
         sorted_keys: tuple[str, str] = tuple(sorted([pair.key_a, pair.key_b]))  # type: ignore[assignment]
         pair_by_keys[sorted_keys] = pair
+    return pair_by_keys
 
-    groups: list[SimilarGroup] = []
-    for group_index, component in enumerate(components, start=1):
-        component_sorted = sorted(component)
-        base = component_sorted[0]
-        others = component_sorted[1:]
-        group_pairs: list[_PairResult] = []
-        for other in others:
-            key: tuple[str, str] = tuple(sorted([base, other]))  # type: ignore[assignment]
-            pair = pair_by_keys.get(key)
-            if pair is not None:
-                # base 起点に整える
-                if pair.key_a == base:
-                    group_pairs.append(pair)
-                else:
-                    group_pairs.append(
-                        _PairResult(
-                            key_a=pair.key_a,
-                            key_b=pair.key_b,
-                            category=pair.category,
-                            diff_text=pair.diff_text,
-                            integration=pair.integration,
-                        )
-                    )
-        groups.append(
-            SimilarGroup(
-                group_number=group_index,
-                base_key=base,
-                pairs=tuple(group_pairs),
-                members=tuple(component_sorted),
+
+def _make_group(
+    group_index: int,
+    component: list[str],
+    pair_by_keys: dict[tuple[str, str], _PairResult],
+) -> SimilarGroup:
+    """``component`` を基準 ( 管理番号昇順の先頭 ) 起点の ``SimilarGroup`` にまとめる。"""
+    component_sorted = sorted(component)
+    base = component_sorted[0]
+    others = component_sorted[1:]
+    group_pairs: list[_PairResult] = []
+    for other in others:
+        key: tuple[str, str] = tuple(sorted([base, other]))  # type: ignore[assignment]
+        pair = pair_by_keys.get(key)
+        if pair is None:
+            continue
+        # base 起点に整える
+        if pair.key_a == base:
+            group_pairs.append(pair)
+        else:
+            group_pairs.append(
+                _PairResult(
+                    key_a=pair.key_a,
+                    key_b=pair.key_b,
+                    category=pair.category,
+                    diff_text=pair.diff_text,
+                    integration=pair.integration,
+                )
             )
-        )
-    return groups
+    return SimilarGroup(
+        group_number=group_index,
+        base_key=base,
+        pairs=tuple(group_pairs),
+        members=tuple(component_sorted),
+    )
