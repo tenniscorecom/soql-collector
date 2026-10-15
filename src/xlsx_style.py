@@ -31,36 +31,34 @@ def display_width(text: str) -> int:
     return width
 
 
+# 全角とみなす Unicode 範囲 ( start, end ) のタプル。 CJK 漢字・ ひらがな・
+# カタカナ・ 全角記号を網羅する。 ``_is_wide`` から線形探索で当たる
+_WIDE_RANGES: tuple[tuple[int, int], ...] = (
+    (0x1100, 0x115F),  # Hangul Jamo
+    (0x2E80, 0x303E),  # CJK Radicals / Kangxi / Symbols and Punctuation
+    (0x3041, 0x33FF),  # Hiragana / Katakana / CJK Symbols / CJK Compat
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0xA000, 0xA4CF),  # Yi
+    (0xAC00, 0xD7A3),  # Hangul Syllables
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+    (0xFE30, 0xFE4F),  # CJK Compatibility Forms
+    (0xFF00, 0xFF60),  # Fullwidth Forms
+    (0xFFE0, 0xFFE6),  # Fullwidth Signs
+)
+
+# 全角扱いする単独コードポイント ( 句読点・ 踊り字 )
+_WIDE_SINGLE_CODEPOINTS: frozenset[int] = frozenset({0x3000, 0x3001, 0x3002, 0x3003})
+
+
 def _is_wide(ch: str) -> bool:
     """全角文字とみなすかの判定。 CJK 漢字・ ひらがな・ カタカナ・ 全角記号。"""
     if not ch:
         return False
     code = ord(ch)
-    if 0x1100 <= code <= 0x115F:
+    if code in _WIDE_SINGLE_CODEPOINTS:
         return True
-    if 0x2E80 <= code <= 0x303E:
-        return True
-    if 0x3041 <= code <= 0x33FF:
-        return True
-    if 0x3400 <= code <= 0x4DBF:
-        return True
-    if 0x4E00 <= code <= 0x9FFF:
-        return True
-    if 0xA000 <= code <= 0xA4CF:
-        return True
-    if 0xAC00 <= code <= 0xD7A3:
-        return True
-    if 0xF900 <= code <= 0xFAFF:
-        return True
-    if 0xFE30 <= code <= 0xFE4F:
-        return True
-    if 0xFF00 <= code <= 0xFF60:
-        return True
-    if 0xFFE0 <= code <= 0xFFE6:
-        return True
-    if code in (0x3000, 0x3001, 0x3002, 0x3003):
-        return True
-    return False
+    return any(start <= code <= end for start, end in _WIDE_RANGES)
 
 
 def adjust_column_widths(
