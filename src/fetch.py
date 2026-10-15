@@ -1194,86 +1194,142 @@ def _collect_related_objects(
     if main_name is None or related_depth < 1:
         return nodes, relations, skipped
 
+    nodes, skipped = _bfs_related_objects(
+        main_name, main_describe, fetcher, related_depth, related_max
+    )
+    # skipped の重複を除く （ 出現順を保つ ）
+    skipped = _dedup_preserve_order(skipped)
+
+    relations = _collect_relations(main_name, main_describe, nodes)
+    return nodes, relations, skipped
+
+
+def _bfs_related_objects(
+    main_name: str,
+    main_describe: dict[str, Any],
+    fetcher: Callable[[str], dict[str, Any] | None],
+    related_depth: int,
+    related_max: int,
+) -> tuple[list[RelatedNode], list[str]]:
+    """主オブジェクトを起点に幅優先で関連オブジェクトを掘る。
+
+    段ごとに frontier を全部消費して次の frontier を作り、 ``related_max``
+    を超えた分は打ち切る。 戻り値の ``skipped`` は重複を除く前 ( 出現順 ) 。
+    """
     # 主オブジェクトは「 最初から取れた 」 ものとして ``visited`` に入れて
     # おく。 これで BFS 中に主オブジェクトが ``nodes`` に入らず、 describe
-    # の再取得も発生しない。 さらに「 主への参照 」 （ 例: Account.TaskId
-    # → Task ） や自己参照 （ 例: Account.ParentId → Account ） も、
-    # 候補としては作らない代わりに、 BFS 後の relations 生成で主を含めて
-    # 拾う。
+    # の再取得も発生しない。
     visited: set[str] = {main_name}
+    nodes: list[RelatedNode] = []
+    skipped: list[str] = []
 
-    # frontier は (親オブジェクト名, describe) のリスト。 1 段目では主
-    # オブジェクト自身を根とする。 BFS の各段で frontier を全部消費して
-    # 次の frontier を作る 1 本のループ。
     frontier: list[tuple[str, dict[str, Any]]] = [(main_name, main_describe)]
     depth = 0
     while depth < related_depth and frontier:
         depth += 1
-        # 1) 候補を frontier の親順で集める（同段内で親の出現順を保つ）。
-        #    重複ルール:
-        #      - 過去段で ``visited`` 済みの子は再登録しない （ 浅い親優先 ）
-        #      - 同じ (親, 項目, 子) は 1 度だけ
-        #      - 同じ親から別項目で同じ子を指している ⇒ 別行
-        #      - 別親から同じ子を指している ⇒ 別行 （ 同じ段で複数行可 ）
-        candidates: list[tuple[str, str, str, str]] = []
-        seen_keys: set[tuple[str, str, str]] = set()
-        for parent_name, parent_describe in frontier:
-            for field_name, relationship_name, ref_name in _related_ref_pairs(parent_describe):
-                if ref_name in visited:
-                    continue
-                key = (parent_name, field_name, ref_name)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                candidates.append((parent_name, field_name, relationship_name, ref_name))
+        candidates = _collect_candidates(frontier, visited)
         if not candidates:
             break
 
-        # 2) 上限で打ち切り: candidates の順序で related_max まで採用、 残りは skipped
-        remaining = related_max - len(nodes)
-        if remaining <= 0:
-            # 既に上限に達している。 残りは全部 skipped にする
-            skipped.extend(child for _, _, _, child in candidates)
+        candidates, skipped_in_step = _apply_related_max(candidates, nodes, related_max)
+        skipped.extend(skipped_in_step)
+        if not candidates:
             break
-        if len(candidates) > remaining:
-            skipped.extend(child for _, _, _, child in candidates[remaining:])
-            candidates = candidates[:remaining]
 
-        # 3) describe を取って ``nodes`` を作る。 ``visited`` は取得成功／失敗
-        #    に関わらず更新する（ 同じ名前は再試行しない ）。
-        next_frontier: list[tuple[str, dict[str, Any]]] = []
-        seen_next: set[str] = set()
-        for _, _, _, ref_name in candidates:
-            describe = fetcher(ref_name)
-            visited.add(ref_name)
-            if describe is None:
-                # 取れなかった。 ``visited`` は入れておく （ 再試行しない ） 。
-                # ただし ``nodes`` にも追加しないし、 ``relations`` にも行を
-                # 出さない。
-                continue
-            # 同じ子が複数の親候補から重複して ``nodes`` と ``next_frontier`` に
-            # 追加されるのを防ぐ （ 1 段目で複数の (親, 項目) から同じ子を
-            # 指しているとき ） 。
-            if ref_name not in seen_next:
-                seen_next.add(ref_name)
-                nodes.append(RelatedNode(name=ref_name, depth=depth, describe=describe))
-                next_frontier.append((ref_name, describe))
-
+        next_frontier, nodes = _fetch_candidates(candidates, fetcher, visited, depth, nodes)
         if not next_frontier:
             break
         frontier = next_frontier
+    return nodes, skipped
 
-    # skipped の重複を除く （ 出現順を保つ ）
-    skipped = _dedup_preserve_order(skipped)
 
-    # relations: BFS が終わったあとに、 「 取れたオブジェクト全部 （ 主 +
-    # nodes ） の fields 」 を主→ nodes の順 （ nodes は段順 ） でたどって
-    # 作る。 参照先が「 取れたオブジェクト （ 主を含む ）」 なら 1 行ずつ
-    # 出す。 行の ``段`` は **子の段** （ 主 = 0 ）。 並びは「 浅い親
-    # （ 主→段順 ） → 同じ親内では項目の出現順 」 。 ポリモーフィック参照は
-    # ``referenceTo`` のエントリごとに 1 行。 同じ ``(親, 項目, 子)`` は
-    # 1 行。 取り損ねた子 （ 上限で打ち切られた子・ describe に失敗した子 ）
-    # は親にも子にも行に出ない。
+def _collect_candidates(
+    frontier: list[tuple[str, dict[str, Any]]],
+    visited: set[str],
+) -> list[tuple[str, str, str, str]]:
+    """``frontier`` の各親から、 ``visited`` に無い参照先を集めて並べる。
+
+    形式は ``(親, 項目, リレーション名, 子)`` 。 並び順は親順、 同一親内では
+    ``fields`` の出現順 ( ``_related_ref_pairs`` に従う ) 。
+
+    重複ルール: 過去段で ``visited`` 済みの子は再登録しない。 同じ
+    (親, 項目, 子) は 1 度だけ。 別親から同じ子を指している場合は別行 ( 複数行可 ) 。
+    """
+    candidates: list[tuple[str, str, str, str]] = []
+    seen_keys: set[tuple[str, str, str]] = set()
+    for parent_name, parent_describe in frontier:
+        for field_name, relationship_name, ref_name in _related_ref_pairs(parent_describe):
+            if ref_name in visited:
+                continue
+            key = (parent_name, field_name, ref_name)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            candidates.append((parent_name, field_name, relationship_name, ref_name))
+    return candidates
+
+
+def _apply_related_max(
+    candidates: list[tuple[str, str, str, str]],
+    nodes: list[RelatedNode],
+    related_max: int,
+) -> tuple[list[tuple[str, str, str, str]], list[str]]:
+    """``related_max`` を超える分を ``skipped`` に移し、 candidates を切り詰める。
+
+    既に ``len(nodes) >= related_max`` のときは残り全部を skipped にして
+    candidates を空にする ( この段は探索しない ) 。
+    """
+    remaining = related_max - len(nodes)
+    if remaining <= 0:
+        skipped = [child for _, _, _, child in candidates]
+        return [], skipped
+    if len(candidates) > remaining:
+        skipped = [child for _, _, _, child in candidates[remaining:]]
+        return candidates[:remaining], skipped
+    return candidates, []
+
+
+def _fetch_candidates(
+    candidates: list[tuple[str, str, str, str]],
+    fetcher: Callable[[str], dict[str, Any] | None],
+    visited: set[str],
+    depth: int,
+    nodes: list[RelatedNode],
+) -> tuple[list[tuple[str, dict[str, Any]]], list[RelatedNode]]:
+    """``candidates`` の子オブジェクトを ``fetcher`` で取り、 ``nodes`` と次の frontier を作る。
+
+    ``visited`` は取得成功／失敗に関わらず更新する ( 同じ名前は再試行しない ) 。
+    同じ子が複数の親候補から重複して ``nodes`` と ``next_frontier`` に追加
+    されるのを防ぐ。
+    """
+    next_frontier: list[tuple[str, dict[str, Any]]] = []
+    seen_next: set[str] = set()
+    for _, _, _, ref_name in candidates:
+        describe = fetcher(ref_name)
+        visited.add(ref_name)
+        if describe is None:
+            # 取れなかった。 ``visited`` は入れておく ( 再試行しない ) 。
+            # ただし ``nodes`` にも追加しないし、 ``relations`` にも行を
+            # 出さない。
+            continue
+        if ref_name not in seen_next:
+            seen_next.add(ref_name)
+            nodes.append(RelatedNode(name=ref_name, depth=depth, describe=describe))
+            next_frontier.append((ref_name, describe))
+    return next_frontier, nodes
+
+
+def _collect_relations(
+    main_name: str,
+    main_describe: dict[str, Any],
+    nodes: list[RelatedNode],
+) -> list[RelationRecord]:
+    """主＋関連オブジェクト同士の参照 ``RelationRecord`` 一覧を作る。
+
+    主→ nodes の順 ( nodes は段順 ) で ``fields`` をたどり、 参照先が「 取れた
+    オブジェクト ( 主を含む ) 」 なら 1 行ずつ出す。 同じ ``(親, 項目, 子)``
+    は 1 行。 取り損ねた子は親にも子にも行に出ない。
+    """
     obtained: set[str] = {main_name} | {n.name for n in nodes}
     depth_by_name: dict[str, int] = {main_name: 0}
     for node in nodes:
@@ -1283,6 +1339,7 @@ def _collect_related_objects(
         if node.describe is not None:
             describe_by_name[node.name] = node.describe
 
+    relations: list[RelationRecord] = []
     parent_order: list[str] = [main_name] + [n.name for n in nodes]
     seen_rows: set[tuple[str, str, str]] = set()
     for parent_name in parent_order:
@@ -1305,8 +1362,7 @@ def _collect_related_objects(
                     depth=depth_by_name.get(ref_name, 0),
                 )
             )
-
-    return nodes, relations, skipped
+    return relations
 
 
 def _dedup_preserve_order(values: list[str]) -> list[str]:
