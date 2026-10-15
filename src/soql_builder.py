@@ -203,94 +203,121 @@ def _format_value_for_field(
     if value == "":
         return "", [], []
 
-    # 文字列系
     if field_type_lower in _STRING_TYPES:
-        return _escape_string_literal(value), [], []
-
-    # boolean
+        return _format_string_value(value)
     if field_type_lower in _BOOLEAN_TYPES:
-        lowered = value.strip().lower()
-        if lowered in ("true", "1", "yes"):
-            return "true", [], []
-        if lowered in ("false", "0", "no"):
-            return "false", [], []
+        return _format_boolean_value(value, field_name)
+    if field_type_lower in _NUMERIC_TYPES:
+        return _format_numeric_value(value, field_name)
+    if field_type_lower in _DATE_TYPES:
+        return _format_date_value(value, field_name)
+    if field_type_lower in _DATETIME_TYPES:
+        return _format_datetime_value(value, field_name)
+
+    # 型が分からない
+    return "", [f"値の解釈不可 ( {field_name}: 型 {field_type!r} が未知 ): missing"], []
+
+
+def _format_string_value(value: str) -> tuple[str, list[str], list[str]]:
+    """文字列系の値を ``'...'`` で囲んだ SOQL リテラルにする。"""
+    return _escape_string_literal(value), [], []
+
+
+def _format_boolean_value(
+    value: str, field_name: str
+) -> tuple[str, list[str], list[str]]:
+    """boolean 系の値を ``true`` / ``false`` に解釈する。 解釈できなければ missing。"""
+    lowered = value.strip().lower()
+    if lowered in ("true", "1", "yes"):
+        return "true", [], []
+    if lowered in ("false", "0", "no"):
+        return "false", [], []
+    return (
+        "",
+        [f"値の解釈不可 ( {field_name}: boolean として解釈できない {value!r} ): missing"],
+        [],
+    )
+
+
+def _format_numeric_value(
+    value: str, field_name: str
+) -> tuple[str, list[str], list[str]]:
+    """数値系の値をそのままの表記で返す。 カンマを含む値や数値として解釈できない値は missing。"""
+    if _NUMERIC_PATTERN.fullmatch(value):
+        return value, [], []
+    if "," in value:
         return (
             "",
-            [f"値の解釈不可 ( {field_name}: boolean として解釈できない {value!r} ): missing"],
+            [
+                f"値の解釈不可 ( {field_name}: 数値の値にカンマが含まれる可能性 "
+                f"{value!r} ): missing"
+            ],
             [],
         )
+    return "", [f"値の解釈不可 ( {field_name}: 数値として解釈できない {value!r} ): missing"], []
 
-    # 数値系
-    if field_type_lower in _NUMERIC_TYPES:
-        if _NUMERIC_PATTERN.fullmatch(value):
-            return value, [], []
-        if "," in value:
+
+def _format_date_value(
+    value: str, field_name: str
+) -> tuple[str, list[str], list[str]]:
+    """date 系の値を ``YYYY-MM-DD`` または相対日付リテラルにして返す。 解釈できなければ missing。"""
+    # 既に相対日付リテラルならそのまま
+    if _RELATIVE_DATE_PATTERN.fullmatch(value):
+        return value, [], []
+    # 日付として解釈できる形なら、 ``YYYY-MM-DD`` に正規化して返す
+    # ( 実在しない日付・ ``YYYY/MM/DD`` 表記揺れを吸収 )
+    if _looks_like_date(value):
+        normalized, missing_msg = _normalize_date_literal(value)
+        if missing_msg:
+            return (
+                "",
+                [f"値の解釈不可 ( {field_name}: date として解釈できない {value!r} ): missing"],
+                [],
+            )
+        return normalized, [], []
+    return (
+        "",
+        [f"値の解釈不可 ( {field_name}: date として解釈できない {value!r} ): missing"],
+        [],
+    )
+
+
+def _format_datetime_value(
+    value: str, field_name: str
+) -> tuple[str, list[str], list[str]]:
+    """datetime 系の値を ``YYYY-MM-DDT00:00:00Z`` または相対日付リテラルにして返す。
+
+    日付だけの値は UTC 0 時に拡張して checks にメッセージを足す。 解釈できなければ missing。
+    """
+    # 相対日付リテラルならそのまま
+    if _RELATIVE_DATE_PATTERN.fullmatch(value):
+        return value, [], []
+    # 日付だけの値なら ``YYYY-MM-DDT00:00:00Z`` に拡張して checks 追加
+    # ( ``YYYY/MM/DD`` 表記も ``-`` に正規化してから ``T00:00:00Z`` を付与 )
+    if _looks_like_date(value):
+        normalized, missing_msg = _normalize_date_literal(value)
+        if missing_msg:
             return (
                 "",
                 [
-                    f"値の解釈不可 ( {field_name}: 数値の値にカンマが含まれる可能性 "
+                    f"値の解釈不可 ( {field_name}: datetime として解釈できない "
                     f"{value!r} ): missing"
                 ],
                 [],
             )
-        return "", [f"値の解釈不可 ( {field_name}: 数値として解釈できない {value!r} ): missing"], []
-
-    # date
-    if field_type_lower in _DATE_TYPES:
-        # 既に相対日付リテラルならそのまま
-        if _RELATIVE_DATE_PATTERN.fullmatch(value):
-            return value, [], []
-        # 日付として解釈できる形なら、 ``YYYY-MM-DD`` に正規化して返す
-        # ( 実在しない日付・ ``YYYY/MM/DD`` 表記揺れを吸収 )
-        if _looks_like_date(value):
-            normalized, missing_msg = _normalize_date_literal(value)
-            if missing_msg:
-                return (
-                    "",
-                    [f"値の解釈不可 ( {field_name}: date として解釈できない {value!r} ): missing"],
-                    [],
-                )
-            return normalized, [], []
         return (
-            "",
-            [f"値の解釈不可 ( {field_name}: date として解釈できない {value!r} ): missing"],
+            f"{normalized}T00:00:00Z",
             [],
+            [
+                f"日時の条件をタイムゾーン無しの UTC 0 時で置き換えた: "
+                f"{field_name} の {value!r} を {normalized}T00:00:00Z に"
+            ],
         )
-
-    # datetime
-    if field_type_lower in _DATETIME_TYPES:
-        # 相対日付リテラルならそのまま
-        if _RELATIVE_DATE_PATTERN.fullmatch(value):
-            return value, [], []
-        # 日付だけの値なら ``YYYY-MM-DDT00:00:00Z`` に拡張して checks 追加
-        # ( ``YYYY/MM/DD`` 表記も ``-`` に正規化してから ``T00:00:00Z`` を付与 )
-        if _looks_like_date(value):
-            normalized, missing_msg = _normalize_date_literal(value)
-            if missing_msg:
-                return (
-                    "",
-                    [
-                        f"値の解釈不可 ( {field_name}: datetime として解釈できない "
-                        f"{value!r} ): missing"
-                    ],
-                    [],
-                )
-            return (
-                f"{normalized}T00:00:00Z",
-                [],
-                [
-                    f"日時の条件をタイムゾーン無しの UTC 0 時で置き換えた: "
-                    f"{field_name} の {value!r} を {normalized}T00:00:00Z に"
-                ],
-            )
-        return (
-            "",
-            [f"値の解釈不可 ( {field_name}: datetime として解釈できない {value!r} ): missing"],
-            [],
-        )
-
-    # 型が分からない
-    return "", [f"値の解釈不可 ( {field_name}: 型 {field_type!r} が未知 ): missing"], []
+    return (
+        "",
+        [f"値の解釈不可 ( {field_name}: datetime として解釈できない {value!r} ): missing"],
+        [],
+    )
 
 
 def _split_values(raw: object) -> list[str]:
