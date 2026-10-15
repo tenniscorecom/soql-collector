@@ -149,9 +149,7 @@ def _starts_with_main_object(column_key: str, main_object: str) -> bool:
     return column_key[: len(main_object)].lower() == main_object.lower()
 
 
-def _candidate_relationship_names_from_fields(
-    fields: list[dict[str, Any]], limit: int = 10
-) -> list[str]:
+def candidate_relationship_names(fields: list[dict[str, Any]], limit: int = 10) -> list[str]:
     """``fields`` の ``relationshipName`` を出現順で最大 ``limit`` 個返す。
 
     列キーからの経路たどりに失敗したときの備考で使う。
@@ -279,7 +277,7 @@ def _resolve_column_key_to_soql(
             matched = next((field for field in fields if field.get("name") == part), None)
 
         if matched is None:
-            candidates = _candidate_relationship_names_from_fields(fields)
+            candidates = candidate_relationship_names(fields)
             cand_text = ", ".join(candidates) if candidates else "(なし)"
             return (
                 None,

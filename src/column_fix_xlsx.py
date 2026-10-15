@@ -40,8 +40,7 @@ from typing import TYPE_CHECKING, Any
 
 from comken.exceptions import ExcelError
 
-from src import xlsx_style
-from src.text_utils import coerce_str as _coerce_str
+from src import mapping, xlsx_style
 
 if TYPE_CHECKING:
     from src.fetch import ReportRecord
@@ -127,16 +126,16 @@ class ColumnFixRow:
     @classmethod
     def from_dict(cls, row: dict[str, str]) -> ColumnFixRow:
         return cls(
-            status=_coerce_str(row.get("状態")),
-            main_object=_coerce_str(row.get("主オブジェクト")),
-            display_name=_coerce_str(row.get("表示名")),
-            column_key=_coerce_str(row.get("列キー")),
-            auto_soql_name=_coerce_str(row.get("自動のSOQL列名")),
-            candidates=_coerce_str(row.get("候補")),
-            fixed_soql_name=_coerce_str(row.get("直したSOQL列名")),
-            note=_coerce_str(row.get("メモ")),
-            used_in_reports=_coerce_str(row.get("使っているレポート")),
-            updated_at=_coerce_str(row.get("更新日")),
+            status=row.get("状態", ""),
+            main_object=row.get("主オブジェクト", ""),
+            display_name=row.get("表示名", ""),
+            column_key=row.get("列キー", ""),
+            auto_soql_name=row.get("自動のSOQL列名", ""),
+            candidates=row.get("候補", ""),
+            fixed_soql_name=row.get("直したSOQL列名", ""),
+            note=row.get("メモ", ""),
+            used_in_reports=row.get("使っているレポート", ""),
+            updated_at=row.get("更新日", ""),
         )
 
 
@@ -217,7 +216,7 @@ def merge_and_write(
     observed: list[ObservedAutoRow],
     today: date,
     *,
-    candidates_for_row: Callable[[ObservedAutoRow], str] = lambda row: row.candidates,
+    used_in_reports: dict[tuple[str, str], str] | None = None,
 ) -> None:
     """``observed`` を ``existing`` にマージし、 xlsx を書き出す。
 
@@ -237,22 +236,16 @@ def merge_and_write(
       今回用いた行で毎回書き換える
     - 「 直したSOQL列名 」 と 「 メモ 」 は **絶対に書き換えない・消さない**
     - 並び: 状態 → 主オブジェクト → 列キー
-    - 書き込みが ``PermissionError`` なら実行は止めず WARNING だけ出す
+    - 「 使っているレポート 」 は ``used_in_reports`` （ キー → ``|`` 区切りの管理番号 ）
+      にあればその値、 無ければ既存の値のまま
     """
-    new_rows: dict[tuple[str, str], ObservedAutoRow] = {}
-    report_keys: dict[tuple[str, str], set[str]] = {}
+    used_in_reports = used_in_reports or {}
     iso_date = today.isoformat()
-
-    for obs in observed:
-        if not obs.main_object or not obs.column_key:
-            continue
-        key = _normalize_key(obs.main_object, obs.column_key)
-        # 「 使っているレポート 」 はレポートの主オブジェクトでなく、 レポートID を
-        # 数える用途なので、 ``record.key`` を別途受け取る必要がある。 ここでは
-        # ``ObservedAutoRow`` から取れないため、 merge_and_write_after_run 側で
-        # 別管理する
-        new_rows[key] = obs
-        report_keys.setdefault(key, set())
+    new_rows = {
+        _normalize_key(obs.main_object, obs.column_key): obs
+        for obs in observed
+        if obs.main_object and obs.column_key
+    }
 
     # 全行を組み立て直す: 既存 + 新規/上書き分
     merged: dict[tuple[str, str], ColumnFixRow] = dict(existing)
@@ -260,7 +253,7 @@ def merge_and_write(
         existing_row = existing.get(key)
         # 状態・自動の値・候補・レポートは毎回書き換える
         auto_resolved = bool(obs.soql_name) and obs.soql_name != "(不明)"
-        candidates_text = candidates_for_row(obs)
+        candidates_text = obs.candidates
         # 人の値があるか
         had_user_fix = bool(existing_row and existing_row.fixed_soql_name)
         # 人の値がたどれたかは、 apply_overrides が column_map の備考に書いた
@@ -294,7 +287,9 @@ def merge_and_write(
             candidates=candidates_text,
             fixed_soql_name=fixed_soql_name,
             note=note,
-            used_in_reports=existing_row.used_in_reports if existing_row else "",
+            used_in_reports=used_in_reports.get(
+                key, existing_row.used_in_reports if existing_row else ""
+            ),
             updated_at=iso_date,
         )
 
@@ -307,13 +302,12 @@ def merge_and_write(
             r.column_key,
         ),
     )
-    _write_xlsx(path, sorted_rows, report_keys_count={k: len(v) for k, v in report_keys.items()})
+    _write_xlsx(path, sorted_rows)
 
 
 def _write_xlsx(
     path: Path,
     rows: list[ColumnFixRow],
-    report_keys_count: dict[tuple[str, str], int],
 ) -> None:
     """``列の直し.xlsx`` を書く。 PermissionError は呼び出し側で WARNING に縮退。
 
@@ -477,29 +471,23 @@ def migrate_legacy_csv(
 
     result: dict[tuple[str, str], ColumnFixRow] = {}
     for row in rows:
-        if not isinstance(row, dict):
-            continue
-        soql_name = _coerce_str(row.get("SOQL列名"))
-        note = _coerce_str(row.get("メモ"))
-        if not soql_name:
-            continue
-        if note != "手入力":
-            continue
-        main_object = _coerce_str(row.get("主オブジェクト"))
-        column_key = _coerce_str(row.get("列キー"))
-        if not main_object or not column_key:
+        soql_name = row["SOQL列名"]
+        note = row["メモ"]
+        main_object = row["主オブジェクト"]
+        column_key = row["列キー"]
+        if not soql_name or note != "手入力" or not main_object or not column_key:
             continue
         result[_normalize_key(main_object, column_key)] = ColumnFixRow(
             status=STATUS_OK,
             main_object=main_object,
-            display_name=_coerce_str(row.get("表示名")),
+            display_name=row["表示名"],
             column_key=column_key,
             auto_soql_name="",
             candidates="",
             fixed_soql_name=soql_name,
             note=note,
-            used_in_reports=_coerce_str(row.get("使っているレポート数")),
-            updated_at=_coerce_str(row.get("更新日")),
+            used_in_reports=row["使っているレポート数"],
+            updated_at=row["更新日"],
         )
     return result
 
@@ -535,10 +523,7 @@ def apply_overrides(
     """
     new_rows: list[dict[str, str]] = []
     for row in column_map_rows:
-        if not isinstance(row, dict):
-            new_rows.append(dict(row))
-            continue
-        column_key = _coerce_str(row.get("列キー"))
+        column_key = row["列キー"]
         if not main_object or not column_key:
             new_rows.append(dict(row))
             continue
@@ -615,36 +600,22 @@ def _walk_soql_path(
     current_object = main_object
     for index, part in enumerate(parts):
         describe = objects.get(current_object)
-        if not isinstance(describe, dict):
+        if describe is None:
             warnings.append(
                 f"列の直し.xlsx の直したSOQL列名をたどれません: "
                 f"{main_object} / {column_key} / {soql_name}"
                 f" — {current_object} の項目定義が無いためたどれません。打ち間違い？"
             )
             return ""
-        fields_raw = describe.get("fields")
-        fields: list[Any] = fields_raw if isinstance(fields_raw, list) else []
+        fields: list[dict[str, Any]] = describe.get("fields", [])
 
-        matched: dict[str, Any] | None = None
         # 優先順: relationshipName → name
-        for field in fields:
-            if not isinstance(field, dict):
-                continue
-            relationship = field.get("relationshipName")
-            if isinstance(relationship, str) and relationship == part:
-                matched = field
-                break
+        matched = next((field for field in fields if field.get("relationshipName") == part), None)
         if matched is None:
-            for field in fields:
-                if not isinstance(field, dict):
-                    continue
-                name = field.get("name")
-                if isinstance(name, str) and name == part:
-                    matched = field
-                    break
+            matched = next((field for field in fields if field.get("name") == part), None)
 
         if matched is None:
-            candidates = _candidate_relationship_names(fields)
+            candidates = mapping.candidate_relationship_names(fields)
             candidate_text = ", ".join(candidates) if candidates else "(なし)"
             warnings.append(
                 f"列の直し.xlsx の直したSOQL列名をたどれません: "
@@ -655,16 +626,10 @@ def _walk_soql_path(
             return ""
 
         if index == len(parts) - 1:
-            field_type = matched.get("type")
-            return field_type if isinstance(field_type, str) else ""
+            return matched.get("type") or ""
 
         # 次のオブジェクトを決める
-        reference_to_raw = matched.get("referenceTo")
-        reference_to: list[str] = (
-            [r for r in reference_to_raw if isinstance(r, str) and r]
-            if isinstance(reference_to_raw, list)
-            else []
-        )
+        reference_to: list[str] = matched.get("referenceTo") or []
         relationship = matched.get("relationshipName")
         is_polymorphic = len(reference_to) > 1
 
@@ -674,12 +639,7 @@ def _walk_soql_path(
                 if ref not in candidates_for_next:
                     candidates_for_next.append(ref)
         else:
-            if (
-                isinstance(relationship, str)
-                and relationship
-                and relationship in objects
-                and not candidates_for_next
-            ):
+            if relationship and relationship in objects and not candidates_for_next:
                 candidates_for_next.append(relationship)
             if not candidates_for_next:
                 for ref in reference_to:
@@ -693,7 +653,7 @@ def _walk_soql_path(
                 break
             if fetch_object is not None:
                 fetched = fetch_object(cand)
-                if isinstance(fetched, dict):
+                if fetched is not None:
                     objects[cand] = fetched
                     next_object = cand
                     break
@@ -713,19 +673,6 @@ def _walk_soql_path(
     return ""
 
 
-def _candidate_relationship_names(fields: list[Any], limit: int = 10) -> list[str]:
-    candidates: list[str] = []
-    for field in fields:
-        if not isinstance(field, dict):
-            continue
-        rn = field.get("relationshipName")
-        if isinstance(rn, str) and rn:
-            candidates.append(rn)
-            if len(candidates) >= limit:
-                break
-    return candidates
-
-
 # ── 内部ヘルパー ─────────────────────────────────────────────────
 
 
@@ -743,81 +690,36 @@ def _merge_and_write_after_run(
 ) -> None:
     """``run`` の最後に ``列の直し.xlsx`` をマージして書く薄いラッパー。
 
-    ``records`` の ``column_map`` を ``ObservedAutoRow`` に直し、 レポートID と
-    一緒に ``merge_and_write`` に渡す
+    ``records`` の ``column_map`` を ``ObservedAutoRow`` に直し、 どのレポートで
+    使っているか（ 管理番号 ）と一緒に ``merge_and_write`` に渡す。
     """
     observed: list[ObservedAutoRow] = []
     report_keys: dict[tuple[str, str], set[str]] = {}
     for record in records:
-        main_object_text = record.main_object or ""
-        if not main_object_text:
+        if not record.main_object:
             continue
-        record_key = record.key
         for row in record.column_map:
-            if not isinstance(row, dict):
-                continue
-            column_key = _coerce_str(row.get("列キー"))
-            if not column_key:
-                continue
-            soql_name = _coerce_str(row.get("対応フィールドAPI名"))
-            note = _coerce_str(row.get("備考"))
-            candidates = note if "複数候補あり" in note else ""
-            obs = ObservedAutoRow(
-                main_object=main_object_text,
-                column_key=column_key,
-                display_name=_coerce_str(row.get("表示名")),
-                soql_name=soql_name,
-                candidates=candidates,
-                note=note,
+            note = row["備考"]
+            observed.append(
+                ObservedAutoRow(
+                    main_object=record.main_object,
+                    column_key=row["列キー"],
+                    display_name=row["表示名"],
+                    soql_name=row["対応フィールドAPI名"],
+                    candidates=note if "複数候補あり" in note else "",
+                    note=note,
+                )
             )
-            observed.append(obs)
-            k = _normalize_key(main_object_text, column_key)
-            if record_key:
-                report_keys.setdefault(k, set()).add(record_key)
-
-    # 「 使っているレポート 」 を埋めるため、 existing を一時的に拡張してから
-    # merge_and_write を呼ぶ
-    expanded: dict[tuple[str, str], ColumnFixRow] = {}
-    for k, row in existing.items():
-        keys = report_keys.get(k, set())
-        used_text = "|".join(sorted(keys)) if keys else row.used_in_reports
-        expanded[k] = ColumnFixRow(
-            status=row.status,
-            main_object=row.main_object,
-            display_name=row.display_name,
-            column_key=row.column_key,
-            auto_soql_name=row.auto_soql_name,
-            candidates=row.candidates,
-            fixed_soql_name=row.fixed_soql_name,
-            note=row.note,
-            used_in_reports=used_text,
-            updated_at=row.updated_at,
-        )
-    # 新規行の used_in_reports を埋める
-    for k, keys in report_keys.items():
-        if k in expanded:
-            continue
-        used_text = "|".join(sorted(keys)) if keys else ""
-        # merge_and_write のロジックで上書きされるので、 空の placeholder を作る
-        expanded[k] = ColumnFixRow(
-            status="",
-            main_object="",
-            display_name="",
-            column_key="",
-            auto_soql_name="",
-            candidates="",
-            fixed_soql_name="",
-            note="",
-            used_in_reports=used_text,
-            updated_at="",
-        )
+            key = _normalize_key(record.main_object, row["列キー"])
+            report_keys.setdefault(key, set()).add(record.key)
 
     try:
         merge_and_write(
             path=path,
-            existing=expanded,
+            existing=existing,
             observed=observed,
             today=today,
+            used_in_reports={key: "|".join(sorted(keys)) for key, keys in report_keys.items()},
         )
     except PermissionError as exc:
         logger.warning(
