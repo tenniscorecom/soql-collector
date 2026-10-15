@@ -56,7 +56,6 @@ from comken.toolbox.salesforce.report import report_id_from_url
 from src import column_fix_xlsx, mapping, pii, soql_builder
 from src.describe_store import DescribeStore, org_from_url
 from src.master import MasterEntry
-from src.text_utils import coerce_str as _coerce_str
 
 logger = logging.getLogger(__name__)
 
@@ -387,33 +386,16 @@ def _log_row_check(row_check: RowCheck | None) -> None:
     logger.info("  2000件チェック: 判定=%s 行数=%s", row_check.status, rows_text)
 
 
-def _log_report_contents(metadata: dict[str, Any], main_object_name: str | None) -> None:
+def _log_report_contents(slim_report: SlimReport, main_object_name: str | None) -> None:
     """レポートの形式・主オブジェクト・列数・フィルタ数を 1 行にまとめて出す。"""
+    report_metadata = slim_report["reportMetadata"]
     logger.info(
         "  レポート: 形式=%s 主オブジェクト=%s 列数=%d フィルタ数=%d",
-        _report_format(metadata) or "(なし)",
+        report_metadata.get("reportFormat") or "(なし)",
         main_object_name or "(不明)",
-        _count_detail_columns(metadata),
-        _count_report_filters(metadata),
+        len(report_metadata.get("detailColumns", [])),
+        len(report_metadata.get("reportFilters", [])),
     )
-
-
-def _count_detail_columns(metadata: dict[str, Any]) -> int:
-    """``metadata`` の ``detailColumns`` 件数。 取得できなければ 0。"""
-    report_metadata = metadata.get("reportMetadata") if isinstance(metadata, dict) else None
-    if not isinstance(report_metadata, dict):
-        return 0
-    columns = report_metadata.get("detailColumns")
-    return len(columns) if isinstance(columns, list) else 0
-
-
-def _count_report_filters(metadata: dict[str, Any]) -> int:
-    """``metadata`` の ``reportFilters`` 件数。 取得できなければ 0。"""
-    report_metadata = metadata.get("reportMetadata") if isinstance(metadata, dict) else None
-    if not isinstance(report_metadata, dict):
-        return 0
-    filters = report_metadata.get("reportFilters")
-    return len(filters) if isinstance(filters, list) else 0
 
 
 def _log_related_objects(
@@ -503,8 +485,7 @@ def _slim_report(metadata: object) -> SlimReport:
     for key, text_keys in _TEXT_KEYS_IN_LIST_ITEMS.items():
         if key in slimmed_metadata:
             slimmed_metadata[key] = [
-                _with_text_values(item, text_keys)
-                for item in _dict_list(slimmed_metadata[key])
+                _with_text_values(item, text_keys) for item in _dict_list(slimmed_metadata[key])
             ]
     for key, text_keys in _TEXT_KEYS_IN_DICT_VALUES.items():
         if key not in slimmed_metadata:
@@ -547,9 +528,7 @@ def _with_text_values(item: dict[str, Any], text_keys: tuple[str, ...]) -> dict[
     """``item`` の ``text_keys`` のうち、 ある値を str にそろえる。 そろっていれば元の dict。"""
     if all(isinstance(item.get(key), str) for key in text_keys if key in item):
         return item
-    return {
-        key: _text(value) if key in text_keys else value for key, value in item.items()
-    }
+    return {key: _text(value) if key in text_keys else value for key, value in item.items()}
 
 
 def _str_list(value: object) -> list[str]:
@@ -728,17 +707,6 @@ def _check_row_count(client: Any, report_id: str) -> RowCheck:
     )
 
 
-def _report_format(metadata: dict[str, Any]) -> str:
-    """``metadata`` から ``reportFormat`` を取り出す。 取得できなければ空文字。"""
-    if not isinstance(metadata, dict):
-        return ""
-    report_metadata = metadata.get("reportMetadata")
-    if not isinstance(report_metadata, dict):
-        return ""
-    value = report_metadata.get("reportFormat")
-    return value if isinstance(value, str) else ""
-
-
 def _format_error_reason(exc: BaseException) -> str:
     """例外を 1 行の理由文字列に整形する。 メッセージは上限で切る。"""
     type_name = type(exc).__name__
@@ -771,79 +739,22 @@ def _collect_output_column_refs(
     絞り込みにだけ使う列は対象外。 ``column_map`` が見つからない列は未解決として
     扱う。
     """
-    output_keys = _output_column_keys(slim_report)
+    column_map_by_key = {col["列キー"]: col for col in column_map}
     refs: list[pii.ColumnRef] = []
-    column_map_by_key: dict[str, dict[str, str]] = {}
-    for col in column_map:
-        if not isinstance(col, dict):
-            continue
-        key = col.get("列キー")
-        if isinstance(key, str) and key:
-            column_map_by_key[key] = col
-
-    seen: set[str] = set()
-    for column_key in output_keys:
-        if column_key in seen:
-            continue
-        seen.add(column_key)
+    for column_key in dict.fromkeys(mapping.output_column_keys(slim_report["reportMetadata"])):
         col = column_map_by_key.get(column_key, {})
-        if not isinstance(col, dict):
-            col = {}
-        label = _coerce_str(col.get("表示名")) or column_key
-        field_api = _coerce_str(col.get("対応フィールドAPI名"))
-        field_type = _coerce_str(col.get("型"))
-        owner_object = _coerce_str(col.get("所属オブジェクト"))
-        field_name = _field_name_from_soql(field_api)
-        resolved = bool(field_api) and field_api != "(不明)"
+        field_api = col.get("対応フィールドAPI名", "")
         refs.append(
             pii.ColumnRef(
                 column_key=column_key,
-                label=label,
-                field_name=field_name,
-                field_type=field_type,
-                owner_object=owner_object,
-                resolved=resolved,
+                label=col.get("表示名") or column_key,
+                field_name=mapping.field_name_from_soql(field_api),
+                field_type=col.get("型", ""),
+                owner_object=col.get("所属オブジェクト", ""),
+                resolved=bool(field_api) and field_api != "(不明)",
             )
         )
     return refs
-
-
-def _output_column_keys(slim_report: dict[str, Any]) -> list[str]:
-    """``slim_report`` の出力列キーを順序付きで集める。
-
-    並び順: ``detailColumns`` → ``groupingsDown`` の ``name`` →
-    ``groupingsAcross`` の ``name`` → ``aggregates`` の対象列
-    （ ``"!"`` の後ろ ）。
-    """
-    metadata = slim_report.get("reportMetadata") if isinstance(slim_report, dict) else None
-    if not isinstance(metadata, dict):
-        return []
-    keys: list[str] = []
-    for column in metadata.get("detailColumns") or []:
-        if isinstance(column, str) and column:
-            keys.append(column)
-    for grouping_key in ("groupingsDown", "groupingsAcross"):
-        for grouping in metadata.get(grouping_key) or []:
-            if isinstance(grouping, dict):
-                name = grouping.get("name")
-                if isinstance(name, str) and name:
-                    keys.append(name)
-    for aggregate in metadata.get("aggregates") or []:
-        if not isinstance(aggregate, str) or "!" not in aggregate:
-            continue
-        column = aggregate.split("!", 1)[-1]
-        if column:
-            keys.append(column)
-    return keys
-
-
-def _field_name_from_soql(soql_name: str) -> str:
-    """``"Account.Owner.Name"`` から末端の ``"Name"`` を取り出す。"""
-    if not soql_name or soql_name == "(不明)":
-        return ""
-    if "." in soql_name:
-        return soql_name.rsplit(".", 1)[-1]
-    return soql_name
 
 
 def _fetch_one(
@@ -914,7 +825,6 @@ def _fetch_one(
     # CSV から読んだ （ 今回 API で取ったものではない ） オブジェクトのキー。
     # 取り直し判定に使う。
     csv_used_keys: set[tuple[str, str]] = set()
-
 
     try:
         with site_class() as client:
@@ -1102,7 +1012,6 @@ def _fetch_one(
             f"関連オブジェクトは取得していません"
         )
 
-
     dropped_keys = _collect_dropped_keys(metadata)
     dropped_keys_warning = _dropped_keys_warning_text(dropped_keys)
     if dropped_keys_warning:
@@ -1224,8 +1133,7 @@ def _collect_related_objects(
         ``skipped``: ``related_max`` のせいで掘れなかった候補の
             オブジェクト名。 重複を除いた出現順のリスト。
     """
-    main_name_raw = main_describe.get("name") if isinstance(main_describe, dict) else None
-    main_name = main_name_raw if isinstance(main_name_raw, str) and main_name_raw else None
+    main_name = main_describe.get("name") or None
 
     nodes: list[RelatedNode] = []
     relations: list[RelationRecord] = []
@@ -1327,7 +1235,7 @@ def _collect_related_objects(
     seen_rows: set[tuple[str, str, str]] = set()
     for parent_name in parent_order:
         parent_describe = describe_by_name.get(parent_name)
-        if not isinstance(parent_describe, dict):
+        if parent_describe is None:
             continue
         for field_name, relationship_name, ref_name in _related_ref_pairs(parent_describe):
             if ref_name not in obtained:
@@ -1364,36 +1272,16 @@ def _dedup_preserve_order(values: list[str]) -> list[str]:
 def _related_ref_pairs(describe: dict[str, Any]) -> list[tuple[str, str, str]]:
     """``describe`` の ``fields`` から ``(項目名, リレーション名, 子名)`` の組を集める。
 
-    ``relationshipName`` が空でなく ``referenceTo`` が空でない項目だけ。
-    ポリモーフィックなら ``referenceTo`` のエントリごとに展開
-    （ ``relationshipName`` は同じ ）。 出現順を保ち、 重複は呼び出し側で
-    ``visited`` により落とす。 戻り値の要素はすべて ``str`` （ 長さが 0 の
-    ものは呼び出し側で既に弾いている ）。
+    ``relationshipName`` と ``referenceTo`` がある項目だけ。 ポリモーフィックなら
+    ``referenceTo`` のエントリごとに展開（ ``relationshipName`` は同じ ）。
+    出現順を保ち、 重複は呼び出し側で ``visited`` により落とす。
     """
-    fields = describe.get("fields") if isinstance(describe, dict) else None
-    if not isinstance(fields, list):
-        return []
-    triples: list[tuple[str, str, str]] = []
-    for field in fields:
-        if not isinstance(field, dict):
-            continue
-        relationship_name = field.get("relationshipName")
-        field_name = field.get("name")
-        if (
-            not isinstance(relationship_name, str)
-            or not relationship_name
-            or not isinstance(field_name, str)
-            or not field_name
-        ):
-            continue
-        reference_to = field.get("referenceTo")
-        if not isinstance(reference_to, list) or not reference_to:
-            continue
-        for ref_name in reference_to:
-            if not isinstance(ref_name, str) or not ref_name:
-                continue
-            triples.append((field_name, relationship_name, ref_name))
-    return triples
+    return [
+        (field["name"], field["relationshipName"], ref_name)
+        for field in describe.get("fields", [])
+        if field.get("relationshipName") and field.get("name")
+        for ref_name in field.get("referenceTo") or []
+    ]
 
 
 def _make_overrides_fetcher(
@@ -1506,7 +1394,7 @@ def _fetch_object_cached(
 
 
 def _has_unresolved_columns(
-    column_map: list[dict[str, Any]],
+    column_map: list[dict[str, str]],
     object_reason: str | None,
 ) -> bool:
     """``column_map`` に ``対応フィールドAPI名 == "(不明)"`` の行が **1 つでも**
@@ -1518,15 +1406,7 @@ def _has_unresolved_columns(
     """
     if object_reason:
         return False
-    if not isinstance(column_map, list):
-        return False
-    for row in column_map:
-        if not isinstance(row, dict):
-            continue
-        api = row.get("対応フィールドAPI名")
-        if isinstance(api, str) and api == "(不明)":
-            return True
-    return False
+    return any(row.get("対応フィールドAPI名") == "(不明)" for row in column_map)
 
 
 def _object_key(org: str, object_name: str) -> tuple[str, str]:
@@ -1539,25 +1419,15 @@ def _api_name_from_store(store: DescribeStore, key: tuple[str, str]) -> str | No
     """``(org, object_lower)`` に対応する describe がストアにあれば ``name`` を返す。
     取り直しの API 呼び出しで正しい API 名 （ 大文字小文字そのまま ） を渡すために必要。
     """
-    entry = store.memory_cache.get(key)
-    if entry is not None:
-        describe = entry.get("describe")
-        if isinstance(describe, dict):
-            name = describe.get("name")
-            if isinstance(name, str) and name:
-                return name
-    describe = store.csv_index.get(key)
-    if isinstance(describe, dict):
-        name = describe.get("name")
-        if isinstance(name, str) and name:
-            return name
-    return None
+    entry = store.memory_cache.get(key) or {}
+    describe = entry.get("describe") or store.csv_index.get(key) or {}
+    return describe.get("name") or None
 
 
 def _choose_main(
     client: Any,
     org: str,
-    metadata: dict[str, Any],
+    slim_report: SlimReport,
     store: DescribeStore,
     warnings: list[str],
 ) -> tuple[str | None, dict[str, Any] | None, str | None, set[tuple[str, str]]]:
@@ -1599,9 +1469,7 @@ def _choose_main(
           **CSV から読んだもの** （ 今回 API で取ったものではない ） の
           ``(org, object_lower)`` の集合。 取り直し判定用
     """
-    report_metadata = metadata.get("reportMetadata", {}) if isinstance(metadata, dict) else {}
-    raw_type = report_metadata.get("reportType", {}).get("type", "")
-    object_name = raw_type if isinstance(raw_type, str) else ""
+    object_name = (slim_report["reportMetadata"].get("reportType") or {}).get("type", "")
 
     csv_used_keys: set[tuple[str, str]] = set()
 
@@ -1617,7 +1485,7 @@ def _choose_main(
     # (b) 列キーの先頭から候補。 こちらは「 正常な経路 」 なので WARNING を
     # 直接 ``warnings`` に積む。 ただし (b) で出た WARNING は (a) が全滅
     # してもそのまま残す。
-    candidates_b = _extract_column_key_prefix_candidates(metadata)
+    candidates_b = _extract_column_key_prefix_candidates(slim_report)
     b_warnings: list[str] = []
     for candidate in candidates_b:
         describe = _fetch_object_cached(client, org, candidate, store, b_warnings, csv_used_keys)
@@ -1633,7 +1501,7 @@ def _choose_main(
 
 
 def _extract_column_key_prefix_candidates(
-    metadata: dict[str, Any],
+    slim_report: SlimReport,
     *,
     limit: int = _MAIN_OBJECT_PREFIX_LIMIT,
 ) -> list[str]:
@@ -1651,12 +1519,11 @@ def _extract_column_key_prefix_candidates(
 
     ``_choose_main`` の (b) 段階で主オブジェクトの候補を組み立てるのに使う。
     """
-    report_metadata = metadata.get("reportMetadata", {}) if isinstance(metadata, dict) else {}
-    columns = mapping.collect_describable_columns(report_metadata)
+    columns = mapping.collect_describable_columns(slim_report["reportMetadata"])
     counts: dict[str, int] = {}
     first_seen: dict[str, int] = {}
     for index, column_key in enumerate(columns):
-        if not isinstance(column_key, str) or "." not in column_key:
+        if "." not in column_key:
             continue
         if column_key.startswith("FK_"):
             # ``FK_`` の先は主オブジェクトではなく主からの参照先
