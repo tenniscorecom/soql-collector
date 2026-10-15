@@ -106,10 +106,10 @@ def build_markdown(
     ``None`` のときは 「 似たレポート 」 セクションは 「 なし 」 だけ出す
     """
     metadata = _report_metadata(record)
-    fmt = _format_of(metadata)
+    fmt = metadata.get("reportFormat", "")
     column_map = record.column_map
     column_map_by_key = _column_map_by_key(column_map)
-    detail_columns = _list_of(metadata.get("detailColumns"))
+    detail_columns = metadata.get("detailColumns", [])
 
     parts: list[str] = []
 
@@ -122,9 +122,9 @@ def build_markdown(
     parts.append("")
 
     # ヘッダー （ 5 行のメタ ）
-    parts.append(f"- レポートID: {_text(record.report_id)}")
+    parts.append(f"- レポートID: {record.report_id}")
     parts.append(f"- 主オブジェクト: {_format_main_object(record)}")
-    parts.append(f"- レポート形式: {_text(fmt)}")
+    parts.append(f"- レポート形式: {fmt}")
     parts.append(f"- 2000件超: {_format_row_check(record)}")
     parts.append(f"- 個人情報: {_format_pii(record)}")
     parts.append("")
@@ -148,7 +148,7 @@ def build_markdown(
 
     # 並び順
     parts.append("## 並び順")
-    sort_entries = _build_sort_entries(metadata.get("sortBy"))
+    sort_entries = _build_sort_entries(metadata.get("sortBy", []))
     if sort_entries:
         parts.extend(sort_entries)
     else:
@@ -236,7 +236,7 @@ def _ai_instruction_header() -> str:
 
 
 def _title(record: ReportRecord) -> str:
-    return f"# {_text(record.key)} {_text(record.summary)}"
+    return f"# {record.key} {record.summary}"
 
 
 def _format_main_object(record: ReportRecord) -> str:
@@ -267,7 +267,7 @@ def _format_row_check(record: ReportRecord) -> str:
         return "未実施"
     status = row_check.status or ""
     rows = row_check.rows
-    if status == "超えていない" and isinstance(rows, int):
+    if status == "超えていない" and rows is not None:
         return f"超えていない（{rows}件）"
     return status or "未実施"
 
@@ -283,43 +283,33 @@ def _format_pii(record: ReportRecord) -> str:
 
 
 def _build_correspondence_rows(
-    detail_columns: list[Any],
-    column_map_by_key: dict[str, dict[str, Any]],
+    detail_columns: list[str],
+    column_map_by_key: dict[str, dict[str, str]],
 ) -> list[list[str]]:
     """``detailColumns`` の順に ``(表示名, 使う SOQL 列名, どこから, 候補)`` の行を作る。
 
     使う SOQL 列名はそのまま SOQL に貼れる形 （ ``Owner.Name`` のような
-    ドット記法 ） 。 どこから は 「 自動 」 / 「 人が直した 」 / 「 取れず 」 の
-    3 値で、 ``xlsx`` の 「 列の対応 」 シートと同じ判定。 候補は備考から
-    「 複数候補あり 」 を取り除いたもの。 ``column_map`` に対応が無い列
-    （ 通常起こらないが壊れた record 用に防御 ） は表示名を列キーそのまま、
-    使う SOQL 列名は ``"(不明)"`` にする
+    ドット記法 ） 。 どこから は 「 自動 」 / 「 人が直した 」 / 「 取れず 」 で、
+    ``xlsx`` の 「 列の対応 」 シートと同じ判定。 候補は備考から
+    「 複数候補あり 」 を取り除いたもの。
     """
     rows: list[list[str]] = []
     for col_key in detail_columns:
-        if not isinstance(col_key, str) or not col_key:
-            continue
-        col = column_map_by_key.get(col_key)
-        if not isinstance(col, dict):
-            col = {}
-        label = _coerce_str(col.get("表示名")) or col_key
-        soql = _coerce_str(col.get("対応フィールドAPI名"))
-        note = _coerce_str(col.get("備考"))
+        col = column_map_by_key.get(col_key, {})
+        label = col.get("表示名") or col_key
+        soql = col.get("対応フィールドAPI名", "")
+        note = col.get("備考", "")
         # 使う SOQL 列名は空のときに "(不明)" を見せる。 AI がそのまま貼れる形
-        use_soql = soql if soql else "(不明)"
-        # どこから: 備考に 「 直したSOQL列名 」 があれば 人が直した、 取れていれば
-        # 自動、 取れていないときは 取れず。 xlsx の列の対応シートと一致させる
+        use_soql = soql or "(不明)"
         if "人が直した（要確認: たどれない）" in note:
             where = "人が直した（要確認: たどれない）"
-        elif note and "直したSOQL列名" in note:
+        elif "直したSOQL列名" in note:
             where = "人が直した"
         elif soql and soql != "(不明)":
             where = "自動"
         else:
             where = "取れず"
-        candidates = ""
-        if "複数候補あり" in note:
-            candidates = note.replace("複数候補あり: ", "")
+        candidates = note.replace("複数候補あり: ", "") if "複数候補あり" in note else ""
         rows.append([label, use_soql, where, candidates])
     return rows
 
@@ -337,7 +327,7 @@ def _format_similar(
     ``tables.run_tables`` が出す形式に合わせて、 「 グループN: ... 」 の
     文字列を返す。 ``key`` が無い/該当が無いときは 「 なし 」 にする
     """
-    if not key or not isinstance(similar_lookup, dict):
+    if not key or similar_lookup is None:
         return "なし"
     info = similar_lookup.get(key)
     if info is None:
@@ -369,11 +359,11 @@ def _build_filter_section(
     何も無いときは 「 なし 」 1 行だけにする
     """
     lines: list[str] = []
-    bool_filter = metadata.get("reportBooleanFilter")
-    if isinstance(bool_filter, str) and bool_filter.strip():
+    bool_filter = metadata.get("reportBooleanFilter", "")
+    if bool_filter.strip():
         lines.append(f"組立式: {_inline_code(bool_filter)}")
 
-    filter_rows = _build_filter_rows(metadata.get("reportFilters"), column_map_by_key)
+    filter_rows = _build_filter_rows(metadata.get("reportFilters", []), column_map_by_key)
     if filter_rows:
         lines.append("| 番号 | 表示名 | SOQL列名 | 演算子 | 値 |")
         lines.append("| --- | --- | --- | --- | --- |")
@@ -390,27 +380,24 @@ def _build_filter_section(
 
 
 def _build_filter_rows(
-    report_filters: Any,
-    column_map_by_key: dict[str, dict[str, Any]],
+    report_filters: list[dict[str, Any]],
+    column_map_by_key: dict[str, dict[str, str]],
 ) -> list[list[str]]:
     """``reportFilters`` の各行を ``(番号, 表示名, SOQL列名, 演算子, 値)`` に展開。"""
     rows: list[list[str]] = []
-    if not isinstance(report_filters, list):
-        return rows
     for index, filt in enumerate(report_filters, start=1):
-        if not isinstance(filt, dict):
-            continue
-        col_key = filt.get("column")
-        col_key_text = col_key if isinstance(col_key, str) else ""
-        col = column_map_by_key.get(col_key_text) if col_key_text else None
-        if not isinstance(col, dict):
-            col = {}
-        label = _coerce_str(col.get("表示名")) or col_key_text
-        soql = _coerce_str(col.get("対応フィールドAPI名"))
-        operator = _coerce_str(filt.get("operator"))
+        col_key = filt.get("column", "")
+        col = column_map_by_key.get(col_key, {})
         value = filt.get("value")
-        value_text = "" if value is None else str(value)
-        rows.append([str(index), label, soql, operator, value_text])
+        rows.append(
+            [
+                str(index),
+                col.get("表示名") or col_key,
+                col.get("対応フィールドAPI名", ""),
+                filt.get("operator", ""),
+                "" if value is None else str(value),
+            ]
+        )
     return rows
 
 
@@ -423,11 +410,11 @@ def _build_filter_extras(metadata: dict[str, Any]) -> list[str]:
     lines: list[str] = []
 
     date_filter = metadata.get("standardDateFilter")
-    if isinstance(date_filter, dict) and date_filter:
-        column = _coerce_str(date_filter.get("column"))
-        start = _coerce_str(date_filter.get("startDate"))
-        end = _coerce_str(date_filter.get("endDate"))
-        duration = _coerce_str(date_filter.get("durationValue"))
+    if date_filter:
+        column = date_filter.get("column", "")
+        start = date_filter.get("startDate", "")
+        end = date_filter.get("endDate", "")
+        duration = date_filter.get("durationValue", "")
         range_text = f"{start}〜{end}"
         if duration:
             range_text += f" ({duration})"
@@ -471,21 +458,13 @@ def _build_filter_extras(metadata: dict[str, Any]) -> list[str]:
 # ── 並び順 ─────────────────────────────────────────────────────────────────
 
 
-def _build_sort_entries(sort_by: Any) -> list[str]:
+def _build_sort_entries(sort_by: list[dict[str, Any]]) -> list[str]:
     """``sortBy`` を ``- {sortColumn} {sortOrder}`` の箇条書きにする。"""
-    lines: list[str] = []
-    if not isinstance(sort_by, list):
-        return lines
-    for entry in sort_by:
-        if not isinstance(entry, dict):
-            continue
-        column = _coerce_str(entry.get("sortColumn"))
-        order = _coerce_str(entry.get("sortOrder"))
-        text = column
-        if order:
-            text += f" {order}"
-        lines.append(f"- {text}")
-    return lines
+    return [
+        f"- {entry.get('sortColumn', '')}"
+        + (f" {entry['sortOrder']}" if entry.get("sortOrder") else "")
+        for entry in sort_by
+    ]
 
 
 # ── グループ・集計 ─────────────────────────────────────────────────────────
@@ -499,19 +478,10 @@ def _build_grouping_aggregate_entries(metadata: dict[str, Any]) -> list[str]:
     lines: list[str] = []
 
     for key, label in (("groupingsDown", "行グループ"), ("groupingsAcross", "列グループ")):
-        groupings = metadata.get(key)
-        if isinstance(groupings, list):
-            for grouping in groupings:
-                if not isinstance(grouping, dict):
-                    continue
-                lines.append(f"- {label}: {_format_grouping(grouping)}")
-
-    aggregates = metadata.get("aggregates")
-    if isinstance(aggregates, list):
-        for agg in aggregates:
-            if not isinstance(agg, str):
-                continue
-            lines.append(f"- 集計: {agg}")
+        lines.extend(
+            f"- {label}: {_format_grouping(grouping)}" for grouping in metadata.get(key, [])
+        )
+    lines.extend(f"- 集計: {agg}" for agg in metadata.get("aggregates", []))
 
     buckets = metadata.get("buckets")
     if isinstance(buckets, list):
@@ -547,17 +517,11 @@ def _build_grouping_aggregate_entries(metadata: dict[str, Any]) -> list[str]:
 
 
 def _format_grouping(grouping: dict[str, Any]) -> str:
-    name = _coerce_str(grouping.get("name"))
-    order = _coerce_str(grouping.get("sortOrder"))
-    granularity = _coerce_str(grouping.get("dateGranularity"))
-    detail: list[str] = []
-    if order:
-        detail.append(order)
-    if granularity:
-        detail.append(granularity)
-    if detail:
-        return f"{name} ({', '.join(detail)})"
-    return name
+    detail = [
+        value for value in (grouping.get("sortOrder"), grouping.get("dateGranularity")) if value
+    ]
+    name = grouping.get("name", "")
+    return f"{name} ({', '.join(detail)})" if detail else name
 
 
 # ── 関連オブジェクトの経路 ─────────────────────────────────────────────────
@@ -577,27 +541,16 @@ def _build_used_chain_lines(record: ReportRecord) -> list[str]:
     metadata = _report_metadata(record)
     column_map_by_key = _column_map_by_key(record.column_map)
 
-    used_keys: list[str] = []
-    for col_key in metadata.get("detailColumns") or []:
-        if isinstance(col_key, str) and col_key and col_key not in used_keys:
-            used_keys.append(col_key)
-    report_filters = metadata.get("reportFilters")
-    if isinstance(report_filters, list):
-        for filt in report_filters:
-            if not isinstance(filt, dict):
-                continue
-            col_key = filt.get("column")
-            if isinstance(col_key, str) and col_key and col_key not in used_keys:
-                used_keys.append(col_key)
+    filter_keys = [filt.get("column", "") for filt in metadata.get("reportFilters", [])]
+    used_keys = [
+        key for key in dict.fromkeys(metadata.get("detailColumns", []) + filter_keys) if key
+    ]
 
     rel_edges = _build_relation_edges(record.relations)
 
     chains_by_object: dict[str, list[tuple[str, str]]] = {}
     for col_key in used_keys:
-        col = column_map_by_key.get(col_key)
-        if not isinstance(col, dict):
-            continue
-        soql = _coerce_str(col.get("対応フィールドAPI名"))
+        soql = column_map_by_key.get(col_key, {}).get("対応フィールドAPI名", "")
         if not soql or soql == "(不明)":
             continue
         chain_parts = soql.split(".")[:-1]
@@ -686,17 +639,13 @@ def _build_soql_section(record: ReportRecord) -> list[str]:
     draft = record.soql_draft
     if draft is None:
         return []
-    status = _coerce_str(getattr(draft, "status", "")) or "(不明)"
-    soql = _coerce_str(getattr(draft, "soql", ""))
-    missing = getattr(draft, "missing", ()) or ()
-    checks = getattr(draft, "checks", ()) or ()
 
     lines: list[str] = ["## SOQL の下書き", ""]
-    lines.append(f"状態: {status}")
+    lines.append(f"状態: {draft.status or '(不明)'}")
     lines.append("")
-    if soql:
+    if draft.soql:
         lines.append("```sql")
-        lines.append(soql)
+        lines.append(draft.soql)
         lines.append("```")
         lines.append("")
         lines.append(
@@ -708,18 +657,12 @@ def _build_soql_section(record: ReportRecord) -> list[str]:
         lines.append("SOQL: なし")
     lines.append("")
 
-    if missing:
-        lines.append("作れなかった部分:")
-        lines.append("")
-        for item in missing:
-            lines.append(f"- {item}")
-        lines.append("")
-    if checks:
-        lines.append("要確認:")
-        lines.append("")
-        for item in checks:
-            lines.append(f"- {item}")
-        lines.append("")
+    for heading, items in (("作れなかった部分", draft.missing), ("要確認", draft.checks)):
+        if items:
+            lines.append(f"{heading}:")
+            lines.append("")
+            lines.extend(f"- {item}" for item in items)
+            lines.append("")
     return lines
 
 
@@ -733,18 +676,8 @@ def _build_notes(record: ReportRecord, metadata: dict[str, Any]) -> list[str]:
     """
     notes: list[str] = []
 
-    column_map = record.column_map
-    has_unresolved = False
-    has_multiple = False
-    for col in column_map:
-        if not isinstance(col, dict):
-            continue
-        soql = _coerce_str(col.get("対応フィールドAPI名"))
-        if soql == "(不明)":
-            has_unresolved = True
-        note_text = _coerce_str(col.get("備考"))
-        if "複数候補あり" in note_text:
-            has_multiple = True
+    has_unresolved = any(col["対応フィールドAPI名"] == "(不明)" for col in record.column_map)
+    has_multiple = any("複数候補あり" in col["備考"] for col in record.column_map)
 
     if has_unresolved:
         notes.append("- 取れなかった列がある")
@@ -754,7 +687,7 @@ def _build_notes(record: ReportRecord, metadata: dict[str, Any]) -> list[str]:
     if metadata.get("scope") == _SCOPE_MY:
         notes.append("- スコープが自分のレコード（scope）")
 
-    if isinstance(metadata.get("standardDateFilter"), dict) and metadata.get("standardDateFilter"):
+    if metadata.get("standardDateFilter"):
         notes.append("- 日時の条件はタイムゾーンに注意")
 
     row_check = record.row_check
@@ -765,7 +698,7 @@ def _build_notes(record: ReportRecord, metadata: dict[str, Any]) -> list[str]:
     if isinstance(cross_filters, list) and cross_filters:
         notes.append("- クロスフィルタはサブクエリ")
 
-    if _format_of(metadata) in _AGGREGATE_FORMATS:
+    if metadata.get("reportFormat", "") in _AGGREGATE_FORMATS:
         notes.append("- 集計レポート")
 
     return notes
@@ -775,34 +708,12 @@ def _build_notes(record: ReportRecord, metadata: dict[str, Any]) -> list[str]:
 
 
 def _report_metadata(record: ReportRecord) -> dict[str, Any]:
-    """``record.report.reportMetadata`` を取り出す。 壊れていれば空 dict。
-
-    ``record.report`` は ``_slim_report`` の戻り値で ``dict[str, Any]`` 。
-    壊れた record のために ``dict`` 形だけ確認する
-    """
-    report = record.report if isinstance(record.report, dict) else {}
-    metadata = report.get("reportMetadata")
-    return metadata if isinstance(metadata, dict) else {}
+    """``record.report.reportMetadata``（ 入口で形をそろえてある ）を取り出す。"""
+    return record.report["reportMetadata"]
 
 
-def _format_of(metadata: dict[str, Any]) -> str:
-    value = metadata.get("reportFormat")
-    return value if isinstance(value, str) else ""
-
-
-def _list_of(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
-
-
-def _column_map_by_key(column_map: list[Any]) -> dict[str, dict[str, Any]]:
-    result: dict[str, dict[str, Any]] = {}
-    for col in column_map:
-        if not isinstance(col, dict):
-            continue
-        key = col.get("列キー")
-        if isinstance(key, str) and key:
-            result[key] = col
-    return result
+def _column_map_by_key(column_map: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    return {col["列キー"]: col for col in column_map}
 
 
 def _md_table_row(cells: Sequence[str]) -> str:
@@ -833,28 +744,11 @@ def _inline_code(text: str) -> str:
     return f"`{text}`"
 
 
-def _format_top_rows(top_rows: Any) -> str:
-    """``reportMetadata.topRows`` を ``"10件 Asc"`` のように整形する。
-
-    ``tables._format_top_rows`` と同じ形だが、 Markdown 側でも独立に使うので
-    同じ実装を小さい関数として置く
-    """
-    if not isinstance(top_rows, dict):
-        return _coerce_str(top_rows)
+def _format_top_rows(top_rows: dict[str, Any]) -> str:
+    """``reportMetadata.topRows``（ 入口でそろえてある ）を ``"10件 Asc"`` のように整形する。"""
     parts: list[str] = []
-    row_limit = top_rows.get("rowLimit")
-    if not isinstance(row_limit, bool) and (
-        isinstance(row_limit, int) or (isinstance(row_limit, str) and row_limit)
-    ):
-        parts.append(f"{row_limit}件")
-    direction = top_rows.get("direction")
-    if isinstance(direction, str) and direction:
-        parts.append(direction)
+    if top_rows.get("rowLimit"):
+        parts.append(f"{top_rows['rowLimit']}件")
+    if top_rows.get("direction"):
+        parts.append(top_rows["direction"])
     return " ".join(parts)
-
-
-def _text(value: Any) -> str:
-    """タイトルや箇条書きの値用。 ``None`` を空文字にする。"""
-    if value is None:
-        return ""
-    return str(value)
