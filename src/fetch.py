@@ -509,6 +509,13 @@ def _slim_report(metadata: object) -> SlimReport:
             "rowLimit": _positive_int(top_rows.get("rowLimit")),
         }
 
+    # ``standardDateFilter`` が 「 実質指定なし 」 （ start / end が空で
+    # durationValue が空か ``CUSTOM`` ） なら、 下流に空の日付フィルターが
+    # 流れないようにここでキーごと落とす。 内側では「 無い 」 ものとして
+    # 扱う前提で組まれているので、 個別ガードは足さない
+    if _is_undated_filter(slimmed_metadata.get("standardDateFilter")):
+        slimmed_metadata.pop("standardDateFilter", None)
+
     slimmed_extended = {
         key: {
             column_key: info
@@ -519,6 +526,39 @@ def _slim_report(metadata: object) -> SlimReport:
         if key in REPORT_EXTENDED_METADATA_KEYS and isinstance(value, dict)
     }
     return {"reportMetadata": slimmed_metadata, "reportExtendedMetadata": slimmed_extended}
+
+
+def _is_undated_filter(date_filter: object) -> bool:
+    """``standardDateFilter`` が 「 実質指定なし 」 なら True。
+
+    定義: ``startDate`` と ``endDate`` がどちらも空 （ ``None`` / 空文字 /
+    空白のみ ） で、 かつ ``durationValue`` が空か ``CUSTOM`` （ 大文字小文字
+    無視 ） 。 相対期間 （ ``THIS_YEAR`` / ``LAST_N_DAYS:30`` 等 ） は
+    「 指定あり 」 なので False。 ``date_filter`` が dict で無いときも
+    True （ 「 無かった 」 ものとして扱う ）
+    """
+    if not isinstance(date_filter, dict):
+        return True
+
+    def _is_blank(value: object) -> bool:
+        if value is None:
+            return True
+        if not isinstance(value, str):
+            return True
+        return not value.strip()
+
+    if not _is_blank(date_filter.get("startDate")):
+        return False
+    if not _is_blank(date_filter.get("endDate")):
+        return False
+
+    duration = date_filter.get("durationValue")
+    if isinstance(duration, str):
+        normalized = duration.strip()
+        if not normalized:
+            return True
+        return normalized.upper() == "CUSTOM"
+    return True
 
 
 # 文字列としてそろえる単純な値のキー

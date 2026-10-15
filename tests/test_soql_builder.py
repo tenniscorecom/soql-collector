@@ -1270,6 +1270,57 @@ def test_standard_date_filter_value_with_slash_is_normalized() -> None:
     assert "CloseDate <= 2025-12-31" in draft.soql
 
 
+def test_build_soql_drops_undated_standard_date_filter() -> None:
+    """``_slim_report`` で 「 実質指定なし 」 と判定された ``standardDateFilter`` は
+    SOQL の WHERE に出ず、 ``STATUS_PARTIAL`` にもならない。
+
+    レポート describe と同じ形 （ ``startDate`` / ``endDate`` が ``None`` ） で
+    ``_slim_report`` に通し、 その結果を ``ReportRecord`` に詰めて ``build_soql``
+    を呼ぶ
+    """
+    from src.fetch import _slim_report
+
+    column_map = _column_map_with_types(
+        [
+            ("Name", "Name", "string"),
+            ("CloseDate", "CloseDate", "date"),
+        ]
+    )
+    raw_metadata = {
+        "reportMetadata": {
+            "reportType": {"type": "Opportunity"},
+            "reportFormat": "TABULAR",
+            "detailColumns": ["Name", "CloseDate"],
+            "standardDateFilter": {
+                "column": "CloseDate",
+                "durationValue": "CUSTOM",
+                "startDate": None,
+                "endDate": None,
+            },
+        },
+        "reportExtendedMetadata": {},
+    }
+    slim = _slim_report(raw_metadata)
+    assert "standardDateFilter" not in slim["reportMetadata"]
+
+    record = _make_record(
+        main_object="Opportunity",
+        detail_columns=["Name", "CloseDate"],
+        column_map=column_map,
+        report_metadata=slim["reportMetadata"],
+    )
+    draft = build_soql(record)
+    # 未完成の印が付かない、 ステータスは 「 作成済み 」 か 「 要確認 」 （ ここでは何も警告が無いので 「 作成済み 」 ）
+    assert INCOMPLETE_MARKER not in draft.soql
+    assert draft.status == STATUS_CREATED
+    # 日付条件が WHERE に出ていない。 detail_columns に CloseDate が
+    # 入っているので SELECT には出るが、 日付フィルタ由来の 「>=」 / 「<=」 / 「=」 は出ない
+    assert "CloseDate >=" not in draft.soql
+    assert "CloseDate <=" not in draft.soql
+    assert "CloseDate =" not in draft.soql
+    assert "WHERE" not in draft.soql
+
+
 def test_numeric_value_with_text_goes_to_missing() -> None:
     """数値型に非数値 ( ``abc`` ) を渡したら missing。"""
     column_map = _column_map_with_types([("Amount", "Amount", "currency")])

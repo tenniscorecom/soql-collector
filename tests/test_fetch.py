@@ -1748,6 +1748,219 @@ def test_collect_dropped_keys_empty_when_all_allowed() -> None:
     assert _collect_dropped_keys(metadata) == ()
 
 
+# ── standardDateFilter の 「 実質指定なし 」 落とし ──────────────────────
+
+
+def test_is_undated_filter_recognizes_empty_specs() -> None:
+    """「 実質指定なし 」 の判定: startDate / endDate が空、 durationValue が空か CUSTOM で True。"""
+    from src.fetch import _is_undated_filter
+
+    # startDate / endDate が None
+    assert (
+        _is_undated_filter(
+            {
+                "column": "CLOSE_DATE",
+                "durationValue": "CUSTOM",
+                "startDate": None,
+                "endDate": None,
+            }
+        )
+        is True
+    )
+    # startDate / endDate が空文字
+    assert (
+        _is_undated_filter(
+            {
+                "column": "CLOSE_DATE",
+                "durationValue": "CUSTOM",
+                "startDate": "",
+                "endDate": "",
+            }
+        )
+        is True
+    )
+    # durationValue が空（ 空の column だけ ）
+    assert (
+        _is_undated_filter(
+            {"column": "CLOSE_DATE", "startDate": "", "endDate": ""}
+        )
+        is True
+    )
+    # 空白のみ
+    assert (
+        _is_undated_filter(
+            {
+                "column": "CLOSE_DATE",
+                "durationValue": "  ",
+                "startDate": "  ",
+                "endDate": "  ",
+            }
+        )
+        is True
+    )
+    # dict で無い → 「 無かった 」 ものとして True
+    assert _is_undated_filter(None) is True
+    assert _is_undated_filter("string") is True
+    assert _is_undated_filter([]) is True
+
+
+def test_is_undated_filter_keeps_relative_duration() -> None:
+    """相対期間 （ THIS_YEAR / LAST_N_DAYS:30 等 ） は 「 指定あり 」 なので False。"""
+    from src.fetch import _is_undated_filter
+
+    assert (
+        _is_undated_filter(
+            {
+                "column": "CLOSE_DATE",
+                "durationValue": "THIS_YEAR",
+                "startDate": None,
+                "endDate": None,
+            }
+        )
+        is False
+    )
+    assert (
+        _is_undated_filter(
+            {
+                "column": "CLOSE_DATE",
+                "durationValue": "LAST_N_DAYS:30",
+                "startDate": None,
+                "endDate": None,
+            }
+        )
+        is False
+    )
+    # durationValue の前後空白は無視
+    assert (
+        _is_undated_filter(
+            {
+                "column": "CLOSE_DATE",
+                "durationValue": "  THIS_YEAR  ",
+                "startDate": None,
+                "endDate": None,
+            }
+        )
+        is False
+    )
+
+
+def test_is_undated_filter_keeps_when_one_side_present() -> None:
+    """開始 or 終了のどちらかが入っていれば 「 指定あり 」 で False。"""
+    from src.fetch import _is_undated_filter
+
+    assert (
+        _is_undated_filter(
+            {
+                "column": "CLOSE_DATE",
+                "durationValue": "CUSTOM",
+                "startDate": "2025-01-01",
+                "endDate": None,
+            }
+        )
+        is False
+    )
+    assert (
+        _is_undated_filter(
+            {
+                "column": "CLOSE_DATE",
+                "durationValue": "CUSTOM",
+                "startDate": None,
+                "endDate": "2025-12-31",
+            }
+        )
+        is False
+    )
+
+
+def test_slim_report_drops_undated_standard_date_filter() -> None:
+    """「 実質指定なし 」 の ``standardDateFilter`` は ``_slim_report`` で落ちる。
+
+    実物の describe 戻り値と同じ形 （ ``startDate`` / ``endDate`` が ``None`` ） で
+    確認する
+    """
+    raw_metadata = {
+        "reportMetadata": {
+            "id": "00O5g00000ABCDE",
+            "standardDateFilter": {
+                "column": "CLOSE_DATE",
+                "durationValue": "CUSTOM",
+                "startDate": None,
+                "endDate": None,
+            },
+        },
+        "reportExtendedMetadata": {},
+    }
+    result = _slim_report(raw_metadata)
+    assert "standardDateFilter" not in result["reportMetadata"]
+
+
+def test_slim_report_keeps_relative_standard_date_filter() -> None:
+    """相対期間 （ THIS_YEAR ） の ``standardDateFilter`` は残る。"""
+    raw_metadata = {
+        "reportMetadata": {
+            "id": "00O5g00000ABCDE",
+            "standardDateFilter": {
+                "column": "CLOSE_DATE",
+                "durationValue": "THIS_YEAR",
+                "startDate": None,
+                "endDate": None,
+            },
+        },
+        "reportExtendedMetadata": {},
+    }
+    result = _slim_report(raw_metadata)
+    assert "standardDateFilter" in result["reportMetadata"]
+    assert result["reportMetadata"]["standardDateFilter"]["durationValue"] == "THIS_YEAR"
+
+
+def test_slim_report_keeps_one_sided_standard_date_filter() -> None:
+    """startDate / endDate のどちらかが入っていれば残る。"""
+    start_only = {
+        "reportMetadata": {
+            "id": "00O5g00000ABCDE",
+            "standardDateFilter": {
+                "column": "CLOSE_DATE",
+                "durationValue": "CUSTOM",
+                "startDate": "2025-01-01",
+                "endDate": None,
+            },
+        },
+        "reportExtendedMetadata": {},
+    }
+    end_only = {
+        "reportMetadata": {
+            "id": "00O5g00000ABCDE",
+            "standardDateFilter": {
+                "column": "CLOSE_DATE",
+                "durationValue": "CUSTOM",
+                "startDate": None,
+                "endDate": "2025-12-31",
+            },
+        },
+        "reportExtendedMetadata": {},
+    }
+    assert "standardDateFilter" in _slim_report(start_only)["reportMetadata"]
+    assert "standardDateFilter" in _slim_report(end_only)["reportMetadata"]
+
+
+def test_slim_report_drops_when_only_column_present() -> None:
+    """``column`` だけ入って他が全部空 （ 典型的には UI の 「 クリア 」 跡 ） も「 実質指定なし 」 として落ちる。"""
+    raw_metadata = {
+        "reportMetadata": {
+            "id": "00O5g00000ABCDE",
+            "standardDateFilter": {
+                "column": "CLOSE_DATE",
+                "durationValue": "",
+                "startDate": "",
+                "endDate": "",
+            },
+        },
+        "reportExtendedMetadata": {},
+    }
+    result = _slim_report(raw_metadata)
+    assert "standardDateFilter" not in result["reportMetadata"]
+
+
 # ── _slim_object ──────────────────────────────────────────────────────────
 
 
