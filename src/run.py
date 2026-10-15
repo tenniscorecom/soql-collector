@@ -9,7 +9,7 @@ describe を取って ``ReportRecord`` に詰める。 その record の一覧�
 
 - 0 … 全件成功
 - 1 … 1 件以上のレポートが失敗した
-- 2 … 引数が付いた / 管理表に「有効」が ○ の行が無い
+- 2 … 引数が付いた / 管理表に「有効」が ○ の行が無い / config の値が不正
 
 `main.py` はこの ``run()`` の戻り値を ``SystemExit`` に流す。
 
@@ -27,26 +27,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from comken import config
-from comken.exceptions import CSVError
+from comken.exceptions import ExcelError
 from comken.runtime import is_dry_run
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src import column_map_csv, pii
-from src.fetch import (
-    RELATED_DEPTH,
-    RELATED_MAX,
-    ROW_LIMIT_ENABLED,
-    run_fetch,
-)
+from src import column_fix_xlsx, pii
+from src.config_defaults import AppConfig, ConfigValueError
+from src.fetch import run_fetch
 from src.master import MasterEntry, filter_enabled, read_master
 from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
 
-# 似たレポート判定で 「 近い 」 とみなす出力列の Jaccard 類似度の下限。
-# 0.0 〜 1.0 の範囲。 値を下げると より多くのレポートが 「 近い 」 になる
-SIMILAR_COLUMN_SIMILARITY = 0.8
 
 # ``run_fetch`` の ``site_for`` と同じ型（ テストで差し替えるため ）
 SiteFor = Callable[[str], type]
@@ -54,34 +46,38 @@ SiteFor = Callable[[str], type]
 
 @dataclass(frozen=True)
 class FilePaths:
-    """``config.ini [FILES]`` から読む 4 つのパス。"""
+    """``config.ini [FILES]`` から読むパス。 旧 ``COLUMN_MAP_CSV_PATH`` は
+    互換のため受け取るが、 中身は ``column_fix_xlsx_path`` として保持する。
+    """
 
     master_xlsx_path: Path
     output_dir: Path
     describe_csv_path: Path
-    column_map_csv_path: Path
+    column_fix_xlsx_path: Path
+    xlsx_name: str
+    markdown_dir: str
+    diagram_dir: str
 
 
 def read_file_paths() -> FilePaths:
-    """``config.ini [FILES]`` から 4 つのパスを ``FilePaths`` として読む。
+    """``config.ini [FILES]`` からパスを ``FilePaths`` として読む。
 
-    4 つのキー ``MASTER_XLSX_PATH`` / ``OUTPUT_DIR`` / ``DESCRIBE_CSV_PATH`` /
-    ``COLUMN_MAP_CSV_PATH`` は **すべて必須** 。 どれか 1 つでも config.ini に
-    無ければ comken が ``ConfigKeyNotFoundError`` を上げる （ メッセージに
-    キー名が入る ） 。
-
-    値の変換や既定値の補完は一切しない。 ``FilePaths`` はテストでパスを
-    差し替えるための入れ物として用意しているだけで、 ここでの加工はしない。
-
-    旧 config.ini に ``[LIMITS]`` / ``[SF]`` / ``[CHECKS]`` / ``[PII]`` /
-    ``[SIMILAR]`` などのセクションが残っていても、 ここでは読まないので
-    エラーにならない。
+    キーが無いときは ``config_defaults.DEFAULT_*`` の値を使う。
+    値は ``str`` のまま保持する。
     """
+    try:
+        app = AppConfig.load()
+    except ConfigValueError as exc:
+        logger.error("%s", exc)
+        raise
     return FilePaths(
-        master_xlsx_path=config.FILES.MASTER_XLSX_PATH,
-        output_dir=config.FILES.OUTPUT_DIR,
-        describe_csv_path=config.FILES.DESCRIBE_CSV_PATH,
-        column_map_csv_path=config.FILES.COLUMN_MAP_CSV_PATH,
+        master_xlsx_path=Path(app.files.master_xlsx_path),
+        output_dir=Path(app.files.output_dir),
+        describe_csv_path=Path(app.files.describe_csv_path),
+        column_fix_xlsx_path=Path(app.files.column_fix_xlsx_path),
+        xlsx_name=app.files.xlsx_name,
+        markdown_dir=app.files.markdown_dir,
+        diagram_dir=app.files.diagram_dir,
     )
 
 
@@ -103,7 +99,7 @@ def run(
     Returns:
         0 … 全件成功
         1 … 失敗した ID が 1 件以上ある
-        2 … 引数が付いた / 管理表に「有効」が ○ の行が無い
+        2 … 引数が付いた / 管理表に「有効」が ○ の行が無い / config の値が不正
     """
     if argv is None:
         argv = sys.argv[1:]
@@ -112,7 +108,16 @@ def run(
         return 2
 
     if file_paths is None:
-        file_paths = read_file_paths()
+        try:
+            file_paths = read_file_paths()
+        except ConfigValueError:
+            return 2
+
+    # アプリ全体設定
+    try:
+        app = AppConfig.load()
+    except ConfigValueError:
+        return 2
 
     all_entries = read_master(file_paths.master_xlsx_path)
     entries = filter_enabled(all_entries)
@@ -120,15 +125,16 @@ def run(
     total_count = len(all_entries)
 
     logger.info(
-        "取得開始: 管理表=%s 全行数=%d 有効=%d 出力先=%s"
-        " RELATED_DEPTH=%d RELATED_MAX=%d ROW_LIMIT=%s",
+        "取得開始: 管理表=%s 全行数=%d 有効=%d 出力先=%s "
+        "RELATED_DEPTH=%d RELATED_MAX=%d ROW_LIMIT=%s SIMILAR=%.2f",
         file_paths.master_xlsx_path,
         total_count,
         enabled_count,
         file_paths.output_dir,
-        RELATED_DEPTH,
-        RELATED_MAX,
-        "○" if ROW_LIMIT_ENABLED else "×",
+        app.survey.related_depth,
+        app.survey.related_max,
+        "○" if app.survey.row_limit_enabled else "×",
+        app.survey.similar_column_threshold,
     )
 
     if is_dry_run():
@@ -139,14 +145,27 @@ def run(
         logger.error("管理表に『有効』が ○ の行がありません")
         return 2
 
-    # 人が手で見比べる ``列の対応.csv`` を 1 回の実行の最初に読む。
-    # 見出し違いなら ``CSVError`` で止める （ 出力物に壊せない位置 ） 。
+    # ``列の直し.xlsx`` を 1 回の実行の最初に読む。
+    # 見出し違いなら ``ExcelError`` で止める （ 出力物に壊せない位置 ） 。
     # ファイルが無いときは空 dict （ 新規扱い ） 。
+    column_fix_path = file_paths.column_fix_xlsx_path
     try:
-        column_map_overrides = column_map_csv.load_column_map(file_paths.column_map_csv_path)
-    except CSVError as exc:
+        column_fix_overrides = column_fix_xlsx.load_column_fix(column_fix_path)
+    except ExcelError as exc:
         logger.error("%s", exc)
         return 2
+
+    # 旧 ``data/列の対応.csv`` からの移行
+    legacy_csv_path = file_paths.describe_csv_path.parent / "列の対応.csv"
+    if not column_fix_path.exists() and legacy_csv_path.exists():
+        legacy_rows = column_fix_xlsx.migrate_legacy_csv(legacy_csv_path)
+        if legacy_rows:
+            # 既存の dict にマージ
+            column_fix_overrides = {**column_fix_overrides, **legacy_rows}
+            logger.info(
+                "旧 data/列の対応.csv から %d 件の人の入力を引き継ぎました",
+                len(legacy_rows),
+            )
 
     # レポートの取得 （ 同じ実行内で ``describe_object`` を 1 回にまとめる ）
     started_at = time.perf_counter()
@@ -157,16 +176,16 @@ def run(
     outcomes = list(
         run_fetch(
             entries,
-            related_depth=RELATED_DEPTH,
-            related_max=RELATED_MAX,
-            row_limit=ROW_LIMIT_ENABLED,
-            pii_keywords=pii.DEFAULT_KEYWORDS,
-            pii_person_objects=pii.DEFAULT_PERSON_OBJECTS,
+            related_depth=app.survey.related_depth,
+            related_max=app.survey.related_max,
+            row_limit=app.survey.row_limit_enabled,
+            pii_keywords=app.pii.keywords,
+            pii_person_objects=app.pii.person_objects,
             describe_csv_path=file_paths.describe_csv_path,
             site_for=site_for,
             describe_store=describe_store,
             refresh_set=refresh_set,
-            column_map_overrides=column_map_overrides,
+            column_fix_overrides=column_fix_overrides,
         )
     )
     total_elapsed = time.perf_counter() - started_at
@@ -191,8 +210,8 @@ def run(
     # 既存も消さない。
     records = [o.record for o in outcomes if o.record is not None]
     pii_config = pii.PIIConfig(
-        keywords=pii.DEFAULT_KEYWORDS,
-        person_objects=pii.DEFAULT_PERSON_OBJECTS,
+        keywords=app.pii.keywords,
+        person_objects=app.pii.person_objects,
     )
     try:
         run_tables(
@@ -200,19 +219,20 @@ def run(
             records,
             only_keys=ok_keys,
             pii_config=pii_config,
-            similar_threshold=SIMILAR_COLUMN_SIMILARITY,
+            similar_threshold=app.survey.similar_column_threshold,
+            xlsx_name=file_paths.xlsx_name,
         )
     except Exception as exc:
         # CSV の失敗は全体の失敗にはしない （ record は取れているので ）
         logger.error("CSV の生成に失敗しました: %s", exc)
 
-    # ``列の対応.csv`` を最後に 1 回書く （ 人が入れた値を壊さない ）。
-    # PermissionError 等は ``merge_and_write`` 内で WARNING だけになり、 処理は続く
-    column_map_csv._merge_and_write_after_run(
-        path=file_paths.column_map_csv_path,
-        existing=column_map_overrides,
+    # ``列の直し.xlsx`` を最後に 1 回書く （ 人が入れた値を壊さない ）。
+    # PermissionError 等は ``_merge_and_write_after_run`` 内で WARNING だけになり、 処理は続く
+    column_fix_xlsx._merge_and_write_after_run(
+        path=column_fix_path,
+        existing=column_fix_overrides,
         records=records,
-        today=column_map_csv.today_local(),
+        today=column_fix_xlsx.today_local(),
     )
 
     return 1 if failed_count else 0

@@ -307,18 +307,22 @@ def _write_output_csv(path, results: list[tuple[str, dict]]) -> None:
 
 
 def _read_trial_file_paths() -> FilePaths:
-    """trial 用の ``FilePaths`` を読む。 必須キー無ければ ``ConfigKeyNotFoundError``。
-
-    ``src/run.py`` の ``read_file_paths()`` と同じ解決で、 4 つのキーを
-    ``config.ini [FILES]`` からそのまま読む。 既定値の補完はしない。
+    """trial 用の ``FilePaths`` を読む。 キーが無いときは ``config_defaults`` の
+    既定値で埋める。
     """
-    from comken import config
+    from pathlib import Path
 
+    from src.config_defaults import AppConfig
+
+    app = AppConfig.load()
     return FilePaths(
-        master_xlsx_path=config.FILES.MASTER_XLSX_PATH,
-        output_dir=config.FILES.OUTPUT_DIR,
-        describe_csv_path=config.FILES.DESCRIBE_CSV_PATH,
-        column_map_csv_path=config.FILES.COLUMN_MAP_CSV_PATH,
+        master_xlsx_path=Path(app.files.master_xlsx_path),
+        output_dir=Path(app.files.output_dir),
+        describe_csv_path=Path(app.files.describe_csv_path),
+        column_fix_xlsx_path=Path(app.files.column_fix_xlsx_path),
+        xlsx_name=app.files.xlsx_name,
+        markdown_dir=app.files.markdown_dir,
+        diagram_dir=app.files.diagram_dir,
     )
 
 

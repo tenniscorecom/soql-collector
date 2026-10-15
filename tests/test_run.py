@@ -80,7 +80,10 @@ def _make_file_paths(tmp_path: Path, master: Path) -> Any:
         master_xlsx_path=master,
         output_dir=tmp_path / "output",
         describe_csv_path=tmp_path / "describe.csv",
-        column_map_csv_path=tmp_path / "column_map.csv",
+        column_fix_xlsx_path=tmp_path / "column_fix.xlsx",
+        xlsx_name="SOQL調査.xlsx",
+        markdown_dir="SOQL資料",
+        diagram_dir="関係図",
     )
 
 
@@ -271,7 +274,7 @@ def test_run_filters_disabled_rows(
         site_for=None,
         describe_store=None,
         refresh_set=None,
-        column_map_overrides=None,
+        column_fix_overrides=None,
     ):
         captured_keys.extend(entry.key for entry in entries)
         outcomes = []
@@ -425,7 +428,7 @@ def test_run_writes_jsons_and_csvs(
         site_for=None,
         describe_store=None,
         refresh_set=None,
-        column_map_overrides=None,
+        column_fix_overrides=None,
     ):
         outcomes = []
         for entry in entries:
@@ -504,7 +507,7 @@ def test_run_partial_failure_continues_and_returns_1(
         site_for=None,
         describe_store=None,
         refresh_set=None,
-        column_map_overrides=None,
+        column_fix_overrides=None,
     ):
         rec = RecordStub(key=entries[0].key, summary="", report_id="00O", url=entries[0].url)
         return [

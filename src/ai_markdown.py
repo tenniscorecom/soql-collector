@@ -42,7 +42,12 @@ _AGGREGATE_FORMATS: frozenset[str] = frozenset({"SUMMARY", "MATRIX"})
 _SCOPE_MY = "my"
 
 
-def write_ai_markdowns(output_dir: Any, records: Sequence[Any]) -> tuple[Any, ...]:
+def write_ai_markdowns(
+    output_dir: Any,
+    records: Sequence[Any],
+    *,
+    similar_lookup: dict[str, tuple[int, str, str]] | None = None,
+) -> tuple[Any, ...]:
     """``records`` の各 ``ReportRecord`` について
     ``output_dir/SOQL資料/{key}.md`` を書く。
 
@@ -56,7 +61,7 @@ def write_ai_markdowns(output_dir: Any, records: Sequence[Any]) -> tuple[Any, ..
     for record in records:
         if record is None:
             continue
-        path = write_ai_markdown(target_dir, record)
+        path = write_ai_markdown(target_dir, record, similar_lookup=similar_lookup)
         if path is not None:
             wrote.append(path)
     if wrote:
@@ -64,18 +69,27 @@ def write_ai_markdowns(output_dir: Any, records: Sequence[Any]) -> tuple[Any, ..
     return tuple(wrote)
 
 
-def write_ai_markdown(target_dir: Any, record: Any) -> Any | None:
+def write_ai_markdown(
+    target_dir: Any,
+    record: Any,
+    *,
+    similar_lookup: dict[str, tuple[int, str, str]] | None = None,
+) -> Any | None:
     """1 record ぶんの Markdown を ``target_dir/{key}.md`` に書く。"""
     key = getattr(record, "key", "")
     if not isinstance(key, str) or not key:
         return None
     path = target_dir / f"{key}.md"
-    content = build_markdown(record)
+    content = build_markdown(record, similar_lookup=similar_lookup)
     path.write_text(content, encoding=_ENCODING, newline=_NEWLINE)
     return path
 
 
-def build_markdown(record: Any) -> str:
+def build_markdown(
+    record: Any,
+    *,
+    similar_lookup: dict[str, tuple[int, str, str]] | None = None,
+) -> str:
     """1 record ぶんの Markdown 文字列を組み立てる （ 純粋関数 ） 。
 
     ``record`` は ``ReportRecord`` 互換 （ ``key`` / ``summary`` /
@@ -84,6 +98,10 @@ def build_markdown(record: Any) -> str:
     属性が無いものは空として扱うので、 壊れた record でも ``AttributeError``
     で落ちない。 個人情報やレポート行データは **列の定義・条件の値だけ** で、
     レポートの行データは載せない
+
+    ``similar_lookup`` は ``{管理番号: (group_number, base_key, integration)}`` 。
+    ``tables.run_tables`` が ``similar.find_similar_groups`` の結果から組み立てる。
+    ``None`` のときは 「 似たレポート 」 セクションは 「 なし 」 だけ出す
     """
     metadata = _report_metadata(record)
     fmt = _format_of(metadata)
@@ -92,6 +110,10 @@ def build_markdown(record: Any) -> str:
     detail_columns = _list_of(metadata.get("detailColumns"))
 
     parts: list[str] = []
+
+    # AI への案内: 先頭で必ず伝える
+    parts.append(_ai_instruction_header())
+    parts.append("")
 
     # タイトル
     parts.append(_title(record))
@@ -105,13 +127,13 @@ def build_markdown(record: Any) -> str:
     parts.append(f"- 個人情報: {_format_pii(record)}")
     parts.append("")
 
-    # 出力する列
-    parts.append("## 出力する列")
-    output_rows = _build_output_rows(detail_columns, column_map_by_key)
-    if output_rows:
-        parts.append("| 表示名 | SOQL列名 | 型 | 備考 |")
+    # 列の対応
+    parts.append("## 列の対応")
+    correspondence_rows = _build_correspondence_rows(detail_columns, column_map_by_key)
+    if correspondence_rows:
+        parts.append("| 表示名 | 使う SOQL 列名 | どこから | 候補 |")
         parts.append("| --- | --- | --- | --- |")
-        for row in output_rows:
+        for row in correspondence_rows:
             parts.append(_md_table_row(row))
     else:
         parts.append("なし")
@@ -151,6 +173,22 @@ def build_markdown(record: Any) -> str:
         parts.append("なし")
     parts.append("")
 
+    # 似たレポート
+    parts.append("## 似たレポート")
+    similar_text = _format_similar(similar_lookup, key=str(getattr(record, "key", "")))
+    parts.append(similar_text)
+    parts.append("")
+
+    # 警告
+    parts.append("## 警告")
+    warning_lines = _build_warning_lines(record)
+    if warning_lines:
+        for line in warning_lines:
+            parts.append(f"- {line}")
+    else:
+        parts.append("なし")
+    parts.append("")
+
     # 関係図ファイルへの相対リンクと、 字下げ版のツリーを添える
     diagram_tree = relation_diagram.render_inline_tree_for_record(record)
     if diagram_tree:
@@ -181,6 +219,18 @@ def build_markdown(record: Any) -> str:
 
 
 # ── ヘッダー行の整形 ───────────────────────────────────────────────────────
+
+
+def _ai_instruction_header() -> str:
+    """ファイル先頭に置く、 AI への案内文。
+
+    この Markdown を丸ごと AI に貼って、 SOQL の下書きを直してもらうための
+    1 行メッセージ。 先頭から変える必要があるので、 専用関数にしておく
+    """
+    return (
+        "> このファイルを丸ごと AI に貼ってください。"
+        "SOQL の下書きを、下の資料と照らして直すよう頼みます。"
+    )
 
 
 def _title(record: Any) -> str:
@@ -229,17 +279,21 @@ def _format_pii(record: Any) -> str:
     return status
 
 
-# ── 出力する列 ─────────────────────────────────────────────────────────────
+# ── 列の対応 ───────────────────────────────────────────────────────────────
 
 
-def _build_output_rows(
+def _build_correspondence_rows(
     detail_columns: list[Any],
     column_map_by_key: dict[str, dict[str, Any]],
 ) -> list[list[str]]:
-    """``detailColumns`` の順に ``(表示名, SOQL列名, 型, 備考)`` の行を作る。
+    """``detailColumns`` の順に ``(表示名, 使う SOQL 列名, どこから, 候補)`` の行を作る。
 
-    ``column_map`` に対応が無い列 （ 通常起こらないが壊れた record 用に防御 ）
-    は表示名を列キーそのまま、 SOQL列名は ``"(不明)"`` にする
+    使う SOQL 列名はそのまま SOQL に貼れる形 （ ``Owner.Name`` のような
+    ドット記法 ） 。 どこから は 「 自動 」 / 「 人が直した 」 / 「 取れず 」 の
+    3 値で、 ``xlsx`` の 「 列の対応 」 シートと同じ判定。 候補は備考から
+    「 複数候補あり 」 を取り除いたもの。 ``column_map`` に対応が無い列
+    （ 通常起こらないが壊れた record 用に防御 ） は表示名を列キーそのまま、
+    使う SOQL 列名は ``"(不明)"`` にする
     """
     rows: list[list[str]] = []
     for col_key in detail_columns:
@@ -249,11 +303,60 @@ def _build_output_rows(
         if not isinstance(col, dict):
             col = {}
         label = _coerce_str(col.get("表示名")) or col_key
-        soql = _coerce_str(col.get("対応フィールドAPI名")) or "(不明)"
-        field_type = _coerce_str(col.get("型"))
+        soql = _coerce_str(col.get("対応フィールドAPI名"))
         note = _coerce_str(col.get("備考"))
-        rows.append([label, soql, field_type, note])
+        # 使う SOQL 列名は空のときに "(不明)" を見せる。 AI がそのまま貼れる形
+        use_soql = soql if soql else "(不明)"
+        # どこから: 備考に 「 直したSOQL列名 」 があれば 人が直した、 取れていれば
+        # 自動、 取れていないときは 取れず。 xlsx の列の対応シートと一致させる
+        if "人が直した（要確認: たどれない）" in note:
+            where = "人が直した（要確認: たどれない）"
+        elif note and "直したSOQL列名" in note:
+            where = "人が直した"
+        elif soql and soql != "(不明)":
+            where = "自動"
+        else:
+            where = "取れず"
+        candidates = ""
+        if "複数候補あり" in note:
+            candidates = note.replace("複数候補あり: ", "")
+        rows.append([label, use_soql, where, candidates])
     return rows
+
+
+# ── 似たレポート ───────────────────────────────────────────────────────────
+
+
+def _format_similar(
+    similar_lookup: dict[str, tuple[int, str, str]] | None,
+    *,
+    key: str,
+) -> str:
+    """``similar_lookup`` のこの record 分の情報を 1 行にまとめる。
+
+    ``tables.run_tables`` が出す形式に合わせて、 「 グループN: ... 」 の
+    文字列を返す。 ``key`` が無い/該当が無いときは 「 なし 」 にする
+    """
+    if not key or not isinstance(similar_lookup, dict):
+        return "なし"
+    info = similar_lookup.get(key)
+    if info is None:
+        return "なし"
+    group_number, base_key, _integration = info
+    if base_key == key:
+        return f"グループ{group_number}: {key} が基準"
+    return f"グループ{group_number}: {base_key} が基準・{key} 違い"
+
+
+# ── 警告 ────────────────────────────────────────────────────────────────────
+
+
+def _build_warning_lines(record: Any) -> list[str]:
+    """``record.warnings`` の各警告を 1 行ずつ取り出す。 空 / 無いときは空リスト"""
+    raw = getattr(record, "warnings", ()) or ()
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(w) for w in raw if isinstance(w, str) and w]
 
 
 # ── 絞り込み ───────────────────────────────────────────────────────────────

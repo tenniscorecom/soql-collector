@@ -71,15 +71,15 @@ def _build_master_with_rows(path: Path, rows: list[tuple[str, str, str, str]]) -
 
 
 def _write_ini(tmp_path: Path, master: Path) -> None:
-    """テスト用 ``config.ini`` を ``tmp_path`` に書く。 ``[FILES]`` の 4 つの
-    キーはすべて必須なので、 このヘルパでは 4 つ全部を書く。
+    """テスト用 ``config.ini`` を ``tmp_path`` に書く。 7 つのキーは省略可
+    （ ``config_defaults`` の既定値） だが、 テストでは全て書く。
     """
     (tmp_path / "config.ini").write_text(
         "[FILES]\n"
         f"MASTER_XLSX_PATH = {master.name}\n"
         "OUTPUT_DIR = ./output\n"
         "DESCRIBE_CSV_PATH = ./data/項目定義.csv\n"
-        "COLUMN_MAP_CSV_PATH = ./data/列の対応.csv\n",
+        "COLUMN_FIX_XLSX_PATH = ./input/列の直し.xlsx\n",
         encoding="utf-8",
     )
 
@@ -120,7 +120,10 @@ def _patch_read_file_paths(
             master_xlsx_path=_patched_master_path(cfg, project_root),
             output_dir=_path_from_cfg(cfg, "OUTPUT_DIR", project_root),
             describe_csv_path=_path_from_cfg(cfg, "DESCRIBE_CSV_PATH", project_root),
-            column_map_csv_path=_path_from_cfg(cfg, "COLUMN_MAP_CSV_PATH", project_root),
+            column_fix_xlsx_path=_path_from_cfg(cfg, "COLUMN_FIX_XLSX_PATH", project_root),
+            xlsx_name="SOQL調査.xlsx",
+            markdown_dir="SOQL資料",
+            diagram_dir="関係図",
         )
 
     monkeypatch.setattr(module, "_read_trial_file_paths", patched)

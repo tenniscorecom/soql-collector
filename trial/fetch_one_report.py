@@ -22,14 +22,13 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 from src import pii
+from src.config_defaults import DEFAULT_SIMILAR_COLUMN_THRESHOLD
 from src.fetch import run_fetch
 from src.master import MasterEntry
-from src.run import (
-    SIMILAR_COLUMN_SIMILARITY,
-    FilePaths,
-)
+from src.run import FilePaths
 from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
@@ -71,7 +70,10 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
         master_xlsx_path=base_paths.master_xlsx_path,
         output_dir=single_output_dir,
         describe_csv_path=base_paths.describe_csv_path,
-        column_map_csv_path=base_paths.column_map_csv_path,
+        column_fix_xlsx_path=base_paths.column_fix_xlsx_path,
+        xlsx_name=base_paths.xlsx_name,
+        markdown_dir=base_paths.markdown_dir,
+        diagram_dir=base_paths.diagram_dir,
     )
 
     entry = MasterEntry(key=args.key, summary="単品サンプル", url=args.url, enabled=True)
@@ -111,7 +113,8 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
                     keywords=pii.DEFAULT_KEYWORDS,
                     person_objects=pii.DEFAULT_PERSON_OBJECTS,
                 ),
-                similar_threshold=SIMILAR_COLUMN_SIMILARITY,
+                similar_threshold=DEFAULT_SIMILAR_COLUMN_THRESHOLD,
+                xlsx_name=file_paths.xlsx_name,
             )
         except Exception as exc:
             logger.error("CSV の生成に失敗しました: %s", exc)
@@ -120,18 +123,20 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
 
 
 def _read_trial_file_paths() -> FilePaths:
-    """trial 用の ``FilePaths`` を読む。 必須キー無ければ ``ConfigKeyNotFoundError``。
-
-    ``src/run.py`` の ``read_file_paths()`` と同じ解決で、 4 つのキーを
-    ``config.ini [FILES]`` からそのまま読む。 既定値の補完はしない。
+    """trial 用の ``FilePaths`` を読む。 キーが無いときは ``config_defaults`` の
+    既定値で埋める。
     """
-    from comken import config
+    from src.config_defaults import AppConfig
 
+    app = AppConfig.load()
     return FilePaths(
-        master_xlsx_path=config.FILES.MASTER_XLSX_PATH,
-        output_dir=config.FILES.OUTPUT_DIR,
-        describe_csv_path=config.FILES.DESCRIBE_CSV_PATH,
-        column_map_csv_path=config.FILES.COLUMN_MAP_CSV_PATH,
+        master_xlsx_path=Path(app.files.master_xlsx_path),
+        output_dir=Path(app.files.output_dir),
+        describe_csv_path=Path(app.files.describe_csv_path),
+        column_fix_xlsx_path=Path(app.files.column_fix_xlsx_path),
+        xlsx_name=app.files.xlsx_name,
+        markdown_dir=app.files.markdown_dir,
+        diagram_dir=app.files.diagram_dir,
     )
 
 

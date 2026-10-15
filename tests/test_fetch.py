@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from comken.exceptions import SalesforceRequestError
 
-from src.column_map_csv import ColumnMapRow
+from src.column_fix_xlsx import ColumnFixRow as ColumnMapRow
 from src.describe_store import DescribeStore
 from src.fetch import (
     _fetch_object_cached,
@@ -2384,15 +2384,18 @@ def _path_owner_metadata() -> dict:
 
 
 def _path_owner_overrides() -> dict[tuple[str, str], ColumnMapRow]:
-    """人が ``列の対応.csv`` に書いた ``Account.Owner.Name``。"""
+    """人が ``列の直し.xlsx`` に書いた ``Account.Owner.Name``。"""
     return {
         ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
+            status="OK",
             main_object="Opportunity",
-            column_key="Opp.Account.Owner",
             display_name="所有者",
-            soql_name="Account.Owner.Name",
+            column_key="Opp.Account.Owner",
+            auto_soql_name="",
+            candidates="",
+            fixed_soql_name="Account.Owner.Name",
             note="",
-            report_count=0,
+            used_in_reports="",
             updated_at="",
         ),
     }
@@ -2422,7 +2425,7 @@ def test_run_fetch_fetches_missing_object_along_user_path(tmp_path: Path) -> Non
         [entry],
         site_for=site_for,
         describe_store=store,
-        column_map_overrides=_path_owner_overrides(),
+        column_fix_overrides=_path_owner_overrides(),
         **_settings(tmp_path),
     )
 
@@ -2466,7 +2469,7 @@ def test_run_fetch_caches_fetched_user_across_reports(tmp_path: Path) -> None:
         [entry1, entry2],
         site_for=site_for,
         describe_store=store,
-        column_map_overrides=_path_owner_overrides(),
+        column_fix_overrides=_path_owner_overrides(),
         **_settings(tmp_path),
     )
 
@@ -2508,7 +2511,7 @@ def test_run_fetch_uses_describe_csv_cache_for_user(tmp_path: Path) -> None:
         [entry],
         site_for=site_for,
         describe_store=store,
-        column_map_overrides=_path_owner_overrides(),
+        column_fix_overrides=_path_owner_overrides(),
         **_settings(tmp_path),
     )
 
@@ -2555,12 +2558,15 @@ def test_run_fetch_typo_in_path_warns_with_candidates(tmp_path: Path) -> None:
 
     overrides = {
         ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
+            status="OK",
             main_object="Opportunity",
-            column_key="Opp.Account.Owner",
             display_name="所有者",
-            soql_name="Account.Ownr.Name",  # 打ち間違い
+            column_key="Opp.Account.Owner",
+            auto_soql_name="",
+            candidates="",
+            fixed_soql_name="Account.Ownr.Name",  # 打ち間違い
             note="",
-            report_count=0,
+            used_in_reports="",
             updated_at="",
         ),
     }
@@ -2569,7 +2575,7 @@ def test_run_fetch_typo_in_path_warns_with_candidates(tmp_path: Path) -> None:
         [entry],
         site_for=site_for,
         describe_store=store,
-        column_map_overrides=overrides,
+        column_fix_overrides=overrides,
         **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
@@ -2605,7 +2611,7 @@ def test_run_fetch_path_fetch_404_warns_and_record_ok(tmp_path: Path) -> None:
         [entry],
         site_for=site_for,
         describe_store=store,
-        column_map_overrides=_path_owner_overrides(),
+        column_fix_overrides=_path_owner_overrides(),
         **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
@@ -2641,7 +2647,7 @@ def test_run_fetch_path_fetch_401_marks_report_failed(tmp_path: Path) -> None:
         [entry],
         site_for=site_for,
         describe_store=store,
-        column_map_overrides=_path_owner_overrides(),
+        column_fix_overrides=_path_owner_overrides(),
         **_settings(tmp_path),
     )
 
@@ -2693,12 +2699,15 @@ def test_run_fetch_handles_polymorphic_what(tmp_path: Path) -> None:
 
     overrides = {
         ("opportunity", "Opp.What"): ColumnMapRow(
+            status="OK",
             main_object="Opportunity",
-            column_key="Opp.What",
             display_name="What",
-            soql_name="What.Name",
+            column_key="Opp.What",
+            auto_soql_name="",
+            candidates="",
+            fixed_soql_name="What.Name",
             note="",
-            report_count=0,
+            used_in_reports="",
             updated_at="",
         ),
     }
@@ -2707,7 +2716,7 @@ def test_run_fetch_handles_polymorphic_what(tmp_path: Path) -> None:
         [entry],
         site_for=site_for,
         describe_store=store,
-        column_map_overrides=overrides,
+        column_fix_overrides=overrides,
         **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
@@ -2741,12 +2750,15 @@ def test_run_fetch_path_too_long_warns(tmp_path: Path) -> None:
 
     overrides = {
         ("opportunity", "Opp.A.B.C.D.E.F"): ColumnMapRow(
+            status="OK",
             main_object="Opportunity",
-            column_key="Opp.A.B.C.D.E.F",
             display_name="deep",
-            soql_name="A.B.C.D.E.F",
+            column_key="Opp.A.B.C.D.E.F",
+            auto_soql_name="",
+            candidates="",
+            fixed_soql_name="A.B.C.D.E.F",
             note="",
-            report_count=0,
+            used_in_reports="",
             updated_at="",
         ),
     }
@@ -2755,7 +2767,7 @@ def test_run_fetch_path_too_long_warns(tmp_path: Path) -> None:
         [entry],
         site_for=site_for,
         describe_store=store,
-        column_map_overrides=overrides,
+        column_fix_overrides=overrides,
         **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
@@ -2766,10 +2778,11 @@ def test_run_fetch_path_too_long_warns(tmp_path: Path) -> None:
     assert any("経路が長すぎます" in w for w in outcomes[0].record.warnings)
 
 
-def test_run_fetch_auto_resolved_does_not_call_fetcher(tmp_path: Path) -> None:
-    """自動で取れた列 （ 上書き対象でない ） では取りに行かない
+def test_run_fetch_user_fix_overrides_auto_resolved(tmp_path: Path) -> None:
+    """「 直したSOQL列名 」 に値があれば自動の結果より常に優先する （ 2026-10-15 ） 。
 
-    自動で取れた列は列の対応.csv の値を見ないので、 fetcher は呼ばれない
+    自動で取れた列でも、 人が ``列の直し.xlsx`` で値を入れていれば自動の値
+    は上書きされる （ 人が入力した値を尊重する方針 ） 。
     """
     metadata = _make_metadata(detail_column_labels={"Opp.Name": "名前"})
     opp_describe = {
@@ -2785,15 +2798,17 @@ def test_run_fetch_auto_resolved_does_not_call_fetcher(tmp_path: Path) -> None:
     site_for, _ = _site_for(client)
     store = DescribeStore.empty(tmp_path / "describe.csv")
 
-    # ``Opp.Name`` は auto-resolved なので、 仮に違う CSV 値を入れても無視される
     overrides = {
         ("opportunity", "Opp.Name"): ColumnMapRow(
+            status="OK",
             main_object="Opportunity",
-            column_key="Opp.Name",
             display_name="",
-            soql_name="Account.Owner.Name",  # 自動で取れた列には適用されない
+            column_key="Opp.Name",
+            auto_soql_name="",
+            candidates="",
+            fixed_soql_name="Name_Renamed__c",  # 人の値が自動を上書きする
             note="",
-            report_count=0,
+            used_in_reports="",
             updated_at="",
         ),
     }
@@ -2802,20 +2817,19 @@ def test_run_fetch_auto_resolved_does_not_call_fetcher(tmp_path: Path) -> None:
         [entry],
         site_for=site_for,
         describe_store=store,
-        column_map_overrides=overrides,
+        column_fix_overrides=overrides,
         **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
-    # 自動の Name がそのまま残っている
     row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.Name")
-    assert row["対応フィールドAPI名"] == "Name"
-    # fetcher は呼ばれない (Account も User も API を叩かれない)
-    assert "Account" not in client.describe_object_calls
-    assert "User" not in client.describe_object_calls
+    # 人の値で上書きされた
+    assert row["対応フィールドAPI名"] == "Name_Renamed__c"
+    # 備考に人が直したことが残る
+    assert "人が直した" in row["備考"]
 
 
 def test_run_fetch_no_fetcher_legacy_behavior(tmp_path: Path) -> None:
-    """``column_map_overrides`` が空のときは、 fetcher は使われず、 WARNING も
+    """``column_fix_overrides`` が空のときは、 fetcher は使われず、 WARNING も
     「 たどれません 」 は出ない （ 何も上書きしない ） 。 後方互換確認
     """
     metadata = {

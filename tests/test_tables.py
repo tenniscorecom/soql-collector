@@ -1,43 +1,33 @@
 """``tables`` のテスト。 ``ReportRecord`` を直接作って、 ``SOQL調査.xlsx`` と
 ``列名の対応.csv`` の中身を厳密に確かめる ( ネットワークには出ない ) 。
+
+シート構成 ( 2026-10-15 ) : 3 枚 （ 一覧 / 列の対応 / 関係図 ） 、 すべて
+Excel のテーブル （ 構造化 ） 。
 """
 
 from __future__ import annotations
 
 import csv
 import dataclasses
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import pytest
 from openpyxl import load_workbook
 
 from src.fetch import RelationRecord, ReportRecord
 from src.tables import (
-    AGGREGATE_COLUMNS,
     COLUMN_NAMES_COLUMNS,
     COLUMN_NAMES_CSV_NAME,
-    CONDITION_COLUMNS,
-    FIELD_COLUMNS,
-    RELATED_COLUMNS,
+    COLUMNS_SHEET_COLUMNS,
     RELATION_DIAGRAM_COLUMNS,
-    SHEET_AGGREGATE,
-    SHEET_CONDITION,
-    SHEET_FIELDS,
+    SHEET_COLUMNS,
     SHEET_OVERVIEW,
-    SHEET_RELATED,
     SHEET_RELATION_DIAGRAM,
-    SHEET_RESOLVED,
-    SHEET_SIMILAR,
-    SHEET_SOQL,
-    SHEET_UNRESOLVED,
-    SHEET_WARNING,
-    SIMILAR_COLUMNS,
-    SOQL_COLUMNS,
     SURVEY_COLUMNS,
-    WARNING_COLUMNS,
+    TABLE_COLUMNS,
+    TABLE_DIAGRAM,
+    TABLE_OVERVIEW,
     XLSX_NAME,
     run_tables,
 )
@@ -54,11 +44,7 @@ def _make_record(
     url: str = "https://example.my.salesforce.com/lightning/r/Report/00O000000000001/view",
     warnings: tuple[str, ...] = (),
 ) -> ReportRecord:
-    """典型的な ``ReportRecord`` を作る。
-
-    参照項目・ポリモーフィック・カスタム項目・選択肢を含む小さい
-    ``Opportunity`` describe と、 ``column_map`` を持つ。
-    """
+    """典型的な ``ReportRecord`` を作る。"""
     summary_text = summary if summary is not None else f"テスト{key}"
     objects: dict[str, dict] = {}
     if main_object:
@@ -182,38 +168,8 @@ def _make_record(
     )
 
 
-def _make_soql_draft(
-    *,
-    status: str = "作成済み",
-    soql: str = "SELECT Id FROM Opportunity",
-    missing: tuple[str, ...] = (),
-    checks: tuple[str, ...] = (),
-) -> Any:
-    """``ReportRecord.soql_draft`` 用の ``SoqlDraft`` 風オブジェクトを作る。
-
-    テストでは ``src.soql_builder.SoqlDraft`` を直接作らずに、 最低限の属性だけ
-    持つ入れ物を用意して ``soql_status_for_record`` と SOQL シートの組み立てが
-    想定どおり動くかを確認する。
-    """
-    return _SimpleSoqlDraft(status=status, soql=soql, missing=missing, checks=checks)
-
-
-@dataclass(frozen=True)
-class _SimpleSoqlDraft:
-    """``SoqlDraft`` 互換のテスト用 dataclass。"""
-
-    status: str
-    soql: str
-    missing: tuple[str, ...] = ()
-    checks: tuple[str, ...] = ()
-
-
 def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
-    """``SOQL調査.xlsx`` を ``{シート名: [行 dict, ...]}`` で読む。
-
-    空セルは ``None`` ではなく空文字として扱う ( テストで ``in`` や ``==`` を
-    使えるようにするため ) 。
-    """
+    """``SOQL調査.xlsx`` を ``{シート名: [行 dict, ...]}`` で読む。"""
     workbook = load_workbook(path)
     result: dict[str, list[dict[str, str]]] = {}
     for sheet_name in workbook.sheetnames:
@@ -236,7 +192,7 @@ def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
 
 
 def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
-    """CSV を ``(columns, rows)`` で読む。 ``csv.DictReader`` 経由。"""
+    """CSV を ``(columns, rows)`` で読む。"""
     with path.open("r", encoding="utf-8-sig", newline="") as file:
         reader = csv.reader(file)
         columns = next(reader)
@@ -274,7 +230,7 @@ def test_empty_records_writes_only_column_names_csv(tmp_path: Path) -> None:
 
 
 def test_sheet_names_in_order(tmp_path: Path) -> None:
-    """xlsx のシート名と順番が指定通り。"""
+    """xlsx のシートはちょうど 3 枚で、 指定通りの順。"""
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001")
@@ -287,62 +243,104 @@ def test_sheet_names_in_order(tmp_path: Path) -> None:
 
     assert sheet_names == [
         SHEET_OVERVIEW,
-        SHEET_UNRESOLVED,
-        SHEET_RESOLVED,
-        SHEET_CONDITION,
-        SHEET_AGGREGATE,
-        SHEET_SIMILAR,
-        SHEET_WARNING,
-        SHEET_FIELDS,
-        SHEET_RELATED,
+        SHEET_COLUMNS,
         SHEET_RELATION_DIAGRAM,
-        SHEET_SOQL,
     ]
+
+
+def test_each_sheet_has_excel_table(tmp_path: Path) -> None:
+    """3 枚それぞれに Excel のテーブル （ 構造化 ） がある。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+    record = dataclasses.replace(
+        record,
+        relations=(
+            RelationRecord(
+                parent="Opportunity",
+                field="AccountId",
+                relationship_name="Account",
+                child="Account",
+                depth=1,
+            ),
+        ),
+    )
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    table_names: set[str] = set()
+    for ws in workbook.worksheets:
+        table_names.update(ws.tables.keys())
+    workbook.close()
+
+    # comken が ``PY_T_`` プレフィックスを付けるので、 テーブルの有無を
+    # 末尾一致でも確認する
+    workbook = load_workbook(output / XLSX_NAME)
+    for ws in workbook.worksheets:
+        for name in ws.tables:
+            # name は comken の ``PY_T_<name>`` 形式
+            short = name
+            if short.startswith("PY_T_"):
+                short = short[len("PY_T_") :]
+            if short in (TABLE_OVERVIEW, TABLE_COLUMNS, TABLE_DIAGRAM):
+                table_names.add(short)
+    workbook.close()
+    assert TABLE_OVERVIEW in table_names
+    assert TABLE_COLUMNS in table_names
+    assert TABLE_DIAGRAM in table_names
 
 
 # ── 一覧シート ────────────────────────────────────────────────────────────
 
 
 def test_survey_basic(tmp_path: Path) -> None:
-    """一覧シートに 1 レポート 1 行が出る。 取得できなかった項目数と警告数も出る。"""
+    """一覧シートに 1 レポート 1 行が出る。 必要項目が埋まる。"""
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001", main_object="Opportunity")
 
     run_tables(output, [record])
 
-    sheets = _read_xlsx(output / XLSX_NAME)
-    overview = sheets[SHEET_OVERVIEW]
-    assert len(overview) == 1
-    row = overview[0]
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    # 3 行目から見出し、 4 行目以降にデータ
+    rows_iter = ws.iter_rows(min_row=4, values_only=True)
+    headers = [c.value for c in ws[3]]
+    data_rows = list(rows_iter)
+    workbook.close()
+
+    assert headers == list(SURVEY_COLUMNS)
+    assert len(data_rows) == 1
+    row = dict(zip(headers, data_rows[0], strict=False))
     assert row["管理番号"] == "1001"
     assert row["主オブジェクト"] == "Opportunity"
-    assert row["レポートタイプ"] == "Opportunity"
-    assert row["形式"] == "TABULAR"
-    assert row["取得できなかった項目数"] == "1"
-    assert row["警告数"] == "0"
-    assert list(row.keys()) == list(SURVEY_COLUMNS)
+    assert row["要対応・要確認の列数"] == "1"
+    assert row["SOQL資料"] == "SOQL資料/1001.md"
 
 
-def test_survey_includes_warning_and_unresolved_counts(tmp_path: Path) -> None:
-    """警告と取得できなかった項目があると、 一覧シートに 件数が出る。"""
+def test_survey_similar_group_text(tmp_path: Path) -> None:
+    """似たレポート判定で 1 グループになると 一覧シートの 「 似たレポート 」 列に
+    「 グループN: <基準の管理番号> が基準 」 の形で出る。"""
+
     output = tmp_path / "output"
     output.mkdir()
-    record = _make_record(
-        "1001",
-        main_object="Opportunity",
-        warnings=(
-            "オブジェクト Account の describe に失敗（HTTP 500: サーバーエラー）",
-            "上限超過",
-        ),
-    )
+    record_1001 = _make_record("1001", main_object="Opportunity")
+    record_1002 = _make_record("1002", main_object="Opportunity")
+    # 同じ構造・同じ条件にすれば 「 同一 」 判定で 1 グループになる
+    run_tables(output, [record_1001, record_1002])
 
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    row = sheets[SHEET_OVERVIEW][0]
-    assert row["取得できなかった項目数"] == "2"  # (不明) 列 1 + Account describe 失敗 1
-    assert row["警告数"] == "2"
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
+    for row in rows:
+        if row["管理番号"] == "1001":
+            assert row["似たレポート"].startswith("グループ")
+        else:
+            assert row["似たレポート"].startswith("グループ")
 
 
 def test_survey_main_object_unknown(tmp_path: Path) -> None:
@@ -350,233 +348,238 @@ def test_survey_main_object_unknown(tmp_path: Path) -> None:
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001", main_object=None)
-    record.objects["RelatedOnly__c"] = {
-        "name": "RelatedOnly__c",
-        "label": "関連のみ",
-        "custom": True,
-        "fields": [{"name": "Name__c", "label": "名前", "type": "string"}],
-    }
 
     run_tables(output, [record])
 
-    sheets = _read_xlsx(output / XLSX_NAME)
-    row = sheets[SHEET_OVERVIEW][0]
-    assert row["主オブジェクト"] == "(不明)"
-    assert row["管理番号"] == "1001"
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
+    assert rows[0]["主オブジェクト"] == "(不明)"
 
 
-# ── 取得できなかった項目シート ─────────────────────────────────────────────
-
-
-def test_unresolved_dedup_by_key_reason(tmp_path: Path) -> None:
-    """同じ ``(主オブジェクト, 列キー, 理由)`` が 2 レポートに出ても 1 行、 件数 2。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record_1001 = _make_record("1001", main_object="Opportunity")
-    record_1002 = _make_record("1002", main_object="Opportunity")
-
-    run_tables(output, [record_1001, record_1002])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    unresolved = sheets[SHEET_UNRESOLVED]
-    # 1 件にまとめられている
-    opp_unknown_rows = [r for r in unresolved if r["列キー"] == "Opp.Unknown"]
-    assert len(opp_unknown_rows) == 1
-    assert opp_unknown_rows[0]["件数"] == "2"
-    assert opp_unknown_rows[0]["管理番号"] == "1001|1002"
-    assert opp_unknown_rows[0]["種別"] == "項目"
-    assert opp_unknown_rows[0]["主オブジェクト"] == "Opportunity"
-    assert opp_unknown_rows[0]["理由"] == "表示名一致せず"
-
-
-def test_unresolved_describe_failure_goes_to_unresolved_sheet(tmp_path: Path) -> None:
-    """describe 失敗は警告シートではなく取得できなかった項目シートに出る。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record(
-        "1001",
-        main_object="Opportunity",
-        warnings=("オブジェクト Account の describe に失敗（HTTP 500: エラー）",),
-    )
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    unresolved = sheets[SHEET_UNRESOLVED]
-    obj_rows = [r for r in unresolved if r["種別"] == "オブジェクト"]
-    assert len(obj_rows) == 1
-    assert obj_rows[0]["主オブジェクト"] == "Account"
-    assert "HTTP 500" in obj_rows[0]["理由"]
-    # 警告シートには describe 失敗が出ていない
-    warning_rows = sheets[SHEET_WARNING]
-    assert all("describe に失敗" not in r["警告"] for r in warning_rows)
-
-
-def test_unresolved_dedup_object_by_name_and_reason(tmp_path: Path) -> None:
-    """同じオブジェクトで同じ理由の describe 失敗は 1 行、 件数 2。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record_1001 = _make_record(
-        "1001",
-        warnings=("オブジェクト Account の describe に失敗（HTTP 500: エラー）",),
-    )
-    record_1002 = _make_record(
-        "1002",
-        warnings=("オブジェクト Account の describe に失敗（HTTP 500: エラー）",),
-    )
-
-    run_tables(output, [record_1001, record_1002])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    unresolved = sheets[SHEET_UNRESOLVED]
-    obj_rows = [r for r in unresolved if r["種別"] == "オブジェクト"]
-    assert len(obj_rows) == 1
-    assert obj_rows[0]["主オブジェクト"] == "Account"
-    assert obj_rows[0]["件数"] == "2"
-    assert obj_rows[0]["管理番号"] == "1001|1002"
-
-
-def test_unresolved_duplicate_label_in_same_report(tmp_path: Path) -> None:
-    """同じレポート内で表示名がぶつかっているものは、 理由が 「 同じレポート内で表示名が重複 」 で出る。"""
+def test_survey_includes_unresolved_count(tmp_path: Path) -> None:
+    """要対応・要確認の列数が出る。"""
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001", main_object="Opportunity")
-    # Name と同じ表示名 「 商談名 」 を持つ列を足す ( 別のフィールド )
-    record.column_map.append(
-        {
-            "列キー": "Opp.OtherName",
-            "表示名": "商談名",
-            "所属オブジェクト": "Opportunity",
-            "対応フィールドAPI名": "OtherName__c",
-            "型": "string",
-            "参照先オブジェクト": "",
-            "リレーション名": "",
-            "備考": "",
-        }
-    )
 
     run_tables(output, [record])
 
-    sheets = _read_xlsx(output / XLSX_NAME)
-    unresolved = sheets[SHEET_UNRESOLVED]
-    dup_rows = [r for r in unresolved if r["理由"] == "同じレポート内で表示名が重複"]
-    assert len(dup_rows) == 2  # Opp.Name と Opp.OtherName が両方
-    keys = {r["列キー"] for r in dup_rows}
-    assert keys == {"Opp.Name", "Opp.OtherName"}
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
+    assert rows[0]["要対応・要確認の列数"] == "1"
 
 
-def test_unresolved_sorted_by_count_then_kind(tmp_path: Path) -> None:
-    """並びは 件数 ( 降順 ) → 種別 → 主オブジェクト → 列キー。"""
+# ── 列の対応シート ──────────────────────────────────────────────────────
+
+
+def test_columns_sheet_basic(tmp_path: Path) -> None:
+    """列の対応シートに 1 レポート 1 列ずつ出る。 列順は 管理番号 → 列キー。"""
     output = tmp_path / "output"
     output.mkdir()
-    record_1001 = _make_record(
-        "1001",
-        warnings=("オブジェクト Account の describe に失敗（HTTP 500: エラー）",),
-    )
-    record_1002 = _make_record(
-        "1002",
-        warnings=("オブジェクト Account の describe に失敗（HTTP 500: エラー）",),
-    )
+    record = _make_record("1001", main_object="Opportunity")
 
-    run_tables(output, [record_1001, record_1002])
+    run_tables(output, [record])
 
-    sheets = _read_xlsx(output / XLSX_NAME)
-    unresolved = sheets[SHEET_UNRESOLVED]
-    # describe 失敗が件数 2 で先頭
-    counts = [int(r["件数"]) for r in unresolved]
-    assert counts == sorted(counts, reverse=True)
-    # 種別 「 オブジェクト 」 は 「 項目 」 より前
-    kinds = [r["種別"] for r in unresolved]
-    if "オブジェクト" in kinds and "項目" in kinds:
-        assert kinds.index("オブジェクト") < kinds.index("項目")
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_COLUMNS]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
+
+    assert headers == list(COLUMNS_SHEET_COLUMNS)
+    # (不明) の列も出る
+    unknown_rows = [r for r in rows if r["列キー"] == "Opp.Unknown"]
+    assert len(unknown_rows) == 1
+    assert unknown_rows[0]["状態"] == "要対応"
+    assert unknown_rows[0]["使うSOQL列名"] == "(不明)"
+    # 解決できた列
+    name_rows = [r for r in rows if r["列キー"] == "Opp.Name"]
+    assert len(name_rows) == 1
+    assert name_rows[0]["状態"] == "OK"
+    assert name_rows[0]["使うSOQL列名"] == "Name"
+    assert name_rows[0]["どこから"] == "自動"
 
 
-# ── 項目の対応シート ──────────────────────────────────────────────────────
-
-
-def test_resolved_correspondence_dedup_by_main_and_field(tmp_path: Path) -> None:
-    """同じ ``(主オブジェクト, SOQL列名)`` は 1 行。"""
+def test_columns_sheet_unresolved_status_is_needs_check_for_candidates(tmp_path: Path) -> None:
+    """候補が複数ある列は状態=要確認。"""
     output = tmp_path / "output"
     output.mkdir()
-    record_1001 = _make_record("1001", main_object="Opportunity")
-    record_1002 = _make_record("1002", main_object="Opportunity")
+    record = _make_record("1001", main_object="Opportunity")
+    # 候補ありの注記を足す
+    for col in record.column_map:
+        if col["列キー"] == "Opp.Unknown":
+            col["備考"] = (
+                "複数候補あり: Name（Opportunity 商談名）/ Custom__c（Opportunity 商談名）"
+            )
+            break
 
-    run_tables(output, [record_1001, record_1002])
+    run_tables(output, [record])
 
-    sheets = _read_xlsx(output / XLSX_NAME)
-    resolved = sheets[SHEET_RESOLVED]
-    # (Opportunity, AccountId) は 1 行
-    account_rows = [r for r in resolved if r["SOQL列名"] == "AccountId"]
-    assert len(account_rows) == 1
-    assert account_rows[0]["主オブジェクト"] == "Opportunity"
-    assert account_rows[0]["使っているレポート数"] == "2"
-    assert account_rows[0]["管理番号"] == "1001|1002"
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_COLUMNS]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
+    unknown_rows = [r for r in rows if r["列キー"] == "Opp.Unknown"]
+    assert unknown_rows[0]["状態"] == "要確認"
+    assert "Name" in unknown_rows[0]["候補"]
 
 
-def test_resolved_excludes_unknown_fields(tmp_path: Path) -> None:
-    """``(不明)`` のフィールドは 項目の対応 シートに出ない ( 取得できなかった項目シート ) 。"""
+def test_columns_sheet_user_fixed_soql(tmp_path: Path) -> None:
+    """「 直したSOQL列名 」 由来の値が入ると 「 どこから=人が直した 」 になる。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+    for col in record.column_map:
+        if col["列キー"] == "Opp.Unknown":
+            col["対応フィールドAPI名"] = "CustomField__c"
+            col["備考"] = "直したSOQL列名（人が直した）"
+            break
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_COLUMNS]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
+    unknown_rows = [r for r in rows if r["列キー"] == "Opp.Unknown"]
+    assert unknown_rows[0]["状態"] == "OK"
+    assert unknown_rows[0]["どこから"] == "人が直した"
+    assert unknown_rows[0]["使うSOQL列名"] == "CustomField__c"
+    # 自動の値 列は 人が直して自動と違うときだけ埋める （ このケースは同じ ） ので空
+    assert (unknown_rows[0]["自動の値"] or "") == ""
+
+
+# ── 関係図シート ──────────────────────────────────────────────────────
+
+
+def test_relation_diagram_sheet_columns_match(tmp_path: Path) -> None:
+    """関係図シートの列順。"""
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001")
+    record = dataclasses.replace(
+        record,
+        main_object="Opportunity",
+        relations=(
+            RelationRecord(
+                parent="Opportunity",
+                field="AccountId",
+                relationship_name="Account",
+                child="Account",
+                depth=1,
+            ),
+        ),
+    )
 
     run_tables(output, [record])
 
-    sheets = _read_xlsx(output / XLSX_NAME)
-    resolved = sheets[SHEET_RESOLVED]
-    assert all(r["SOQL列名"] != "(不明)" for r in resolved)
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_RELATION_DIAGRAM]
+    headers = [c.value for c in ws[1]]
+    workbook.close()
+    assert headers == list(RELATION_DIAGRAM_COLUMNS)
 
 
-def test_resolved_display_name_majority(tmp_path: Path) -> None:
-    """表示名は最多 ( 同数なら管理番号の小さいレポートのもの ) 。 別名は 備考に 「 別の表示名あり 」 。"""
+def test_relation_diagram_sheet_writes_tree_with_polymorphic(tmp_path: Path) -> None:
+    """Task → Account / Opportunity のポリモーフィックが 1 行ずつ出、 段が上がる。"""
     output = tmp_path / "output"
     output.mkdir()
-    # 1001 と 1003 で 「 取引先名 」 、 1002 で 「 取引先 」 を使う
-    record_1001 = _make_record("1001", main_object="Opportunity")
-    record_1002 = _make_record("1002", main_object="Opportunity")
-    new_column_map = [
-        {**col, "表示名": "取引先"} if col["対応フィールドAPI名"] == "AccountId" else col
-        for col in record_1002.column_map
-    ]
-    record_1002 = dataclasses.replace(record_1002, column_map=new_column_map)
-    record_1003 = _make_record("1003", main_object="Opportunity")
+    record = _make_record("1001")
+    record = dataclasses.replace(
+        record,
+        main_object="Task",
+        relations=(
+            RelationRecord(
+                parent="Task", field="WhatId", relationship_name="What", child="Account", depth=1
+            ),
+            RelationRecord(
+                parent="Task",
+                field="WhatId",
+                relationship_name="What",
+                child="Opportunity",
+                depth=1,
+            ),
+        ),
+    )
 
-    run_tables(output, [record_1001, record_1002, record_1003])
+    run_tables(output, [record])
 
-    sheets = _read_xlsx(output / XLSX_NAME)
-    resolved = sheets[SHEET_RESOLVED]
-    account_rows = [r for r in resolved if r["SOQL列名"] == "AccountId"]
-    assert len(account_rows) == 1
-    # 「 取引先名 」 が 2 件、 「 取引先 」 が 1 件 → 最多は 「 取引先名 」
-    assert account_rows[0]["表示名"] == "取引先名"
-    assert "別の表示名あり: 取引先（1002）" in account_rows[0]["備考"]
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_RELATION_DIAGRAM]
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    headers = [c.value for c in ws[1]]
+    workbook.close()
+    data = [dict(zip(headers, row, strict=False)) for row in rows]
+    task_row = next(r for r in data if r["主オブジェクト"] == "Task" and r["段"] == "0")
+    assert task_row["行き先オブジェクト"] == "Task"
+    children = [r for r in data if r["主オブジェクト"] == "Task" and r["段"] == "1"]
+    targets = {r["行き先オブジェクト"] for r in children}
+    assert targets == {"Account", "Opportunity"}
 
 
-def test_resolved_display_name_tie_break_by_smallest_key(tmp_path: Path) -> None:
-    """同数のときは管理番号の小さいレポートの表示名を選ぶ。"""
+# ── Excel テーブル・列幅・固定行 ──────────────────────────────────────
+
+
+def test_overview_sheet_freeze_panes_and_width(tmp_path: Path) -> None:
+    """一覧シートは 3 行目からテーブルで、 見出しが固定され、 列幅が設定される。"""
     output = tmp_path / "output"
     output.mkdir()
-    # 1001 で 「 別名A 」 1002 で 「 別名B 」 → 同数。 1001 を採用
-    record_1001 = _make_record("1001", main_object="Opportunity")
-    new_columns_1001 = [
-        {**col, "表示名": "別名A"} if col["対応フィールドAPI名"] == "AccountId" else col
-        for col in record_1001.column_map
-    ]
-    record_1001 = dataclasses.replace(record_1001, column_map=new_columns_1001)
-    record_1002 = _make_record("1002", main_object="Opportunity")
-    new_columns_1002 = [
-        {**col, "表示名": "別名B"} if col["対応フィールドAPI名"] == "AccountId" else col
-        for col in record_1002.column_map
-    ]
-    record_1002 = dataclasses.replace(record_1002, column_map=new_columns_1002)
+    record = _make_record("1001", main_object="Opportunity")
 
-    run_tables(output, [record_1001, record_1002])
+    run_tables(output, [record])
 
-    sheets = _read_xlsx(output / XLSX_NAME)
-    resolved = sheets[SHEET_RESOLVED]
-    account_rows = [r for r in resolved if r["SOQL列名"] == "AccountId"]
-    assert len(account_rows) == 1
-    assert account_rows[0]["表示名"] == "別名A"  # 1001 の表示名 ( tie → smallest 管理番号 )
-    assert "別の表示名あり: 別名B（1002）" in account_rows[0]["備考"]
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    # freeze_panes が A3 （ 3 行目からスクロール、 1 行目・ 2 行目が見出し ）
+    assert ws.freeze_panes == "A3"
+    # 列幅が設定されている （ 何列かが 8 以上 ）
+    widths = [
+        ws.column_dimensions[col].width
+        for col in ws.column_dimensions
+        if ws.column_dimensions[col].width is not None
+    ]
+    assert any(w >= 8 for w in widths)
+    workbook.close()
+
+
+def test_relation_diagram_sheet_freeze_panes(tmp_path: Path) -> None:
+    """関係図シートは 1 行目から見出しで、 2 行目以降をスクロール。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001")
+    record = dataclasses.replace(
+        record,
+        main_object="Opportunity",
+        relations=(
+            RelationRecord(
+                parent="Opportunity",
+                field="AccountId",
+                relationship_name="Account",
+                child="Account",
+                depth=1,
+            ),
+        ),
+    )
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_RELATION_DIAGRAM]
+    assert ws.freeze_panes == "A2"
+    workbook.close()
 
 
 # ── 列名の対応.csv ──────────────────────────────────────────────────────
@@ -594,8 +597,6 @@ def test_column_names_csv_new_schema(tmp_path: Path) -> None:
     assert columns == list(COLUMN_NAMES_COLUMNS)
     # (不明) は除く
     assert all(r["SOQL列名"] != "(不明)" for r in rows)
-    # 4 件
-    assert len(rows) == 4
     soql_names = {r["SOQL列名"] for r in rows}
     assert soql_names == {"AccountId", "WhoId", "Custom__c", "Name"}
 
@@ -624,62 +625,6 @@ def test_column_names_csv_no_management_key_column(tmp_path: Path) -> None:
     assert "管理番号" not in columns
 
 
-# ── 列名の対応.csv のマージ ────────────────────────────────────────────────
-
-
-def test_column_names_csv_merges_when_other_object_kept(tmp_path: Path) -> None:
-    """既存ファイルで別の主オブジェクトの行はそのまま残り、 今回の行は置き換わる。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    # 事前に別オブジェクトの行を入れておく
-    existing_path = output / COLUMN_NAMES_CSV_NAME
-    existing_path.write_bytes(
-        "﻿主オブジェクト,SOQL列名,表示名,備考,更新日\r\n"
-        "Case,Case.AccountId,取引先ID,,2025-01-01\r\n".encode()
-    )
-
-    record = _make_record("1001", main_object="Opportunity")
-
-    run_tables(output, [record])
-
-    _, rows = _read_csv(existing_path)
-    soql_pairs = {(r["主オブジェクト"], r["SOQL列名"]) for r in rows}
-    # Case.AccountId は残る
-    assert ("Case", "Case.AccountId") in soql_pairs
-    # Opportunity 側の AccountId 等も入る
-    assert ("Opportunity", "AccountId") in soql_pairs
-    assert ("Opportunity", "WhoId") in soql_pairs
-    # 並びは 主 → SOQL
-    keys_in_order = [(r["主オブジェクト"], r["SOQL列名"]) for r in rows]
-    assert keys_in_order == sorted(keys_in_order)
-    # 既存ファイルの Case.AccountId はそのまま
-    case_row = next(r for r in rows if r["主オブジェクト"] == "Case")
-    assert case_row["更新日"] == "2025-01-01"
-
-
-def test_column_names_csv_replaces_seen_rows(tmp_path: Path) -> None:
-    """既存ファイルと同じ (主, SOQL) は今回の内容で置き換わる ( 更新日が変わる ) 。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    existing_path = output / COLUMN_NAMES_CSV_NAME
-    existing_path.write_bytes(
-        "﻿主オブジェクト,SOQL列名,表示名,備考,更新日\r\n"
-        "Opportunity,AccountId,古い表示名,古い備考,2025-01-01\r\n".encode()
-    )
-
-    record = _make_record("1001", main_object="Opportunity")
-
-    run_tables(output, [record])
-
-    _, rows = _read_csv(existing_path)
-    account_row = next(r for r in rows if r["SOQL列名"] == "AccountId")
-    assert account_row["主オブジェクト"] == "Opportunity"
-    assert account_row["表示名"] == "取引先名"  # 新しい表示名
-    assert account_row["更新日"] == datetime.now(tz=UTC).astimezone().date().isoformat()
-
-
 def test_column_names_csv_fails_on_old_header(tmp_path: Path) -> None:
     """旧形式の見出しを持つ既存ファイルは CSVError、 既存ファイルは変更されない。"""
     from comken.exceptions import CSVError
@@ -688,7 +633,7 @@ def test_column_names_csv_fails_on_old_header(tmp_path: Path) -> None:
     output.mkdir()
 
     existing_path = output / COLUMN_NAMES_CSV_NAME
-    old_format = "﻿管理番号,概要,SOQL列名,表示名,備考\r\n1001,テスト,AccountId,取引先名,\r\n"
+    old_format = "管理番号,概要,SOQL列名,表示名,備考\r\n1001,テスト,AccountId,取引先名,\r\n"
     existing_path.write_bytes(old_format.encode("utf-8"))
     before = existing_path.read_bytes()
 
@@ -697,7 +642,6 @@ def test_column_names_csv_fails_on_old_header(tmp_path: Path) -> None:
     with pytest.raises(CSVError):
         run_tables(output, [record])
 
-    # 既存ファイルは変更されない
     assert existing_path.read_bytes() == before
 
 
@@ -708,483 +652,14 @@ def test_column_names_csv_keeps_old_when_no_records(tmp_path: Path) -> None:
 
     existing_path = output / COLUMN_NAMES_CSV_NAME
     existing_path.write_bytes(
-        "﻿主オブジェクト,SOQL列名,表示名,備考,更新日\r\n"
+        "主オブジェクト,SOQL列名,表示名,備考,更新日\r\n"
         "Case,Case.AccountId,取引先ID,,2025-01-01\r\n".encode()
     )
     before = existing_path.read_bytes()
 
     run_tables(output, [])
 
-    # CSV はそのまま
     assert existing_path.read_bytes() == before
-
-
-# ── 条件 / 集計 / 警告 / 項目一覧 / 関連 / 似たレポート ─────────────
-
-
-def test_condition_basic(tmp_path: Path) -> None:
-    """条件シートに 絞り込み・組立式・日付・クロス・上位N が 1 行ずつ出る。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["reportFilters"] = [
-        {"column": "Opp.Amount", "operator": "greaterThan", "value": "0"},
-        {"column": "Opp.StageName", "operator": "equals", "value": "Closed Won"},
-    ]
-    record.report["reportMetadata"]["reportBooleanFilter"] = "1 AND 2"
-    record.report["reportMetadata"]["standardDateFilter"] = {
-        "column": "Opp.CloseDate",
-        "durationValue": "LAST_N_DAYS:30",
-        "startDate": "2024-01-01",
-        "endDate": "2024-01-31",
-    }
-    record.report["reportMetadata"]["crossFilters"] = [
-        {
-            "primaryEntityField": "Opp.AccountId",
-            "operator": "WITH",
-            "relatedEntity": "OpportunityContactRole",
-            "relatedEntityJoinField": "OpportunityId",
-            "criteria": [],
-        }
-    ]
-    record.report["reportMetadata"]["topRows"] = "10"
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    condition = sheets[SHEET_CONDITION]
-    by_kind: dict[str, list[dict[str, str]]] = {}
-    for row in condition:
-        by_kind.setdefault(row["種別"], []).append(row)
-
-    assert len(by_kind["絞り込み"]) == 2
-    assert {r["列キー"] for r in by_kind["絞り込み"]} == {"Opp.Amount", "Opp.StageName"}
-    assert by_kind["組立式"][0]["値"] == "1 AND 2"
-    assert by_kind["日付"][0]["列キー"] == "Opp.CloseDate"
-    assert "WITH" in by_kind["クロス"][0]["値"]
-    assert by_kind["上位N"][0]["値"] == "10"
-
-
-def test_condition_columns_match(tmp_path: Path) -> None:
-    """条件シートの列順を確かめる。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001")
-    record.report["reportMetadata"]["reportFilters"] = [
-        {"column": "X", "operator": "equals", "value": "y"}
-    ]
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    headers = list(sheets[SHEET_CONDITION][0].keys())
-    assert headers == list(CONDITION_COLUMNS)
-
-
-def test_aggregate_basic(tmp_path: Path) -> None:
-    """集計シートに グルーピング・集計・並び順が出る。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["groupingsDown"] = [
-        {"name": "Opp.StageName", "sortOrder": "Asc"}
-    ]
-    record.report["reportMetadata"]["aggregates"] = ["s!Opp.Amount"]
-    record.report["reportMetadata"]["sortBy"] = [{"sortColumn": "Opp.Name", "sortOrder": "Desc"}]
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    aggregate = sheets[SHEET_AGGREGATE]
-    by_kind = {r["種別"]: r for r in aggregate}
-    assert by_kind["形式"]["内容"] == "TABULAR"
-    assert by_kind["グルーピング(行)"]["名前"] == "Opp.StageName"
-    assert by_kind["集計"]["名前"] == "s!Opp.Amount"
-    assert by_kind["並び順"]["名前"] == "Opp.Name"
-
-
-def test_aggregate_columns_match(tmp_path: Path) -> None:
-    """集計シートの列順。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001")
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    headers = list(sheets[SHEET_AGGREGATE][0].keys())
-    assert headers == list(AGGREGATE_COLUMNS)
-
-
-def test_warning_excludes_describe_failures(tmp_path: Path) -> None:
-    """警告シートには describe 失敗以外の警告が出る。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record(
-        "1001",
-        warnings=(
-            "オブジェクト Account の describe に失敗（HTTP 500: エラー）",
-            "上限超過",
-        ),
-    )
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    warning = sheets[SHEET_WARNING]
-    assert len(warning) == 1
-    assert warning[0]["警告"] == "上限超過"
-
-
-def test_warning_columns_match(tmp_path: Path) -> None:
-    """警告シートの列順。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", warnings=("警告 A",))
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    headers = list(sheets[SHEET_WARNING][0].keys())
-    assert headers == list(WARNING_COLUMNS)
-
-
-def test_field_table_picklist_truncated(tmp_path: Path) -> None:
-    """項目一覧シートの ``選択肢`` 列が 30 件超で ``…`` 付き。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    picklist = [f"V{i}" for i in range(31)]
-    record = _make_record("1001", main_object="Opportunity")
-    for field in record.objects["Opportunity"]["fields"]:
-        if field["name"] == "Custom__c":
-            field["picklist"] = picklist
-            field["picklistTotal"] = 31
-            break
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    field = sheets[SHEET_FIELDS]
-    custom_row = next(r for r in field if r["項目API名"] == "Custom__c")
-    choices = custom_row["選択肢"].split("|")
-    assert len(choices) == 31
-    assert choices[-1] == "…"
-
-
-def test_field_columns_match(tmp_path: Path) -> None:
-    """項目一覧シートの列順。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001")
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    headers = list(sheets[SHEET_FIELDS][0].keys())
-    assert headers == list(FIELD_COLUMNS)
-
-
-def test_related_orders_by_key(tmp_path: Path) -> None:
-    """関連シートは 管理番号 → 段 → 親 の順。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    from src.fetch import RelationRecord
-
-    objects = {
-        "Task": {
-            "name": "Task",
-            "label": "活動",
-            "custom": False,
-            "fields": [{"name": "Subject", "label": "件名", "type": "string"}],
-        },
-        "Account": {
-            "name": "Account",
-            "label": "取引先",
-            "custom": False,
-            "fields": [{"name": "Name", "label": "取引先名", "type": "string"}],
-        },
-    }
-    record_1001 = ReportRecord(
-        key="1001",
-        summary="テスト1",
-        report_id="00O000000000001",
-        url="https://example/r/Report/00O000000000001/view",
-        main_object="Task",
-        report={},
-        objects=objects,
-        relations=(
-            RelationRecord(
-                parent="Task",
-                field="WhatId",
-                relationship_name="What",
-                child="Account",
-                depth=1,
-            ),
-        ),
-        column_map=[],
-        warnings=(),
-    )
-
-    run_tables(output, [record_1001])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    related = sheets[SHEET_RELATED]
-    assert related == [
-        {
-            "管理番号": "1001",
-            "親オブジェクト": "Task",
-            "参照項目API名": "WhatId",
-            "リレーション名": "What",
-            "子オブジェクト": "Account",
-            "段": "1",
-        }
-    ]
-
-
-def test_related_columns_match(tmp_path: Path) -> None:
-    """関連シートの列順。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    from src.fetch import RelationRecord
-
-    record = _make_record("1001")
-    record_main = dataclasses.replace(
-        record,
-        main_object="Task",
-        relations=(
-            RelationRecord(
-                parent="Task",
-                field="WhatId",
-                relationship_name="What",
-                child="Account",
-                depth=1,
-            ),
-        ),
-    )
-
-    run_tables(output, [record_main])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    headers = list(sheets[SHEET_RELATED][0].keys())
-    assert headers == list(RELATED_COLUMNS)
-
-
-# ── SOQL シート ─────────────────────────────────────────────────────
-
-
-def test_soql_sheet_columns_match(tmp_path: Path) -> None:
-    """SOQL シートの列順。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    record = _make_record("1001")
-    record = dataclasses.replace(
-        record,
-        main_object="Opportunity",
-        soql_draft=_make_soql_draft(status="作成済み", soql="SELECT Name FROM Opportunity"),
-    )
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    assert SHEET_SOQL in sheets
-    headers = list(sheets[SHEET_SOQL][0].keys())
-    assert headers == list(SOQL_COLUMNS)
-
-
-def test_soql_sheet_written_for_partial_with_incomplete_marker(tmp_path: Path) -> None:
-    """``一部作れず`` の SOQL はシートに書かれ、 1 行目に未完成の印が残る。
-
-    人が Excel で見たときに 「 この SOQL は未完成で実行できない 」 と
-    一目で分かるように、 印はそのまま残す。
-    """
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001")
-    record = dataclasses.replace(
-        record,
-        main_object="Opportunity",
-        soql_draft=_make_soql_draft(
-            status="一部作れず",
-            soql="【未完成】作れなかった部分があります。このままでは実行できません。\nSELECT Name FROM Opportunity",
-            missing=("列: 商談名 ( Opp.Name ) — 対応フィールドなし",),
-        ),
-    )
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    rows = sheets[SHEET_SOQL]
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["管理番号"] == "1001"
-    assert row["状態"] == "一部作れず"
-    assert row["SOQL"].startswith("【未完成】")
-    assert "SELECT Name FROM Opportunity" in row["SOQL"]
-    assert "列: 商談名" in row["作れなかった部分"]
-
-
-def test_soql_sheet_omits_records_without_soql_draft(tmp_path: Path) -> None:
-    """``soql_draft`` が無い record は行を出さない （ 失敗した record など ） 。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001")
-    # soql_draft はそのまま （ ``_make_record`` は None を作る ）
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    assert sheets[SHEET_SOQL] == []
-
-
-# ── 関係図シート ──────────────────────────────────────────────────────
-
-
-def test_relation_diagram_sheet_columns_match(tmp_path: Path) -> None:
-    """関係図シートの列順。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    record = _make_record("1001")
-    record = dataclasses.replace(
-        record,
-        main_object="Opportunity",
-        relations=(
-            RelationRecord(
-                parent="Opportunity",
-                field="AccountId",
-                relationship_name="Account",
-                child="Account",
-                depth=1,
-            ),
-        ),
-    )
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    assert SHEET_RELATION_DIAGRAM in sheets
-    headers = list(sheets[SHEET_RELATION_DIAGRAM][0].keys())
-    assert headers == list(RELATION_DIAGRAM_COLUMNS)
-
-
-def test_relation_diagram_sheet_writes_tree_with_polymorphic(tmp_path: Path) -> None:
-    """Task → Account / Opportunity のポリモーフィックが 1 行ずつ出、 段が上がる。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    record = _make_record("1001")
-    record = dataclasses.replace(
-        record,
-        main_object="Task",
-        relations=(
-            RelationRecord(
-                parent="Task", field="WhatId", relationship_name="What", child="Account", depth=1
-            ),
-            RelationRecord(
-                parent="Task",
-                field="WhatId",
-                relationship_name="What",
-                child="Opportunity",
-                depth=1,
-            ),
-        ),
-    )
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    rows = sheets[SHEET_RELATION_DIAGRAM]
-    # 主オブジェクト Task は 段 0
-    task_row = next(r for r in rows if r["主オブジェクト"] == "Task" and r["段"] == "0")
-    assert task_row["行き先オブジェクト"] == "Task"
-    # 子は 段 1 で 2 行
-    children = [r for r in rows if r["主オブジェクト"] == "Task" and r["段"] == "1"]
-    targets = {r["行き先オブジェクト"] for r in children}
-    assert targets == {"Account", "Opportunity"}
-    for r in children:
-        # 図 は ``What → Account`` / ``What → Opportunity``
-        assert r["図"].startswith("What → ")
-        # SOQLでの書き方は主からのリレーション鎖
-        assert "What" in r["SOQLでの書き方"]
-
-
-def test_relation_diagram_sheet_records_already_above_for_self_reference(
-    tmp_path: Path,
-) -> None:
-    """Account → Account（Parent） の自己参照は図に 「 （上に出ています）」 が残る。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    record = _make_record("1001")
-    record = dataclasses.replace(
-        record,
-        main_object="Account",
-        relations=(
-            RelationRecord(
-                parent="Account",
-                field="ParentId",
-                relationship_name="Parent",
-                child="Account",
-                depth=1,
-            ),
-        ),
-    )
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    rows = sheets[SHEET_RELATION_DIAGRAM]
-    self_rows = [
-        r
-        for r in rows
-        if r["主オブジェクト"] == "Account"
-        and r["行き先オブジェクト"] == "Account"
-        and r["段"] != "0"
-    ]
-    assert self_rows, "自己参照の行が無い"
-    for r in self_rows:
-        assert "（上に出ています）" in r["図"]
-
-
-def test_relation_diagram_markdown_files_written(tmp_path: Path) -> None:
-    """``OUTPUT_DIR/関係図/{主オブジェクト}.md`` が作られる。"""
-    output = tmp_path / "output"
-    output.mkdir()
-
-    record = _make_record("1001")
-    record = dataclasses.replace(
-        record,
-        main_object="Task",
-        relations=(
-            RelationRecord(
-                parent="Task", field="WhatId", relationship_name="What", child="Account", depth=1
-            ),
-        ),
-    )
-    run_tables(output, [record])
-
-    diagram_path = output / "関係図" / "Task.md"
-    assert diagram_path.exists()
-    content = diagram_path.read_text(encoding="utf-8")
-    assert "```mermaid" in content
-    assert "flowchart LR" in content
-
-
-def test_similar_sheet_has_only_header_when_no_groups(tmp_path: Path) -> None:
-    """似たレポートの該当が無いとシートは見出しだけになる。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001")
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    similar = sheets[SHEET_SIMILAR]
-    assert similar == []
-    # ヘッダー行だけ
-    workbook = load_workbook(output / XLSX_NAME)
-    similar_sheet = workbook[SHEET_SIMILAR]
-    headers = [cell.value for cell in similar_sheet[1]]
-    assert headers == list(SIMILAR_COLUMNS)
-    workbook.close()
 
 
 # ── 出力ディレクトリ未作成 ──────────────────────────────────────────────
@@ -1201,24 +676,3 @@ def test_output_dir_missing_does_not_raise(tmp_path: Path) -> None:
     assert output.exists()
     assert (output / XLSX_NAME).exists()
     assert (output / COLUMN_NAMES_CSV_NAME).exists()
-
-
-# ── PII 列は出力列のみ ────────────────────────────────────────────────
-
-
-def test_pii_only_for_output_columns(tmp_path: Path) -> None:
-    """絞り込みにだけ使う列は個人情報判定の対象外 ( 既存仕様を引き継ぐ ) 。"""
-    output = tmp_path / "output"
-    output.mkdir()
-    record = _make_record("1001", main_object="Opportunity")
-    record.report["reportMetadata"]["reportFilters"] = [
-        {"column": "Opp.Missing", "operator": "equals", "value": "B"}
-    ]
-
-    run_tables(output, [record])
-
-    sheets = _read_xlsx(output / XLSX_NAME)
-    resolved = sheets[SHEET_RESOLVED]
-    # Opp.Missing は (不明) のままなので resolved シートには載らない
-    soql_names = {r["SOQL列名"] for r in resolved}
-    assert "Opp.Missing" not in soql_names

@@ -1486,3 +1486,141 @@ def test_build_column_map_resolves_polymorphic_reference_in_column_key() -> None
     assert row["型"] == "string"
 
     assert row["備考"] == "列キーから（参照先の名前。ID なら OwnerId）"
+
+
+# ── 「 オブジェクト: 項目名 」 形式の照合 ─────────────────────
+
+
+def test_build_column_map_resolves_object_colon_label_main() -> None:
+    """「 タスク: 作業会社名 」 形式の表示名 → 主オブジェクト Task の項目から拾う。"""
+    main_describe = {
+        "name": "Task",
+        "label": "タスク",
+        "fields": [
+            {"name": "Subject", "label": "件名", "type": "Text"},
+            {"name": "Custom_Work_Company__c", "label": "作業会社名", "type": "Text"},
+        ],
+    }
+    metadata = _make_metadata(
+        detail_columns=["TASK.CUSTOM_WORK_COMPANY__C"],
+        detail_column_labels={"TASK.CUSTOM_WORK_COMPANY__C": "タスク: 作業会社名"},
+    )
+    rows = build_column_map(metadata, main_describe, None)
+    row = next(r for r in rows if r["列キー"] == "TASK.CUSTOM_WORK_COMPANY__C")
+    assert row["対応フィールドAPI名"] == "Custom_Work_Company__c"
+
+
+def test_build_column_map_resolves_object_colon_label_related() -> None:
+    """「 取引先: 取引先名 」 形式 → 関連 Account の項目から拾う。"""
+    main_describe = {
+        "name": "Opportunity",
+        "label": "商談",
+        "fields": [
+            {
+                "name": "AccountId",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "Account",
+            },
+        ],
+    }
+    account_describe = {
+        "name": "Account",
+        "label": "取引先",
+        "fields": [
+            {"name": "Name", "label": "取引先名", "type": "Text"},
+            {"name": "Industry", "label": "業種", "type": "Text"},
+        ],
+    }
+    metadata = _make_metadata(
+        detail_columns=["OPP.ACCOUNT.NAME"],
+        detail_column_labels={"OPP.ACCOUNT.NAME": "取引先: 取引先名"},
+    )
+    rows = build_column_map(
+        metadata,
+        main_describe,
+        None,
+        related_describes={"Account": account_describe},
+        relations=[_fake_relation("Opportunity", "AccountId", "Account", "Account", 1)],
+        main_object="Opportunity",
+    )
+    row = next(r for r in rows if r["列キー"] == "OPP.ACCOUNT.NAME")
+    assert row["対応フィールドAPI名"] == "Account.Name"
+
+
+def test_build_column_map_resolves_object_colon_label_zenkaku_colon() -> None:
+    """全角コロン 「 ： 」 も同じように扱われる。"""
+    main_describe = {
+        "name": "Task",
+        "label": "タスク",
+        "fields": [
+            {"name": "Subject", "label": "件名", "type": "Text"},
+            {"name": "Custom_Work_Company__c", "label": "作業会社名", "type": "Text"},
+        ],
+    }
+    metadata = _make_metadata(
+        detail_columns=["TASK.CUSTOM_WORK_COMPANY__C"],
+        detail_column_labels={"TASK.CUSTOM_WORK_COMPANY__C": "タスク：作業会社名"},
+    )
+    rows = build_column_map(metadata, main_describe, None)
+    row = next(r for r in rows if r["列キー"] == "TASK.CUSTOM_WORK_COMPANY__C")
+    assert row["対応フィールドAPI名"] == "Custom_Work_Company__c"
+
+
+def test_build_column_map_object_colon_label_falls_back_when_object_unknown() -> None:
+    """コロン前のオブジェクトが見つからないときは、 後ろだけで照合。"""
+    main_describe = {
+        "name": "Task",
+        "label": "タスク",
+        "fields": [
+            {"name": "Subject", "label": "件名", "type": "Text"},
+        ],
+    }
+    metadata = _make_metadata(
+        detail_columns=["TASK.SUBJECT"],
+        detail_column_labels={"TASK.SUBJECT": "存在しないオブジェクト: 件名"},
+    )
+    rows = build_column_map(metadata, main_describe, None)
+    row = next(r for r in rows if r["列キー"] == "TASK.SUBJECT")
+    # 後ろだけの照合で Subject が見つかる
+    assert row["対応フィールドAPI名"] == "Subject"
+
+
+def test_build_column_map_resolves_object_colon_label_multiple_candidates() -> None:
+    """「 取引先: 件名 」 形式で、 取引先に同名項目が複数あれば、 候補として残る。"""
+    main_describe = {
+        "name": "Opportunity",
+        "label": "商談",
+        "fields": [
+            {
+                "name": "AccountId",
+                "type": "reference",
+                "referenceTo": ["Account"],
+                "relationshipName": "Account",
+            },
+        ],
+    }
+    account_describe = {
+        "name": "Account",
+        "label": "取引先",
+        "fields": [
+            {"name": "Name", "label": "取引先名", "type": "Text"},
+            {"name": "Subject__c", "label": "件名", "type": "Text"},
+            {"name": "OtherSubject__c", "label": "件名", "type": "Text"},
+        ],
+    }
+    metadata = _make_metadata(
+        detail_columns=["OPP.ACCOUNT.SUBJECT__C"],
+        detail_column_labels={"OPP.ACCOUNT.SUBJECT__C": "取引先: 件名"},
+    )
+    rows = build_column_map(
+        metadata,
+        main_describe,
+        None,
+        related_describes={"Account": account_describe},
+        relations=[_fake_relation("Opportunity", "AccountId", "Account", "Account", 1)],
+        main_object="Opportunity",
+    )
+    row = next(r for r in rows if r["列キー"] == "OPP.ACCOUNT.SUBJECT__C")
+    # 候補が複数あるときは 「 複数候補あり 」 備考
+    assert "複数候補あり" in row["備考"]

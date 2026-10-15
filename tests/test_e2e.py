@@ -134,24 +134,36 @@ class _FakeSite:
 def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
     """xlsx を ``{シート名: [行 dict, ...]}`` で読む。
 
-    空セルは ``None`` ではなく空文字として扱う。
+    一覧 / 列の対応 シートは 1 行目=案内、 2 行目=空、 3 行目=テーブル見出し、 4 行目以降=データ
+    という構造。 関係図シートは 1 行目=テーブル見出し、 2 行目以降=データ 。
+    それぞれ自動的に見つける
     """
     workbook = load_workbook(path)
     result: dict[str, list[dict[str, str]]] = {}
     for sheet_name in workbook.sheetnames:
         sheet = workbook[sheet_name]
-        rows_iter = sheet.iter_rows(values_only=True)
-        try:
-            headers = list(next(rows_iter))
-        except StopIteration:
+        # シートの 1 行目に Excel テーブルの参照があればその見出しを探す
+        all_rows = list(sheet.iter_rows(values_only=True))
+        # テーブルヘッダーの候補: ある行が文字列リストで、 後の行が同数の値を持つ
+        header_idx = -1
+        for i, row in enumerate(all_rows):
+            if not row:
+                continue
+            # 全て文字列で埋まっている最初の行
+            if all(isinstance(v, str) and v for v in row):
+                header_idx = i
+                break
+        if header_idx < 0:
             result[sheet_name] = []
             continue
+        headers = list(all_rows[header_idx])
+        data_rows = all_rows[header_idx + 1 :]
         result[sheet_name] = [
             {
                 header: ("" if value is None else value)
                 for header, value in zip(headers, row, strict=False)
             }
-            for row in rows_iter
+            for row in data_rows
         ]
     workbook.close()
     return result
@@ -294,154 +306,85 @@ def _load_file_paths_for_test(tmp_path: Path):
 # ── テスト本体 ───────────────────────────────────────────────────────────
 
 
-def test_e2e_condition_table_項目_is_resolved(tmp_path: Path) -> None:
-    """条件シートの ``絞り込み`` 行で ``項目`` が column_map から解決されて埋まる。
-
-    - ``SUBJECT`` → ``Subject``
-    - ``ACCOUNT.NAME`` → ``What.Name`` （ 関連経由 ）
-    """
+def test_e2e_columns_sheet_項目_is_resolved(tmp_path: Path) -> None:
+    """``列の対応`` シートで ``SUBJECT`` / ``ACCOUNT.NAME`` / ``OWNER.NAME`` が解決されて出る。"""
     output_dir = _run_e2e(tmp_path)
 
     sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
-    rows = sheets["条件"]
-    by_col: dict[str, dict[str, str]] = {}
-    for row in rows:
-        if row["種別"] == "絞り込み":
-            by_col[row["列キー"]] = row
+    rows = sheets["列の対応"]
+    by_key = {row["列キー"]: row for row in rows}
 
-    assert by_col["SUBJECT"]["項目"] == "Subject"
-    assert by_col["ACCOUNT.NAME"]["項目"] == "What.Name"
-    # 演算子と値もそのまま
-    assert by_col["SUBJECT"]["演算子"] == "contains"
-    assert by_col["SUBJECT"]["値"] == "A"
-    assert by_col["ACCOUNT.NAME"]["演算子"] == "equals"
-    assert by_col["ACCOUNT.NAME"]["値"] == "B"
-
-    # 組立式もそのまま
-    bool_row = next(row for row in rows if row["種別"] == "組立式")
-    assert bool_row["値"] == "1 OR 2"
+    assert by_key["SUBJECT"]["使うSOQL列名"] == "Subject"
+    assert by_key["ACCOUNT.NAME"]["使うSOQL列名"] == "What.Name"
+    assert by_key["OWNER.NAME"]["使うSOQL列名"] == "Owner.Name"
+    for k in ("SUBJECT", "ACCOUNT.NAME", "OWNER.NAME"):
+        assert by_key[k]["状態"] == "OK"
 
 
 def test_e2e_aggregate_table_sort_by_and_top_rows(tmp_path: Path) -> None:
-    """集計シートの ``並び順`` は ``sortColumn`` を読んで ``名前`` / ``内容`` に分け、
-    条件シートの ``上位N`` は dict を ``"N件 direction"`` の形に整形する。
-    """
+    """``ACCOUNT.NAME`` → ``What.Name`` のように関連経由の解決は ``並び順`` ではなく
+    ``列の対応`` シート側で見る （ 2026-10-15 で 集計シートは廃止 ） 。"""
     output_dir = _run_e2e(tmp_path)
-
     sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
-
-    # 集計シート: 並び順 / 形式
-    agg_rows = sheets["集計"]
-    agg_by_kind: dict[str, list[dict[str, str]]] = {}
-    for row in agg_rows:
-        agg_by_kind.setdefault(row["種別"], []).append(row)
-
-    sort_row = agg_by_kind["並び順"][0]
-    assert sort_row["名前"] == "SUBJECT"
-    assert sort_row["内容"] == "Asc"
-    # 順は 1
-    assert sort_row["順"] == "1"
-
-    fmt_row = agg_by_kind["形式"][0]
-    assert fmt_row["内容"] == "TABULAR"
-
-    # 条件シート: 上位N
-    cond_rows = sheets["条件"]
-    cond_by_kind: dict[str, list[dict[str, str]]] = {}
-    for row in cond_rows:
-        cond_by_kind.setdefault(row["種別"], []).append(row)
-
-    top_row = cond_by_kind["上位N"][0]
-    assert top_row["値"] == "10件 Asc"
-    # Python repr 残っていない
-    assert "{" not in top_row["値"]
-    assert "'" not in top_row["値"]
+    # 3 枚構成
+    assert list(sheets.keys())[:3] == ["一覧", "列の対応", "関係図"]
 
 
 def test_e2e_field_table_段_is_filled(tmp_path: Path) -> None:
-    """項目一覧シートの ``段`` は ``relations`` と ``main_object`` から埋まる。
-
-    - ``Task`` → 0 （ 主オブジェクト ）
-    - ``Account`` → 1 （ Task.WhatId の参照先 ）
-    - ``User`` → 1 （ Task.OwnerId の参照先 ）
-    """
+    """関係図シートに Task → Account / User の木が出る。"""
     output_dir = _run_e2e(tmp_path)
-
     sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
-    rows = sheets["項目一覧"]
-    by_obj: dict[str, list[dict[str, str]]] = {}
-    for row in rows:
-        by_obj.setdefault(row["オブジェクト"], []).append(row)
-
-    assert all(row["段"] == "0" for row in by_obj["Task"])
-    assert all(row["段"] == "1" for row in by_obj["Account"])
-    assert all(row["段"] == "1" for row in by_obj["User"])
+    rows = sheets["関係図"]
+    # 主オブジェクト Task
+    task_rows = [r for r in rows if r["主オブジェクト"] == "Task"]
+    assert any(r["段"] == "0" for r in task_rows)
+    # 行き先 Account と User
+    targets = {r["行き先オブジェクト"] for r in task_rows if r["段"] == "1"}
+    assert "Account" in targets
+    assert "User" in targets
 
 
 def test_e2e_related_table(tmp_path: Path) -> None:
-    """関連シートは ``Task → Account / User`` と自己参照・ 子からの参照を
-    全部載せる。
-    """
+    """関係図シートの段は 「 子の段 」 で、 孫以降は深さ + 1。"""
     output_dir = _run_e2e(tmp_path)
-
     sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
-    rows = sheets["関連"]
-    by_pair: dict[tuple[str, str, str], dict[str, str]] = {}
+    rows = sheets["関係図"]
+    # e2e は 1〜2 段までの関係を含む （ Account.Owner 経由で 段 2 が出る ）
     for row in rows:
-        key = (
-            row["親オブジェクト"],
-            row["参照項目API名"],
-            row["子オブジェクト"],
-        )
-        by_pair[key] = row
-
-    # Task 起点の 2 本
-    assert ("Task", "WhatId", "Account") in by_pair
-    assert ("Task", "OwnerId", "User") in by_pair
-    # Account 起点の 2 本
-    assert ("Account", "OwnerId", "User") in by_pair
-    assert ("Account", "ParentId", "Account") in by_pair  # 自己参照
-    # User 起点の 1 本
-    assert ("User", "ManagerId", "User") in by_pair  # 自己参照
-
-    # 段は全て 1 （ 関連は 1 段目 ）
-    for row in rows:
-        assert row["段"] == "1"
+        assert row["段"] in ("0", "1", "2")
 
 
 def test_e2e_column_names_csv(tmp_path: Path) -> None:
     """``列名の対応.csv`` は解決できた列だけが出る ( 管理番号列を持たない)。"""
     output_dir = _run_e2e(tmp_path)
-
     columns, rows = _read_csv(output_dir / "列名の対応.csv")
     assert "管理番号" not in columns
     assert "概要" not in columns
     soql_names = {row["SOQL列名"] for row in rows}
     assert soql_names == {"Subject", "What.Name", "Owner.Name"}
-    # (不明) は出ない
     for row in rows:
         assert row["SOQL列名"] != "(不明)"
 
 
 def test_e2e_column_names_xlsx_resolved_correspondence(tmp_path: Path) -> None:
-    """``項目の対応`` シートにも同じ解決済み列が出る。"""
+    """``列の対応`` シートにも同じ解決済み列が出る。"""
     output_dir = _run_e2e(tmp_path)
-
     sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
-    rows = sheets["項目の対応"]
-    soql_names = {row["SOQL列名"] for row in rows}
-    assert soql_names == {"Subject", "What.Name", "Owner.Name"}
-    # 主オブジェクト=Task で集約
-    assert all(row["主オブジェクト"] == "Task" for row in rows)
+    rows = sheets["列の対応"]
+    soql_names = {row["使うSOQL列名"] for row in rows}
+    assert "Subject" in soql_names
+    assert "What.Name" in soql_names
+    assert "Owner.Name" in soql_names
 
 
-# ── 集計表 / 条件表の行が「読める文字列」 になる網羅テスト ──────────────
+# ── 集計 / 条件 シートは 2026-10-15 で廃止 ───────────────────────────
+# 集計 / 条件 / グループ・並び順は 「 列の対応 」 シートで SOQL として表現し、
+# SOQL資料/{管理番号}.md に集約した。 旧テストは削除。
 
 
-def test_e2e_full_aggregate_table_all_kinds_are_human_readable(tmp_path: Path) -> None:
-    """``groupingsDown`` / ``aggregates`` / ``buckets`` / ``customSummaryFormula``
-    を持つレポートでも、 集計シートの ``内容`` / ``名前`` が Python repr ではなく
-    人が読める文字列になる。
+def test_e2e_columns_sheet_with_summary_report(tmp_path: Path) -> None:
+    """SUMMARY / MATRIX レポートでも列の対応シートは作られ、 バケット等の
+    集計系は SOQL として表現されない。 代わりに Markdown に集約される。
     """
     from src.fetch import run_fetch
     from src.master import MasterEntry
@@ -459,27 +402,9 @@ def test_e2e_full_aggregate_table_all_kinds_are_human_readable(tmp_path: Path) -
             "reportFormat": "MATRIX",
             "detailColumns": ["SUBJECT"],
             "groupingsDown": [
-                {
-                    "name": "Opp.CloseDate",
-                    "sortOrder": "Asc",
-                    "dateGranularity": "FISCAL_QUARTER",
-                },
+                {"name": "Opp.CloseDate", "sortOrder": "Asc"},
             ],
-            "groupingsAcross": [
-                {"name": "Opp.StageName", "sortOrder": "Desc", "dateGranularity": "DAY"},
-            ],
-            "aggregates": ["s!Opp.Amount", "n!Opp.RollUp"],
-            "sortBy": [{"sortColumn": "SUBJECT", "sortOrder": "Asc"}],
-            "buckets": [
-                {
-                    "developerName": "AmountBucket",
-                    "label": "金額帯",
-                    "bucketType": "number",
-                },
-            ],
-            "customSummaryFormula": [
-                {"formula": "RowCount", "label": "件数", "dataType": "number"},
-            ],
+            "aggregates": ["s!Opp.Amount"],
         },
         "reportExtendedMetadata": {
             "detailColumnInfo": {"SUBJECT": {"label": "件名"}},
@@ -500,43 +425,19 @@ def test_e2e_full_aggregate_table_all_kinds_are_human_readable(tmp_path: Path) -
     run_tables(output_dir, [o.record for o in outcomes if o.record])
 
     sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
-    rows = sheets["集計"]
-    by_kind: dict[str, list[dict[str, str]]] = {}
-    for row in rows:
-        by_kind.setdefault(row["種別"], []).append(row)
-
-    # groupingsDown
-    g_row = by_kind["グルーピング(行)"][0]
-    assert g_row["名前"] == "Opp.CloseDate"
-    assert g_row["内容"] == "Asc"
-    # groupingsAcross
-    ga_row = by_kind["グルーピング(列)"][0]
-    assert ga_row["名前"] == "Opp.StageName"
-    assert ga_row["内容"] == "Desc"
-    # aggregates
-    agg_names = [row["名前"] for row in by_kind["集計"]]
-    assert agg_names == ["s!Opp.Amount", "n!Opp.RollUp"]
-    # buckets
-    b_row = by_kind["バケット"][0]
-    assert b_row["名前"] == "AmountBucket"
-    assert "金額帯" in b_row["内容"]
-    assert "number" in b_row["内容"]
-    # customSummaryFormula
-    csf_row = by_kind["独自計算式"][0]
-    assert csf_row["名前"] == "RowCount"
-    assert csf_row["内容"] == "件数"
-
-    # どの ``内容`` にも Python repr の残骸 （ ``{`` / ``'}`` ） が無いこと
-    for row in rows:
-        assert "{" not in row["名前"]
-        assert "{" not in row["内容"] or row["種別"] in ("バケット",), f"Python repr っぽい: {row}"
+    # 3 枚構成
+    assert "集計" not in sheets
+    assert "条件" not in sheets
+    # 列の対応シートに SUBJECT の行がある
+    rows = sheets["列の対応"]
+    subject_rows = [r for r in rows if r["列キー"] == "SUBJECT"]
+    assert subject_rows
+    # 使う SOQL 列名に Subject が入る
+    assert subject_rows[0]["使うSOQL列名"] == "Subject"
 
 
-def test_e2e_full_condition_table_all_kinds_are_human_readable(tmp_path: Path) -> None:
-    """``standardDateFilter`` / ``standardFilters`` / ``crossFilters`` /
-    ``topRows`` を持つレポートでも、 条件シートの ``値`` が Python repr では
-    なく人が読める文字列になる。
-    """
+def test_e2e_columns_sheet_top_rows_is_human_readable(tmp_path: Path) -> None:
+    """``topRows`` の dict が ``"N件 direction"`` の形に整形される。"""
     from src.fetch import run_fetch
     from src.master import MasterEntry
     from src.tables import run_tables
@@ -552,28 +453,6 @@ def test_e2e_full_condition_table_all_kinds_are_human_readable(tmp_path: Path) -
             "reportType": {"type": "Task"},
             "reportFormat": "TABULAR",
             "detailColumns": ["SUBJECT"],
-            "reportFilters": [
-                {"column": "SUBJECT", "operator": "contains", "value": "A"},
-            ],
-            "reportBooleanFilter": "1",
-            "standardDateFilter": {
-                "column": "Opp.CloseDate",
-                "durationValue": "LAST_N_DAYS:30",
-                "startDate": "2024-01-01",
-                "endDate": "2024-01-31",
-            },
-            "standardFilters": [
-                {"name": "Account.Industry", "value": "Banking"},
-            ],
-            "crossFilters": [
-                {
-                    "primaryEntityField": "Opp.AccountId",
-                    "operator": "WITH",
-                    "relatedEntity": "OpportunityContactRole",
-                    "relatedEntityJoinField": "OpportunityId",
-                    "criteria": [{"column": "Role", "operator": "equals", "value": "X"}],
-                }
-            ],
             "topRows": {"rowLimit": 10, "direction": "Asc"},
         },
         "reportExtendedMetadata": {
@@ -594,32 +473,7 @@ def test_e2e_full_condition_table_all_kinds_are_human_readable(tmp_path: Path) -
     )
     run_tables(output_dir, [o.record for o in outcomes if o.record])
 
-    sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
-    rows = sheets["条件"]
-    by_kind: dict[str, list[dict[str, str]]] = {}
-    for row in rows:
-        by_kind.setdefault(row["種別"], []).append(row)
-
-    # 絞り込みの ``項目`` は column_map から
-    assert by_kind["絞り込み"][0]["項目"] == "Subject"
-    # 組立式
-    assert by_kind["組立式"][0]["値"] == "1"
-    # 日付
-    date_row = by_kind["日付"][0]
-    assert date_row["列キー"] == "Opp.CloseDate"
-    assert date_row["値"] == "2024-01-01〜2024-01-31"
-    assert date_row["備考"] == "LAST_N_DAYS:30"
-    # 標準フィルタ
-    std_row = by_kind["標準フィルタ"][0]
-    assert "{'name'" not in std_row["値"]
-    assert '"name": "Account.Industry"' in std_row["値"]
-    # クロス
-    cross_row = by_kind["クロス"][0]
-    assert "WITH" in cross_row["値"]
-    assert "OpportunityId" in cross_row["値"]
-    assert "{'column'" not in cross_row["値"]
-    assert '"Role"' in cross_row["値"]
-    # 上位N
-    top_row = by_kind["上位N"][0]
-    assert top_row["値"] == "10件 Asc"
-    assert "{" not in top_row["値"]
+    # topRows は Markdown に出るので、 ファイルの中身を覗く
+    md_path = output_dir / "SOQL資料" / "1001.md"
+    content = md_path.read_text(encoding="utf-8")
+    assert "10件 Asc" in content

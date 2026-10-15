@@ -102,6 +102,25 @@ def _normalize_label(label: str) -> str:
     return label.strip().lower()
 
 
+# レポートの列表示名に 「 オブジェクト: 項目名 」 の形 （ 半角・全角コロン、 前後の空白あり/なし ）
+# があるかを判定する正規表現。 コロンは ``:`` （ U+003A ） と ``：`` （ U+FF1A ） の両方を
+# 受け付ける
+_OBJECT_LABEL_PATTERN = re.compile(r"^\s*(?P<object>.+?)\s*[:：]\s*(?P<field>.+?)\s*$")
+
+
+def _split_object_label(label: str) -> tuple[str | None, str]:
+    """表示名が ``「 オブジェクト: 項目名 」`` 形式なら ``(オブジェクト, 項目)`` に分解する。
+
+    コロンは半角・全角どちらでも受け付ける。 そうでないときは ``(None, label)`` を返す。
+    """
+    match = _OBJECT_LABEL_PATTERN.match(label)
+    if match is None:
+        return None, label
+    object_part = match.group("object")
+    field_part = match.group("field")
+    return object_part, field_part
+
+
 def _normalize_identifier(value: str) -> str:
     """識別子の比較用に正規化する。 大文字小文字と ``_`` を無視する。"""
     return value.strip().lower().replace("_", "")
@@ -741,6 +760,12 @@ def build_column_map(
     column_info = _collect_column_info(metadata)
     field_index = _build_field_index(main_describe) if main_describe is not None else None
 
+    # ``main_object`` が未指定なら ``main_describe.get("name")`` から取る
+    if main_object is None and isinstance(main_describe, dict):
+        candidate = main_describe.get("name")
+        main_object = candidate if isinstance(candidate, str) else None
+    main_object = main_object or ""
+
     # 鎖を事前計算
     chains_by_object = build_relation_chains(relations, main_object)
 
@@ -756,10 +781,32 @@ def build_column_map(
     related_indices: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
     rows: list[dict[str, str]] = []
+    # オブジェクトの表示名 → API 名のマップ （ 「 タスク: 作業会社名 」 形式の照合用 ）
+    object_label_to_api: dict[str, str] = {}
+    if field_index is not None:
+        # 主オブジェクト自身の表示名
+        main_label = main_describe.get("label") if isinstance(main_describe, dict) else None
+        if isinstance(main_label, str) and main_label:
+            object_label_to_api[_normalize_label(main_label)] = main_object or ""
+        # 関連オブジェクトの表示名
+        for related_name, related_describe in related_describes.items():
+            if not isinstance(related_describe, dict):
+                continue
+            rel_label = related_describe.get("label")
+            if isinstance(rel_label, str) and rel_label and isinstance(related_name, str):
+                object_label_to_api[_normalize_label(rel_label)] = related_name
+
     for column_key in columns:
         info = column_info.get(column_key, {}) if isinstance(column_info, dict) else {}
         label = info.get("label", column_key) if isinstance(info, dict) else column_key
-        normalized_label = _normalize_label(label)
+        # 表示名が 「 オブジェクト: 項目名 」 の形なら分解して、 コロン前の
+        # オブジェクト表示名に一致するオブジェクト内の項目表示名で照合する
+        # （ 2026-10-15 ） 。 コロン前が見つからないときは従来どおり後ろだけで照合
+        prefix_object, body_label = _split_object_label(label)
+        normalized_label = _normalize_label(body_label if prefix_object else label)
+        target_object_hint: str | None = None
+        if prefix_object is not None:
+            target_object_hint = object_label_to_api.get(_normalize_label(prefix_object))
         row = {
             "列キー": column_key,
             "表示名": label,
@@ -966,14 +1013,20 @@ def build_column_map(
         # 各候補は (所属オブジェクト名, 鎖文字列, field_dict) の組
         all_candidates: list[tuple[str, str, dict[str, Any], bool]] = []
         # bool は "main に由来するか"
+        # 「 オブジェクト: 項目名 」 形式なら、 候補を ``target_object_hint`` で
+        # 絞り込む （ 2026-10-15 ） 。
         main_matches = field_index.get(normalized_label, [])
         for field in main_matches:
+            if target_object_hint is not None and main_object != target_object_hint:
+                continue
             all_candidates.append((main_object or "", "", field, True))
 
         # 関連から
         for chain in ordered_chains:
             related_describe = related_describes.get(chain.object_name)
             if not isinstance(related_describe, dict):
+                continue
+            if target_object_hint is not None and chain.object_name != target_object_hint:
                 continue
             if chain.object_name not in related_indices:
                 related_indices[chain.object_name] = _build_field_index(related_describe)

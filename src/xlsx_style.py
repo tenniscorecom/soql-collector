@@ -1,0 +1,116 @@
+"""Excel 出力で使い回す、 列幅と見栄えのヘルパー。
+
+``tables.SOQL調査.xlsx`` と ``column_fix_xlsx.列の直し.xlsx`` の両方が
+列幅の計算と見出しの固定を共通で持つように、 ここで 1 か所にまとめる。
+openpyxl 依存はこのモジュール内でだけ持つ
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
+
+# 列幅の最小 / 最大
+MIN_COLUMN_WIDTH = 8
+MAX_COLUMN_WIDTH = 60
+
+# 薄い赤 (要対応) / 薄い黄 (要確認) / 薄い緑 (人が書くセル)
+FILL_NEEDS_FIX = "F8CBAD"
+FILL_NEEDS_CHECK = "FFF2CC"
+FILL_USER_INPUT = "C6EFCE"
+
+
+def display_width(text: str) -> int:
+    """表示幅を計算する。 全角は 2 、 半角は 1 としてカウント。"""
+    width = 0
+    for ch in text:
+        if _is_wide(ch):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def _is_wide(ch: str) -> bool:
+    """全角文字とみなすかの判定。 CJK 漢字・ ひらがな・ カタカナ・ 全角記号。"""
+    if not ch:
+        return False
+    code = ord(ch)
+    if 0x1100 <= code <= 0x115F:
+        return True
+    if 0x2E80 <= code <= 0x303E:
+        return True
+    if 0x3041 <= code <= 0x33FF:
+        return True
+    if 0x3400 <= code <= 0x4DBF:
+        return True
+    if 0x4E00 <= code <= 0x9FFF:
+        return True
+    if 0xA000 <= code <= 0xA4CF:
+        return True
+    if 0xAC00 <= code <= 0xD7A3:
+        return True
+    if 0xF900 <= code <= 0xFAFF:
+        return True
+    if 0xFE30 <= code <= 0xFE4F:
+        return True
+    if 0xFF00 <= code <= 0xFF60:
+        return True
+    if 0xFFE0 <= code <= 0xFFE6:
+        return True
+    if code in (0x3000, 0x3001, 0x3002, 0x3003):
+        return True
+    return False
+
+
+def adjust_column_widths(
+    worksheet: Any,
+    headers: Sequence[str],
+    rows: Sequence[dict[str, str]],
+    *,
+    start_row: int,
+) -> None:
+    """列幅を 「 全角は 2 ・ 半角は 1 としてカウント 」 した値の最大 + 余白 で決める。
+
+    最小 ``MIN_COLUMN_WIDTH`` 、 最大 ``MAX_COLUMN_WIDTH`` 。 最大を超える
+    列は折り返し表示にする
+    """
+    from openpyxl.styles import Alignment
+    from openpyxl.utils import get_column_letter as _gcl
+
+    for index, header in enumerate(headers, start=1):
+        max_width = display_width(header)
+        for row in rows:
+            value = row.get(header, "")
+            max_width = max(max_width, display_width(str(value)))
+        col_letter = _gcl(index)
+        width = max(MIN_COLUMN_WIDTH, min(MAX_COLUMN_WIDTH, max_width + 2))
+        worksheet.column_dimensions[col_letter].width = width
+        if max_width >= MAX_COLUMN_WIDTH and rows:
+            # 折り返し
+            for r in range(start_row, start_row + len(rows) + 1):
+                cell = worksheet.cell(row=r, column=index)
+                cell.alignment = Alignment(
+                    wrap_text=cell.alignment.wrap_text or True,
+                    horizontal=cell.alignment.horizontal,
+                    vertical=cell.alignment.vertical,
+                )
+
+
+def fill_cell_range(
+    worksheet: Any,
+    *,
+    start_row: int,
+    start_col: int,
+    end_row: int,
+    end_col: int,
+    color: str,
+) -> None:
+    """指定範囲のセルを ``color`` で塗りつぶす。 PatternFill を内部で作る。"""
+    from openpyxl.styles import PatternFill
+
+    fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+    for r in range(start_row, end_row + 1):
+        for c in range(start_col, end_col + 1):
+            cell = worksheet.cell(row=r, column=c)
+            cell.fill = fill

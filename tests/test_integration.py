@@ -2,6 +2,9 @@
 ``run_fetch`` → ``run_tables`` まで通して、 ``SOQL調査.xlsx`` と
 ``列名の対応.csv`` を検証する。 偽物の Salesforce クライアントで実 API には
 繋がない。
+
+2026-10-15: シート構成が 3 枚 （ 一覧 / 列の対応 / 関係図 ） に変わったので、
+テストの参照シート名も合わせる。
 """
 
 from __future__ import annotations
@@ -106,24 +109,33 @@ def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
 def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
     """xlsx を ``{シート名: [行 dict, ...]}`` で読む。
 
-    空セルは ``None`` ではなく空文字として扱う。
+    一覧 / 列の対応 シートは 1 行目=案内、 2 行目=空、 3 行目=テーブル見出し、 4 行目以降=データ
+    という構造。 関係図シートは 1 行目=テーブル見出し、 2 行目以降=データ 。
+    それぞれ自動的に見つける
     """
     workbook = load_workbook(path)
     result: dict[str, list[dict[str, str]]] = {}
     for sheet_name in workbook.sheetnames:
         sheet = workbook[sheet_name]
-        rows_iter = sheet.iter_rows(values_only=True)
-        try:
-            headers = list(next(rows_iter))
-        except StopIteration:
+        all_rows = list(sheet.iter_rows(values_only=True))
+        header_idx = -1
+        for i, row in enumerate(all_rows):
+            if not row:
+                continue
+            if all(isinstance(v, str) and v for v in row):
+                header_idx = i
+                break
+        if header_idx < 0:
             result[sheet_name] = []
             continue
+        headers = list(all_rows[header_idx])
+        data_rows = all_rows[header_idx + 1 :]
         result[sheet_name] = [
             {
                 header: ("" if value is None else value)
                 for header, value in zip(headers, row, strict=False)
             }
-            for row in rows_iter
+            for row in data_rows
         ]
     workbook.close()
     return result
@@ -187,12 +199,11 @@ class _Row:
 # ── 統合テスト ─────────────────────────────────────────────────────
 
 
-def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
-    """``run_fetch`` → ``run_tables`` で 一覧 と 似たレポート が出る。
+def test_e2e_run_tables_writes_overview_and_columns_sheet(tmp_path: Path) -> None:
+    """``run_fetch`` → ``run_tables`` で 一覧シートに 2000件超 と 個人情報 が出る。
 
-    シナリオ:
-    - 1001: 商談名と取引先責任者（ Contact.Email を持つ ） を出力。 get は 2000 行超
-    - 1002: 1001 と同じ構造で 違う ID
+    似たレポート判定は 1 グループになるが、 その出力先は一覧シートの 「 似たレポート 」
+    列にまとめられた（ 別シートは無くなった ）。
     """
     from src import pii
     from src.fetch import RELATED_DEPTH, RELATED_MAX, ROW_LIMIT_ENABLED, run_fetch
@@ -216,7 +227,6 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
     )
     site_for = _site_for(client)
 
-    # 1001: get が Truncated
     entry_1001 = MasterEntry(
         key="1001",
         summary="テスト1001",
@@ -234,11 +244,7 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
         site_for=site_for,
     )[0]
     assert outcome_1001.status == "ok"
-    assert outcome_1001.record is not None
-    assert outcome_1001.record.row_check is not None
-    assert outcome_1001.record.row_check.status == "超えている"
 
-    # 1002: 同じ構造で 違う ID、 get は 10 行
     client2 = _FakeClient(
         describe=_describe(
             "Opportunity",
@@ -265,12 +271,7 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
         site_for=_site_for(client2),
     )[0]
     assert outcome_1002.status == "ok"
-    assert outcome_1002.record is not None
-    assert outcome_1002.record.row_check is not None
-    assert outcome_1002.record.row_check.status == "超えていない"
-    assert outcome_1002.record.row_check.rows == 10
 
-    # run_tables で全部書く
     output = tmp_path / "output"
     output.mkdir(parents=True, exist_ok=True)
     records = [outcome_1001.record, outcome_1002.record]
@@ -281,12 +282,11 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
         similar_threshold=0.8,
     )
 
-    # xlsx が作られている
     xlsx_path = output / "SOQL調査.xlsx"
     assert xlsx_path.exists()
     sheets = _read_xlsx(xlsx_path)
 
-    # 一覧シート: 1001 は 超えている、 1002 は 超えていない
+    # 一覧シート
     overview = sheets["一覧"]
     by_key = {row["管理番号"]: row for row in overview}
     assert by_key["1001"]["2000件超"] == "超えている"
@@ -297,22 +297,20 @@ def test_e2e_run_tables_writes_survey_and_similar(tmp_path: Path) -> None:
     assert by_key["1002"]["個人情報"] == "あり"
     # 該当列に 「 メール 」 が出る
     assert "メール" in by_key["1001"]["個人情報の該当列"]
+    # 似たレポートの列に 「 グループN: ... が基準 」 の形で出る
+    assert "基準" in by_key["1001"]["似たレポート"]
+    assert "基準" in by_key["1002"]["似たレポート"]
 
-    # 似たレポートシート: 1001 と 1002 は 「 同一 」 で 1 グループ
-    similar_rows = sheets["似たレポート"]
-    assert len(similar_rows) == 2  # 基準 + 対象
-    categories = [row["区分"] for row in similar_rows]
-    assert "基準" in categories
-    assert "同一" in categories
-    integrations = {row["統合の見込み"] for row in similar_rows}
-    assert "1本にまとめられる" in integrations
+    # 列の対応シート: Contact.Email も出る
+    columns_sheet = sheets["列の対応"]
+    assert any(r["列キー"] == "Contact.Email" for r in columns_sheet)
 
     # 列名の対応.csv も作られている
     assert (output / "列名の対応.csv").exists()
 
 
-def test_e2e_single_record_no_similar_sheet(tmp_path: Path) -> None:
-    """1 件だけのときは 似たレポート シートは見出しだけ ( 1 冊全部できる )。"""
+def test_e2e_single_record_no_similar_text(tmp_path: Path) -> None:
+    """1 件だけのときは 似たレポート列が空文字。 シート構成は 3 枚のまま。"""
     from src import pii
     from src.fetch import RELATED_DEPTH, RELATED_MAX, ROW_LIMIT_ENABLED, run_fetch
     from src.master import MasterEntry
@@ -349,27 +347,24 @@ def test_e2e_single_record_no_similar_sheet(tmp_path: Path) -> None:
         pii_config=pii.PIIConfig(keywords=pii_keywords, person_objects=pii_person_objects),
         similar_threshold=0.8,
     )
-    # xlsx はある ( 1 冊全部できる )
     assert (output / "SOQL調査.xlsx").exists()
     sheets = _read_xlsx(output / "SOQL調査.xlsx")
-    # 一覧シートに 1 行
     assert len(sheets["一覧"]) == 1
-    # 似たレポートシートは該当なしでデータ行 0 ( 見出しは出る )
-    assert sheets["似たレポート"] == []
+    # 1 件だけのときは 似たレポートの列が空
+    assert sheets["一覧"][0]["似たレポート"] == ""
 
 
-def test_e2e_resolved_correspondence_has_pii_columns(tmp_path: Path) -> None:
-    """``項目の対応`` シートに 個人情報 / 個人情報の根拠 列が加わっている。"""
+def test_e2e_columns_sheet_resolves_related_email(tmp_path: Path) -> None:
+    """``列の対応`` シートで、 関連経由（ Contact__r.Email ） の列も解決済みで出る。"""
     from src import pii
     from src.fetch import RELATED_DEPTH, RELATED_MAX, ROW_LIMIT_ENABLED, run_fetch
     from src.master import MasterEntry
-    from src.tables import RESOLVED_COLUMNS, run_tables
+    from src.tables import run_tables
 
     describe_csv_path = tmp_path / "describe.csv"
     pii_keywords = pii.DEFAULT_KEYWORDS
     pii_person_objects = pii.DEFAULT_PERSON_OBJECTS
     client = _FakeClient(
-        # 「 メール 」 ラベルが Contact.Email と一致する想定 ( 既存テストと同形 )
         describe=_describe(
             "Opportunity", ["Contact.Email"], column_labels={"Contact.Email": "メール"}
         ),
@@ -399,7 +394,11 @@ def test_e2e_resolved_correspondence_has_pii_columns(tmp_path: Path) -> None:
         pii_config=pii.PIIConfig(keywords=pii_keywords, person_objects=pii_person_objects),
         similar_threshold=0.8,
     )
-
-    # RESOLVED_COLUMNS 定数で 個人情報 / 個人情報の根拠 の存在を保証
-    assert "個人情報" in RESOLVED_COLUMNS
-    assert "個人情報の根拠" in RESOLVED_COLUMNS
+    sheets = _read_xlsx(output / "SOQL調査.xlsx")
+    columns = sheets["列の対応"]
+    # Contact.Email が出る
+    email_rows = [r for r in columns if r["列キー"] == "Contact.Email"]
+    assert email_rows
+    # 使う SOQL 列名に Contact__r.Email のような関連経由が入る
+    soql = email_rows[0]["使うSOQL列名"]
+    assert "Email" in soql

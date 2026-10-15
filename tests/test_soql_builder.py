@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1668,6 +1669,65 @@ def test_incomplete_marker_constant_value() -> None:
     """``INCOMPLETE_MARKER`` は固定文字列。 ダウンローダーがこの印を見て実行前
     に止めるので、 値を変えるときはダウンローダーと同時に。"""
     assert INCOMPLETE_MARKER == "【未完成】作れなかった部分があります。このままでは実行できません。"
+
+
+# ── 未完成 SOQL の 1 行目: ダウンローダーとの契約 ────────────────────
+
+
+def test_partial_soql_first_line_starts_with_marker_from_contract() -> None:
+    """``一部作れず`` の SOQL の 1 行目は、 ダウンローダー側
+    ``tests/contract/未完成のSOQL.contract.txt`` の 1 行目と同じ印で始まる。
+
+    印の共通固定部分 (``【未完成】``) を見て止める契約のため、 印の文言が
+    多少違っていても 「 同じ印で始まる 」 ことをテストする
+    """
+    contract_path = Path(__file__).parent / "contract" / "未完成のSOQL.contract.txt"
+    expected_first_line = contract_path.read_text(encoding="utf-8").splitlines()[0]
+    # 契約の 1 行目の印の共通部分を取り出す。 ``【未完成】`` までは固定
+    # （ 印の文言自体は変えてよい ） 。
+    marker_prefix = "【未完成】"
+    assert expected_first_line.startswith(marker_prefix)
+
+    # missing が 1 件以上ある record を作って ``一部作れず`` を起こす
+    record = _make_record(
+        main_object="Opportunity",
+        detail_columns=["Opp.Name"],
+        column_map=[
+            {
+                "列キー": "Opp.Name",
+                "表示名": "商談名",
+                "所属オブジェクト": "Opportunity",
+                "対応フィールドAPI名": "Name",
+                "型": "string",
+                "参照先オブジェクト": "",
+                "リレーション名": "",
+                "備考": "",
+            },
+            {
+                # 取れない列 ( 表示名一致せず ) を 1 件混ぜて missing を作る
+                "列キー": "Opp.Mystery",
+                "表示名": "謎列",
+                "所属オブジェクト": "Opportunity",
+                "対応フィールドAPI名": "(不明)",
+                "型": "",
+                "参照先オブジェクト": "",
+                "リレーション名": "",
+                "備考": "対応フィールドなし",
+            },
+        ],
+        report_filters=[
+            # 組立式に解釈できない演算子を入れて missing を起こす
+            {"column": "Opp.Name", "operator": "custom_op", "value": "x"},
+        ],
+    )
+    draft = build_soql(record)
+    assert draft.status == STATUS_PARTIAL
+    first_line = draft.soql.split("\n", 1)[0]
+    # 契約の見本 1 行目と同じ印 (``【未完成】`` プレフィックス) で始まる
+    assert first_line.startswith(marker_prefix)
+    # 印として ``INCOMPLETE_MARKER`` と一致 （ soql-collector 側の固定値 ） 、
+    # かつ契約の見本の 1 行目も同じ印プレフィックスで始まる
+    assert first_line.startswith(INCOMPLETE_MARKER.split("【未完成】", 1)[0])
 
 
 # ── 壊れた版での動作確認 ( 一時的に手で壊して実行→戻す ) ──────────────

@@ -271,6 +271,9 @@ def test_ai_markdown_tabular_full_text() -> None:
     )
 
     expected = (
+        "> このファイルを丸ごと AI に貼ってください。"
+        "SOQL の下書きを、下の資料と照らして直すよう頼みます。\n"
+        "\n"
         "# 1001 テスト1001\n"
         "\n"
         "- レポートID: 00O000000000001\n"
@@ -279,12 +282,12 @@ def test_ai_markdown_tabular_full_text() -> None:
         "- 2000件超: 超えていない（42件）\n"
         "- 個人情報: なし\n"
         "\n"
-        "## 出力する列\n"
-        "| 表示名 | SOQL列名 | 型 | 備考 |\n"
+        "## 列の対応\n"
+        "| 表示名 | 使う SOQL 列名 | どこから | 候補 |\n"
         "| --- | --- | --- | --- |\n"
-        "| 件名 | Subject | string |  |\n"
-        "| 取引先名 | What.Name | string |  |\n"
-        "| 曖昧な列 | (不明) |  | 複数候補あり: Account.Owner（浅い）, Contact.Owner |\n"
+        "| 件名 | Subject | 自動 |  |\n"
+        "| 取引先名 | What.Name | 自動 |  |\n"
+        "| 曖昧な列 | (不明) | 取れず | Account.Owner（浅い）, Contact.Owner |\n"
         "\n"
         "## 絞り込み\n"
         "組立式: `1 AND (2 OR 3)`\n"
@@ -301,6 +304,12 @@ def test_ai_markdown_tabular_full_text() -> None:
         "\n"
         "## 関連オブジェクトの経路\n"
         "- Task → What（Account）\n"
+        "\n"
+        "## 似たレポート\n"
+        "なし\n"
+        "\n"
+        "## 警告\n"
+        "なし\n"
         "\n"
         "関係図 （ Mermaid ）: \n"
         "../関係図/Task.md\n"
@@ -358,7 +367,7 @@ def test_ai_markdown_summary_section_and_notes() -> None:
 
 def test_ai_markdown_main_object_unknown() -> None:
     """主オブジェクトが特定できなかった record は、 ヘッダーに理由が付き、
-    出力する列は表示名だけで SOQL列名は ``(不明)`` になる。
+    列の対応は表示名だけで 使う SOQL 列名は ``(不明)`` になる。
     """
     column_map = [
         {
@@ -386,16 +395,18 @@ def test_ai_markdown_main_object_unknown() -> None:
     # 主オブジェクト行に理由がそのまま入る
     assert "- 主オブジェクト: 不明（" in markdown
     assert "レポートタイプ 'Foo'" in markdown
-    # 出力する列: 表示名だけ、 SOQL列名は "(不明)" 、 備考に理由がそのまま
-    assert "| 件名 | (不明) |  | " in markdown
-    assert "レポートタイプ 'Foo'" in markdown
+    # 列の対応: 表示名だけ、 使う SOQL 列名は "(不明)" 、 候補は空、 どこから は 取れず
+    assert "| 件名 | (不明) | 取れず |  |" in markdown
+    # 警告セクションにも同じ理由が出る
+    assert "## 警告" in markdown
+    assert "- レポートタイプ 'Foo'" in markdown
 
 
 # ── セルエスケープ ────────────────────────────────────────────────────────
 
 
 def test_ai_markdown_escape_pipe_and_newline_in_cell() -> None:
-    """絞り込みの値や備考の ``|`` / 改行が Markdown 表でエスケープされる。"""
+    """絞り込みの値や候補の ``|`` / 改行が Markdown 表でエスケープされる。"""
     column_map = [
         {
             "列キー": "WEIRD",
@@ -405,7 +416,7 @@ def test_ai_markdown_escape_pipe_and_newline_in_cell() -> None:
             "型": "string",
             "参照先オブジェクト": "",
             "リレーション名": "",
-            "備考": "1行目\n2行目 | 区切り",
+            "備考": "複数候補あり: Foo|Bar\n2行目",
         },
     ]
     record = _make_record(
@@ -414,9 +425,9 @@ def test_ai_markdown_escape_pipe_and_newline_in_cell() -> None:
     )
     markdown = build_markdown(record)
 
-    # 出力する列: 表示名の ``|`` が ``\|`` 、 備考の改行が空白、 備考の ``|`` も
+    # 列の対応: 表示名の ``|`` が ``\|`` 、 候補欄の改行が空白、 候補の ``|`` も
     # エスケープ
-    assert "| PIPE\\|NEWLINE | Subject | string | 1行目 2行目 \\| 区切り |" in markdown
+    assert "| PIPE\\|NEWLINE | Subject | 自動 | Foo\\|Bar 2行目 |" in markdown
 
 
 # ── run_tables で書き出されること ─────────────────────────────────────────
@@ -441,7 +452,12 @@ def test_run_tables_writes_markdown_per_record(tmp_path: Path) -> None:
     new_file = md_dir / "1001.md"
     assert new_file.exists()
     content = new_file.read_text(encoding="utf-8")
-    assert content.startswith("# 1001 テスト1001")
+    # 先頭に AI への案内ブロックが必ず入る
+    assert content.startswith(
+        "> このファイルを丸ごと AI に貼ってください。"
+        "SOQL の下書きを、下の資料と照らして直すよう頼みます。"
+    )
+    assert "# 1001 テスト1001" in content
     # 失敗ファイル はそのまま残っている
     assert stale.exists()
     # 既存の xlsx / csv には影響しない
