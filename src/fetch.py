@@ -472,43 +472,71 @@ class SlimObject(TypedDict, total=False):
 
 
 def _slim_report(metadata: object) -> SlimReport:
-    """``client.report.describe()`` の戻り値から SOQL 組立に必要な構造だけを返す。
+    """``client.report.describe()`` の戻り値を、 内側で検証せずに読める形に整える（ 境界 ）。
 
-    - ``reportMetadata``: ``REPORT_METADATA_KEYS`` にあるキーだけを**そのまま**
-      残す。 値は元の参照のまま（ ``slimmed[key] is metadata[key]`` ）
-    - ``reportExtendedMetadata``: ``REPORT_EXTENDED_METADATA_KEYS`` の 3 キー
-      だけを**そのまま**残す
-    - それ以外のトップレベルキー（ ``reportTypeMetadata`` — そのレポートタイプで
-      使える全列の一覧で巨大、 ``attributes``、 グラフ・表示・フォルダ・説明など
-      の管理用キー）はすべて落とす
-    - 入力が dict でない／ ``reportMetadata`` と ``reportExtendedMetadata`` が
-      無い／ dict でない場合は、 例外を上げず省略する
-    - 入力の dict は書き換えない（ 別 dict にコピー ）
-    - 戻り値には **落としたキー名は含めない** （ 別関数
-      ``_collect_dropped_keys()`` で取り出し、 warnings に変換する ）
+    - 戻り値は **必ず** ``reportMetadata`` と ``reportExtendedMetadata`` の 2 つの
+      dict を持つ（ 入力が壊れていれば空の dict ）
+    - ``reportMetadata``: ``REPORT_METADATA_KEYS`` にあるキーだけ残す。 リストとして
+      読むキーは中身の型をそろえる（ ``detailColumns`` / ``aggregates`` は空でない
+      str だけ、 ``reportFilters`` / ``groupingsDown`` / ``groupingsAcross`` /
+      ``sortBy`` は dict だけ、 ``reportType`` は dict ）。 型がそろっている値は元の
+      参照のまま
+    - ``reportExtendedMetadata``: ``REPORT_EXTENDED_METADATA_KEYS`` の 3 キーだけを、
+      ``{列キー: dict}`` の形で残す
+    - 落としたキー名は含めない（ ``_collect_dropped_keys()`` で取り出す ）
+    - 入力の dict は書き換えない
     """
-    if not isinstance(metadata, dict):
-        return {}
+    source = metadata if isinstance(metadata, dict) else {}
+    report_metadata_raw = source.get("reportMetadata")
+    report_extended_raw = source.get("reportExtendedMetadata")
+    report_metadata = report_metadata_raw if isinstance(report_metadata_raw, dict) else {}
+    report_extended = report_extended_raw if isinstance(report_extended_raw, dict) else {}
 
-    result: dict[str, Any] = {}
+    slimmed_metadata = {
+        key: value for key, value in report_metadata.items() if key in REPORT_METADATA_KEYS
+    }
+    for key in ("detailColumns", "aggregates"):
+        if key in slimmed_metadata:
+            slimmed_metadata[key] = _str_list(slimmed_metadata[key])
+    for key in ("reportFilters", "groupingsDown", "groupingsAcross", "sortBy"):
+        if key in slimmed_metadata:
+            slimmed_metadata[key] = _dict_list(slimmed_metadata[key])
+    if "reportType" in slimmed_metadata and not isinstance(slimmed_metadata["reportType"], dict):
+        slimmed_metadata["reportType"] = {}
 
-    report_metadata_raw = metadata.get("reportMetadata")
-    if isinstance(report_metadata_raw, dict):
-        slimmed_metadata: dict[str, Any] = {}
-        for key, value in report_metadata_raw.items():
-            if key in REPORT_METADATA_KEYS:
-                slimmed_metadata[key] = value
-        result["reportMetadata"] = slimmed_metadata
+    slimmed_extended = {
+        key: {
+            column_key: info
+            for column_key, info in value.items()
+            if isinstance(column_key, str) and isinstance(info, dict)
+        }
+        for key, value in report_extended.items()
+        if key in REPORT_EXTENDED_METADATA_KEYS and isinstance(value, dict)
+    }
+    return {"reportMetadata": slimmed_metadata, "reportExtendedMetadata": slimmed_extended}
 
-    report_extended_raw = metadata.get("reportExtendedMetadata")
-    if isinstance(report_extended_raw, dict):
-        slimmed_extended: dict[str, Any] = {}
-        for key, value in report_extended_raw.items():
-            if key in REPORT_EXTENDED_METADATA_KEYS:
-                slimmed_extended[key] = value
-        result["reportExtendedMetadata"] = slimmed_extended
 
-    return result
+def _str_list(value: object) -> list[str]:
+    """空でない str だけのリストにする。 すでにそろっていれば元のリストを返す。"""
+    if not isinstance(value, list):
+        return []
+    if all(isinstance(item, str) and item for item in value):
+        return value
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _dict_list(value: object) -> list[dict[str, Any]]:
+    """dict だけのリストにする。 すでにそろっていれば元のリストを返す。"""
+    if not isinstance(value, list):
+        return []
+    if all(isinstance(item, dict) for item in value):
+        return value
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _text(value: object) -> str:
+    """str ならそのまま、 それ以外は空文字（ 境界の正規化用 ）。"""
+    return value if isinstance(value, str) else ""
 
 
 def _collect_dropped_keys(metadata: object) -> tuple[str, ...]:
@@ -543,61 +571,39 @@ def _collect_dropped_keys(metadata: object) -> tuple[str, ...]:
 
 
 def _slim_object(describe: object) -> SlimObject:
-    """``client.describe_object()`` の戻り値から、 SOQL 組立に必要な構造だけを返す。
+    """``describe_object()`` の戻り値を、 内側で検証せずに読める形に整える（ 境界 ）。
 
-    - 残す: ``name`` / ``label`` / ``custom`` / ``fields``
-    - 落とす: ``childRelationships`` / ``recordTypeInfos`` / ``urls`` /
-      ``supportedScopes`` など
-    - ``fields`` の各項目は次の8キーだけ（**この順**）:
-      ``name`` / ``label`` / ``type`` / ``custom`` / ``referenceTo`` /
-      ``relationshipName`` / ``picklist`` / ``picklistTotal``
-    - ``picklist``: 元の ``picklistValues`` のうち ``active`` が真の ``value``
-      を最大 30 件。 ``picklistTotal``: active な選択肢の総数（30 を超えたかが
-      分かる）。 選択肢が無ければ ``[]`` と ``0``
-    - 入力の dict は書き換えない（別 dict にコピー）
+    - 残す: ``name`` / ``label`` / ``custom`` / ``fields``（ ``childRelationships`` /
+      ``recordTypeInfos`` などは落とす ）
+    - ``fields`` の各項目は次の 9 キーに**必ず**この型でそろえる: ``name`` /
+      ``label`` / ``type`` / ``relationshipName``（ str。 無ければ空文字 ）、
+      ``custom`` / ``nameField``（ bool ）、 ``referenceTo``（ 空でない str の
+      リスト ）、 ``picklist``（ active な ``value`` を最大 30 件 ）、
+      ``picklistTotal``（ active な選択肢の総数 ）
+    - 入力が壊れていれば空の値で返す。 入力の dict は書き換えない
     """
-    if not isinstance(describe, dict):
-        return {}
-    name_raw = describe.get("name")
-    label_raw = describe.get("label")
-    custom_raw = describe.get("custom")
-    fields_raw = describe.get("fields")
-
+    source = describe if isinstance(describe, dict) else {}
+    fields_raw = source.get("fields")
     fields_list: list[Any] = fields_raw if isinstance(fields_raw, list) else []
-    slimmed_fields: list[dict[str, Any]] = [
-        _slim_field(field) for field in fields_list if isinstance(field, dict)
-    ]
-
     return {
-        "name": name_raw if isinstance(name_raw, str) else "",
-        "label": label_raw if isinstance(label_raw, str) else "",
-        "custom": custom_raw if isinstance(custom_raw, bool) else False,
-        "fields": slimmed_fields,
+        "name": _text(source.get("name")),
+        "label": _text(source.get("label")),
+        "custom": source.get("custom") is True,
+        "fields": [_slim_field(field) for field in fields_list if isinstance(field, dict)],
     }
 
 
 def _slim_field(field: dict[str, Any]) -> dict[str, Any]:
-    """``fields`` の各項目を8キーに絞る。キーの**順番**もそのまま返す。"""
+    """``fields`` の各項目を 9 キーにそろえる。キーの**順番**もこの順で返す。"""
     picklist, picklist_total = _extract_picklist(field.get("picklistValues"))
-
-    reference_to_raw = field.get("referenceTo")
-    reference_to: list[Any] = reference_to_raw if isinstance(reference_to_raw, list) else []
-
-    relationship_name_raw = field.get("relationshipName")
-    relationship_name: str | None = (
-        relationship_name_raw if isinstance(relationship_name_raw, str) else None
-    )
-
-    custom_raw = field.get("custom")
-    custom = custom_raw if isinstance(custom_raw, bool) else False
-
     return {
-        "name": field.get("name", ""),
-        "label": field.get("label", ""),
-        "type": field.get("type", ""),
-        "custom": custom,
-        "referenceTo": reference_to,
-        "relationshipName": relationship_name,
+        "name": _text(field.get("name")),
+        "label": _text(field.get("label")),
+        "type": _text(field.get("type")),
+        "custom": field.get("custom") is True,
+        "referenceTo": _str_list(field.get("referenceTo")),
+        "relationshipName": _text(field.get("relationshipName")),
+        "nameField": field.get("nameField") is True,
         "picklist": picklist,
         "picklistTotal": picklist_total,
     }
@@ -855,11 +861,13 @@ def _fetch_one(
         )
 
     # 接続〜取得
-    # ``objects`` は API から生で取った dict、 ``slim_objects`` は
-    # ``_slim_object`` で絞った dict。 同じ主キーを共有し両方を更新する
+    # ``objects`` はオブジェクト名 → ``_slim_object`` で整えた describe。 取ってきた
+    # describe は入口（ ``_fetch_object_cached`` / fetcher / 取り直し ）で必ず整え、
+    # 以後は整えた値だけを扱う（ 生の describe は項目定義のキャッシュにだけ書く ）
     objects: dict[str, dict[str, Any]] = {}
     main_object_name: str | None = None
     metadata: dict[str, Any] = {}
+    slim_report: SlimReport = _slim_report(None)
     column_map: list[dict[str, Any]] = []
     related_describes: dict[str, dict[str, Any]] = {}
     related_nodes: list[RelatedNode] = []
@@ -871,13 +879,6 @@ def _fetch_one(
     # 取り直し判定に使う。
     csv_used_keys: set[tuple[str, str]] = set()
 
-    # ``apply_overrides`` が使う slim 版のオブジェクト dict。 中で経路の
-    # 補完 （``_make_overrides_fetcher``） がオブジェクトを追加するので、
-    # 接続の中に同じ dict を入れて、 接続後も pii / record で参照できる
-    # よう関数スコープに置く。 2026-10-14 から、 ``build_column_map`` も
-    # 列キーからの経路の補完に同じ fetcher を使うため、 最初に主オブジェクト
-    # だけ入れてから段階的に広げる。
-    slim_objects: dict[str, dict[str, Any]] = {}
 
     try:
         with site_class() as client:
@@ -895,6 +896,9 @@ def _fetch_one(
                     ),
                 )
 
+            # 境界: レポート定義はここで 1 回だけ整え、 以後は整えた値だけを使う
+            slim_report = _slim_report(metadata)
+
             # 2000 行チェック: ``row_limit`` が True のときだけ実行。
             # 401 / 403 のような致命エラーは外側の except に伝播させて ID 全体を
             # 失敗扱いにする。 その他のエラーは ``RowCheck`` に縮退する。
@@ -905,26 +909,24 @@ def _fetch_one(
             # ``_fetch_object_cached`` がそのまま上位へ ``SalesforceRequestError``
             # を送出し、 ID 全体を失敗扱いにする。
             main_object_name, main_describe, object_reason, csv_used_keys = _choose_main(
-                client, org, metadata, store, warnings
+                client, org, slim_report, store, warnings
             )
             if object_reason:
                 warnings.append(object_reason)
-            _log_report_contents(metadata, main_object_name)
+            _log_report_contents(slim_report, main_object_name)
 
-            # 主オブジェクトが確定したら ``objects`` / ``slim_objects`` の
+            # 主オブジェクトが確定したら ``objects`` の
             # 種を蒔いて、 列キーからのたどりに使う fetcher を作る。 同じ
             # fetcher を後の関連オブジェクト収集後にも ``build_column_map`` /
             # ``apply_overrides`` に渡すので、 1 度作った dict を使い回す。
             fetcher: Callable[[str], dict[str, Any] | None] | None = None
             if main_object_name and main_describe is not None:
                 objects[main_object_name] = main_describe
-                slim_objects[main_object_name] = _slim_object(main_describe)
                 fetcher = _make_overrides_fetcher(
                     client=client,
                     org=org,
                     store=store,
                     objects=objects,
-                    slim_objects=slim_objects,
                     csv_used_keys=csv_used_keys,
                 )
 
@@ -932,7 +934,7 @@ def _fetch_one(
             # 取れたときは、 関連オブジェクトを集めてから下で 1 回だけ組み立てる
             if not (main_object_name and main_describe is not None):
                 column_map = mapping.build_column_map(
-                    metadata,
+                    slim_report,
                     main_describe,
                     object_reason,
                     related_describes=related_describes,
@@ -963,15 +965,10 @@ def _fetch_one(
                     if node.describe is not None:
                         objects[node.name] = node.describe
                         related_describes[node.name] = node.describe
-                        # 関連も ``slim_objects`` に入れる。 これで
-                        # ``build_column_map`` の経路の補完が ``slim_objects``
-                        # に既載の関連を 1 度で引ける。
-                        if node.name not in slim_objects:
-                            slim_objects[node.name] = _slim_object(node.describe)
 
                 # 列対応表を取り直す（ 関連オブジェクトが取れてから解く ）
                 column_map = mapping.build_column_map(
-                    metadata,
+                    slim_report,
                     main_describe,
                     object_reason,
                     related_describes=related_describes,
@@ -1000,25 +997,26 @@ def _fetch_one(
                             key[0],
                             object_name,
                         )
-                        refreshed = store.refresh_from_api(client, key[0], object_name, warnings)
-                        if refreshed is None:
+                        refreshed_raw = store.refresh_from_api(
+                            client, key[0], object_name, warnings
+                        )
+                        if refreshed_raw is None:
                             continue
-                        # メモリに反映
+                        # 境界: 取り直した describe もここで整えてからメモリに反映
+                        refreshed = _slim_object(refreshed_raw)
                         if main_object_name and _object_key(org, main_object_name) == key:
                             main_describe = refreshed
                             objects[main_object_name] = refreshed
-                            slim_objects[main_object_name] = _slim_object(refreshed)
                         else:
                             for obj_name in list(objects):
                                 if _object_key(org, obj_name) == key:
                                     objects[obj_name] = refreshed
                                     related_describes[obj_name] = refreshed
-                                    slim_objects[obj_name] = _slim_object(refreshed)
                                     break
 
                     # 列対応表を取り直す（ 取り直し後 ）
                     column_map = mapping.build_column_map(
-                        metadata,
+                        slim_report,
                         main_describe,
                         object_reason,
                         related_describes=related_describes,
@@ -1034,12 +1032,12 @@ def _fetch_one(
             # 人が ``列の直し.xlsx`` に入れた値で ``column_map`` を上書きする。
             # ``apply_overrides`` が ``Account.Owner.Name`` のような経路を辿る
             # ときに、 その経路上に無いオブジェクトは fetcher が取りに行く。
-            # 取れたオブジェクトは ``slim_objects`` と ``objects`` の両方に加わる
+            # 取れたオブジェクトは ``objects`` に加わる
             column_map = column_fix_xlsx.apply_overrides(
                 column_map_rows=column_map,
                 existing=column_fix_overrides,
                 main_object=main_object_name or "",
-                objects=slim_objects,
+                objects=objects,
                 warnings=warnings,
                 fetch_object=fetcher,
             )
@@ -1068,13 +1066,6 @@ def _fetch_one(
             f"関連オブジェクトは取得していません"
         )
 
-    # record に詰める直前に slim する。 ``metadata`` 自体と ``objects`` は
-    # ``_collect_related_objects`` （ 関連オブジェクトの収集 ） で
-    # 原本の ``fields[].referenceTo`` / ``relationshipName`` を使うので、
-    # ここでは別 dict にコピーして絞る（ 原本の dict は壊さない ）。
-    # ``slim_objects`` と ``column_map`` への上書き適用は ``with`` の中で
-    # 済んでいる （ その中で fetcher が経路上のオブジェクトを取りに行く ）
-    slim_report = _slim_report(metadata)
 
     dropped_keys = _collect_dropped_keys(metadata)
     dropped_keys_warning = _dropped_keys_warning_text(dropped_keys)
@@ -1086,7 +1077,7 @@ def _fetch_one(
         keywords=pii_keywords,
         person_objects=pii_person_objects,
     )
-    pii_result = _evaluate_record_pii(slim_report, column_map, slim_objects, pii_config)
+    pii_result = _evaluate_record_pii(slim_report, column_map, objects, pii_config)
     _log_pii(pii_result)
 
     # 2000 件超判定が 判定不可 なら、 警告表にも 1 行入れる
@@ -1105,7 +1096,7 @@ def _fetch_one(
             url=entry.url,
             main_object=main_object,
             report=slim_report,
-            objects=slim_objects,
+            objects=objects,
             relations=tuple(relations),
             column_map=column_map,
             warnings=tuple(warnings),
@@ -1119,7 +1110,7 @@ def _fetch_one(
         url=entry.url,
         main_object=main_object,
         report=slim_report,
-        objects=slim_objects,
+        objects=objects,
         relations=tuple(relations),
         column_map=column_map,
         warnings=tuple(warnings),
@@ -1375,45 +1366,40 @@ def _make_overrides_fetcher(
     org: str,
     store: DescribeStore,
     objects: dict[str, dict[str, Any]],
-    slim_objects: dict[str, dict[str, Any]],
     csv_used_keys: set[tuple[str, str]],
 ) -> Callable[[str], dict[str, Any] | None]:
-    """``apply_overrides`` に渡す fetcher を作る。
+    """列キーのたどりと ``apply_overrides`` に渡す fetcher を作る。
 
     引数 ``name`` のオブジェクトを取りに行くが、 自前の WARNING は出さない
     （ ``apply_overrides`` が 「 たどれません 」 文に整形して出す ）。 401
     と 403 はそのまま上位へ送出 （ ``apply_overrides`` を経由して
     ``_fetch_one`` の ``except`` で拾われ、 レポート全体が失敗扱いになる ） 。
 
-    取得順序は既存の ``_fetch_object_cached`` と同じ:
+    取得順序は ``_fetch_object_cached`` と同じ:
 
-    1. ``slim_objects`` に有ればそれを返す （ API を叩かない ）
+    1. ``objects`` に有ればそれを返す （ API を叩かない ）
     2. ``DescribeStore`` （ メモリ → CSV ） を見る
     3. 無ければ API を呼ぶ。 成功時はメモリと CSV に保存
 
-    取得結果は ``slim_objects[name]`` と ``objects[name]`` の両方に入る。
-    同じ実行で同じオブジェクトが 2 度引かれることはない （ 1 度目は
-    ``slim_objects`` からキャッシュヒット ）。
+    取れた describe は ``_slim_object`` で整えて ``objects[name]`` に入れる。
     """
 
     def fetcher(name: str) -> dict[str, Any] | None:
-        # 1) 既に経路の補完で取っていればそれを返す
-        if name in slim_objects:
-            return slim_objects[name]
+        # 1) 既に取っていればそれを返す
+        if name in objects:
+            return objects[name]
         # 2) ストアのキャッシュを引く
         cached = store.lookup(org, name)
         if cached is not None:
             describe = cached.get("describe")
-            if isinstance(describe, dict):
-                slim = _slim_object(describe)
-                slim_objects[name] = slim
-                objects[name] = describe
-                # CSV から読んだものは取り直し候補に入れる
-                if cached.get("source") == "csv" and csv_used_keys is not None:
-                    csv_used_keys.add((org.lower(), name.strip().lower()))
-                return slim
-            # 失敗記録だけのエントリ （ describe が None ） は取りに行かない
-            return None
+            if describe is None:
+                # 失敗記録だけのエントリは取りに行かない
+                return None
+            # CSV から読んだものは取り直し候補に入れる
+            if cached.get("source") == "csv":
+                csv_used_keys.add((org.lower(), name.strip().lower()))
+            objects[name] = _slim_object(describe)
+            return objects[name]
         # 3) API 呼び出し
         try:
             describe = client.describe_object(name)
@@ -1428,13 +1414,9 @@ def _make_overrides_fetcher(
         except ValueError as exc:
             store.record_api_failure(org, name, str(exc))
             return None
-        if not isinstance(describe, dict):
-            describe = {}
         store.record_api_success(org, name, describe)
-        slim = _slim_object(describe)
-        slim_objects[name] = slim
-        objects[name] = describe
-        return slim
+        objects[name] = _slim_object(describe)
+        return objects[name]
 
     return fetcher
 
@@ -1447,12 +1429,13 @@ def _fetch_object_cached(
     warnings: list[str],
     csv_used_keys: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    """``client.describe_object(name)`` を呼び、結果をストアにキャッシュする。
+    """オブジェクトの describe をストア（ メモリ → CSV ）か API から取り、 整えて返す。
 
     戻り値:
-        成功時は describe の dict。失敗時（HTTP エラー / ``ValueError``）は
-        ``None``。401 / 403 は ``SalesforceRequestError`` をそのまま上位へ
-        送出する（呼び出し側で ID 全体を失敗扱い）。
+        成功時は ``_slim_object`` で整えた describe。 失敗時（ HTTP エラー /
+        ``ValueError`` ）は ``None``。 401 / 403 は ``SalesforceRequestError`` を
+        そのまま上位へ送出する（ 呼び出し側で ID 全体を失敗扱い ）。 ストアには
+        生の describe を書く（ 項目定義.csv の列のため ）。
 
     ``csv_used_keys`` を渡すと、 CSV から読んだ （ 今回 API で取ったものではない ）
     ``(org, object_lower)`` のキーをそこに追加する。 取り直しの判定に使う。
@@ -1465,7 +1448,7 @@ def _fetch_object_cached(
             warnings.append(warning)
         if csv_used_keys is not None and cached.get("source") == "csv":
             csv_used_keys.add((org.lower(), name.strip().lower()))
-        return describe if isinstance(describe, dict) else None
+        return None if describe is None else _slim_object(describe)
 
     try:
         describe = client.describe_object(name)
@@ -1482,12 +1465,8 @@ def _fetch_object_cached(
         warnings.append(warning)
         return None
 
-    if not isinstance(describe, dict):
-        # 念のため空 dict と同じ扱いにする
-        describe = {}
-
     store.record_api_success(org, name, describe)
-    return describe
+    return _slim_object(describe)
 
 
 def _has_unresolved_columns(

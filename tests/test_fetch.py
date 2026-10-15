@@ -356,7 +356,7 @@ def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
     opp = payload["objects"]["Opportunity"]
     # オブジェクトは 4 キーだけ
     assert set(opp.keys()) == {"name", "label", "custom", "fields"}
-    # 各項目は 8 キーだけ
+    # 各項目は 9 キーだけ
     for field in opp["fields"]:
         assert set(field.keys()) == {
             "name",
@@ -365,6 +365,7 @@ def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
             "custom",
             "referenceTo",
             "relationshipName",
+            "nameField",
             "picklist",
             "picklistTotal",
         }
@@ -1614,22 +1615,45 @@ def test_slim_report_excludes_heavy_keys_from_output() -> None:
 
 
 def test_slim_report_handles_missing_or_bad_input() -> None:
-    """reportMetadata が無い／ dict でない／None ／文字列でも例外を上げない。"""
+    """reportMetadata が無い／ dict でない／None ／文字列でも例外を上げず、
+    内側が検証せずに読めるよう、 必ず 2 つの空の dict を持つ形で返す。"""
+    empty = {"reportMetadata": {}, "reportExtendedMetadata": {}}
     # reportMetadata / reportExtendedMetadata が無い
-    result = _slim_report({"hasNestedReports": False})
-    assert result == {}
+    assert _slim_report({"hasNestedReports": False}) == empty
 
-    # reportMetadata が dict でない: 該当キーは結果に出ない
-    result = _slim_report({"reportMetadata": "not a dict", "reportExtendedMetadata": None})
-    assert "reportMetadata" not in result
-    assert "reportExtendedMetadata" not in result
+    # reportMetadata が dict でない
+    assert _slim_report({"reportMetadata": "not a dict", "reportExtendedMetadata": None}) == empty
 
     # 全体が dict でない
-    result = _slim_report(None)
-    assert result == {}
+    assert _slim_report(None) == empty
+    assert _slim_report("string") == empty
 
-    result = _slim_report("string")
-    assert result == {}
+
+def test_slim_report_normalizes_list_items() -> None:
+    """リストとして読むキーの中身の型をそろえる（ 境界 ）。 そろっていれば元の参照のまま。"""
+    detail_columns = ["A", "B"]
+    result = _slim_report(
+        {
+            "reportMetadata": {
+                "detailColumns": detail_columns,
+                "aggregates": ["s!Amount", None, "", 3],
+                "reportFilters": [{"column": "A"}, "bad", None],
+                "groupingsDown": "not a list",
+                "reportType": "Opportunity",
+            },
+            "reportExtendedMetadata": {
+                "detailColumnInfo": {"A": {"label": "A"}, "B": "bad"},
+                "groupingColumnInfo": "bad",
+            },
+        }
+    )
+    metadata = result["reportMetadata"]
+    assert metadata["detailColumns"] is detail_columns
+    assert metadata["aggregates"] == ["s!Amount"]
+    assert metadata["reportFilters"] == [{"column": "A"}]
+    assert metadata["groupingsDown"] == []
+    assert metadata["reportType"] == {}
+    assert result["reportExtendedMetadata"] == {"detailColumnInfo": {"A": {"label": "A"}}}
 
 
 def test_slim_report_does_not_mutate_input_dict() -> None:
@@ -1782,14 +1806,14 @@ def test_slim_object_drops_heavy_keys() -> None:
         assert forbidden not in result, forbidden
 
 
-def test_slim_field_has_eight_keys_in_order() -> None:
+def test_slim_field_has_nine_keys_in_order() -> None:
     """各項目は ``name`` / ``label`` / ``type`` / ``custom`` / ``referenceTo`` /
-    ``relationshipName`` / ``picklist`` / ``picklistTotal`` の 8 キーが**この順**で
-    出る。 ``inlineHelpText`` など余計なキーは残らない。
+    ``relationshipName`` / ``nameField`` / ``picklist`` / ``picklistTotal`` の 9 キーが
+    **この順**で出る。 ``inlineHelpText`` など余計なキーは残らない。
     """
     result = _slim_object(_make_full_describe())
 
-    # ``fields`` の各項目が 8 キーだけ、 この順で
+    # ``fields`` の各項目が 9 キーだけ、 この順で
     expected_order = [
         "name",
         "label",
@@ -1797,6 +1821,7 @@ def test_slim_field_has_eight_keys_in_order() -> None:
         "custom",
         "referenceTo",
         "relationshipName",
+        "nameField",
         "picklist",
         "picklistTotal",
     ]
@@ -1845,8 +1870,8 @@ def test_slim_object_picklist_active_only_capped_at_thirty() -> None:
 
 
 def test_slim_object_missing_keys_use_defaults() -> None:
-    """``custom`` 無しは ``false`` 、 ``referenceTo`` 無しは ``[]`` 、
-    ``relationshipName`` 無しは ``None`` 。"""
+    """``custom`` / ``nameField`` 無しは ``False`` 、 ``referenceTo`` 無しは ``[]`` 、
+    ``relationshipName`` 無しは空文字（ 内側が None を考えずに読めるように ）。"""
     describe = {
         "name": "Account",
         "label": "取引先",
@@ -1862,7 +1887,8 @@ def test_slim_object_missing_keys_use_defaults() -> None:
     field = result["fields"][0]
     assert field["custom"] is False
     assert field["referenceTo"] == []
-    assert field["relationshipName"] is None
+    assert field["relationshipName"] == ""
+    assert field["nameField"] is False
     assert field["picklist"] == []
     assert field["picklistTotal"] == 0
 
@@ -1896,10 +1922,11 @@ def test_slim_object_does_not_mutate_input() -> None:
 
 
 def test_slim_object_handles_non_dict_input() -> None:
-    """``describe`` が dict でない（ ``None`` や文字列）でも例外を上げない。"""
-    assert _slim_object(None) == {}
-    assert _slim_object("string") == {}
-    assert _slim_object([]) == {}
+    """``describe`` が dict でない（ ``None`` や文字列）でも例外を上げず、 空の形で返す。"""
+    empty = {"name": "", "label": "", "custom": False, "fields": []}
+    assert _slim_object(None) == empty
+    assert _slim_object("string") == empty
+    assert _slim_object([]) == empty
 
 
 # ── JSON 出力に重いキーが一切残らないこと ──────────────────────────────────
