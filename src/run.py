@@ -45,6 +45,7 @@ from comken.runtime import is_dry_run
 from comken.toolbox.salesforce.report import report_id_from_url
 
 from src import column_fix_xlsx
+from src.describe_store import DescribeStore
 from src.fetch import run_fetch
 from src.master import MasterEntry, filter_enabled, read_master
 from src.tables import run_tables
@@ -176,8 +177,6 @@ def run(
 
     # レポートの取得 （ 同じ実行内で ``describe_object`` を 1 回にまとめる ）
     started_at = time.perf_counter()
-    from src.describe_store import DescribeStore
-
     describe_store = DescribeStore.load(file_paths.describe_csv_path)
     refresh_set: set[tuple[str, str]] = set()
     outcomes = list(
