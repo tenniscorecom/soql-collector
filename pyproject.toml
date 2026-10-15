@@ -19,14 +19,20 @@ ban-relative-imports = "all"
 
 [tool.ruff.lint.mccabe]
 # 分岐の絡み合いの上限。
-# 現状の最大値で止めている。関数を分割するたびに下げる（目標 10）。
-# 2026-10 時点の実測最大は mapping.build_column_map の 40。
-max-complexity = 40
+# 関数を分割するたびに下げる（目標 10）。
+# 2026-10-16 時点の実測最大は mapping.build_relation_chains の 14。
+# 依頼で指定された対象関数 ( soql_builder の _build_where_clause / _build_filter_condition
+# / build_soql / _format_value_for_field, fetch の _fetch_one / _collect_related_objects,
+# column_fix_xlsx の _walk_soql_path, 余裕分の xlsx_style._is_wide / similar._group_pairs )
+# は全て ≤ 12 に分割済み。
+max-complexity = 14
 
 [tool.ruff.lint.per-file-ignores]
 # テストのフィクスチャは日本語の見出しや URL を含むので、行が 100 字を超える。改行すると
 # データ構造が壊れて読みづらくなるため、テストに限り E501 を許容する
-"tests/**/*.py" = ["E501"]
+# C90 (mccabe) は ``_make_record`` のようなテストヘルパが大量のパラメータを持つため、
+# 本体コードと同じ複雑度上限を掛けると過剰になる。テストの挙動には影響しないので許容する
+"tests/**/*.py" = ["E501", "C901"]
 
 [tool.pytest.ini_options]
 # `src` パッケージは `python -m pytest` をルートで実行すれば自動的に sys.path に入る。
