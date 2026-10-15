@@ -341,7 +341,7 @@ def test_run_e2e_legacy_config_without_required_keys_aborts(tmp_path: Path) -> N
     from src.run import read_file_paths
 
     describe, objs = _scenario_describe_and_objects()
-    client = _FakeClient(describe, objs)
+    _FakeClient(describe, objs)
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / "input").mkdir()
