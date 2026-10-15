@@ -858,8 +858,44 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
 
     missing: list[str] = []
     checks: list[str] = []
+    select_lines = _build_select_lines(metadata, column_lookup, missing)
+    _collect_unresolved_metadata_missing(metadata, missing)
+    if not select_lines:
+        return SoqlDraft(
+            soql="",
+            status=STATUS_NONE,
+            missing=(*tuple(missing), "SELECT に入れられる列が無い"),
+            checks=tuple(checks),
+        )
 
-    # ── SELECT 句 ──────────────────────────────────────────────────────
+    where_lines, where_missing, where_checks = _build_where_clause(metadata, column_lookup)
+    missing.extend(where_missing)
+    checks.extend(where_checks)
+    _collect_scope_check(metadata, checks)
+    order_by_clause, order_missing, order_checks = _build_order_by_clause(metadata, column_lookup)
+    missing.extend(order_missing)
+    checks.extend(order_checks)
+
+    soql, count_soql = _assemble_soql_text(select_lines, where_lines, order_by_clause, main_object)
+    status = _decide_status(missing, checks)
+    soql, count_soql = _apply_incomplete_marker(soql, count_soql, status)
+
+    return SoqlDraft(
+        soql=soql,
+        status=status,
+        missing=tuple(missing),
+        checks=tuple(checks),
+        count_soql=count_soql,
+        limit=_extract_top_rows_limit(metadata),
+    )
+
+
+def _build_select_lines(
+    metadata: dict[str, Any],
+    column_lookup: dict[str, dict[str, str]],
+    missing: list[str],
+) -> list[str]:
+    """SELECT 句の ``field_api`` リストを作る。 取得できなかった列は missing に積む。"""
     select_lines: list[str] = []
     seen_fields: set[str] = set()
     for column_key in mapping.select_column_keys(metadata):
@@ -881,9 +917,14 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
             continue
         seen_fields.add(field_api)
         select_lines.append(field_api)
+    return select_lines
 
-    # バケット・独自計算式・行レベルの数式・集計 (RowCount 以外) は
-    # 集計のため missing に並べる
+
+def _collect_unresolved_metadata_missing(
+    metadata: dict[str, Any],
+    missing: list[str],
+) -> None:
+    """SOQL に訳せない集計系を missing に積む。 バケット・独自計算式・集計・スナップショット。"""
     buckets = metadata.get("buckets")
     if isinstance(buckets, list) and buckets:
         for index, bucket in enumerate(buckets, start=1):
@@ -907,109 +948,76 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
                 f"独自計算式 {index}: {label or '(ラベル不明)'} = {formula} ( SOQL には入れない )"
             )
 
-    # 集計 (``aggregates`` の ``"!"`` 形式) は SOQL にしない ( 集計レポートのため ) 、
-    # ``RowCount`` だけは missing にも入れない ( 集計行が無いだけ ) 。
+    # ``aggregates`` の ``"!"`` 形式は集計レポートなので SOQL にしない
+    # ( ``RowCount`` は集計行が無いだけなので missing にも入れない )
     for agg in metadata.get("aggregates", []):
         if "!" not in agg:
             continue
         target = agg.split("!", 1)[-1]
-        # RowCount は集計行が無いだけ。 SELECT にも入れない ( SOQL でも RowCount は
-        # 単純な関数で取れない )
         if target == "RowCount":
             continue
         missing.append(f"集計 {agg}: 集計レポートのため SOQL にしない ( 明細として取れない )")
 
-    # 行レベルの数式 (``historicalSnapshotDates`` は時系列レポート用、 詳細は省略 )
-    # は今回は SOQL にしない方針 ( missing にも入れない )
-
-    # ``historicalSnapshotDates`` は履歴スナップショットの日付指定で、
-    # SOQL に訳せないレポート側の機能。 黙って捨てるとレポート以上の範囲を
-    # 取る危険があるため、 missing に理由を入れて ``一部作れず`` に倒す
-    # （ 2026-10-15 ） 。
+    # ``historicalSnapshotDates`` は履歴スナップショットの日付指定。 SOQL に訳せず、
+    # 黙って捨てるとレポート以上の範囲を取る危険があるため missing に理由を入れて
+    # ``一部作れず`` に倒す
     snapshot_dates = metadata.get("historicalSnapshotDates")
     if isinstance(snapshot_dates, list) and snapshot_dates:
         missing.append(f"履歴スナップショット ({len(snapshot_dates)} 件) の条件は SOQL にできない")
 
-    # ── SELECT 句が 1 列も無い → 作れず ────────────────────────────────
-    if not select_lines:
-        return SoqlDraft(
-            soql="",
-            status=STATUS_NONE,
-            missing=(*tuple(missing), "SELECT に入れられる列が無い"),
-            checks=tuple(checks),
-        )
 
-    # ── FROM 句 ( 主オブジェクト ) ──────────────────────────────────────
-    # カスタムレポートタイプ (``CustomEntity$Account`` など) の表記揺れに備えて
-    # 英数字と ``_`` 以外はそのまま渡す ( ``mapping.report_type_candidates()`` の
-    # 結果を使うサンプルもあるが、 SOQL の ``FROM`` には使えないので ``main_object`` を採用 )
-
-    # ── WHERE 句 ───────────────────────────────────────────────────────
-    where_lines, where_missing, where_checks = _build_where_clause(metadata, column_lookup)
-    missing.extend(where_missing)
-    checks.extend(where_checks)
-
-    # ── scope ──────────────────────────────────────────────────────────
+def _collect_scope_check(metadata: dict[str, Any], checks: list[str]) -> None:
+    """``scope`` が ``organization`` 以外なら実行ユーザー依存の注意を checks に積む。"""
     scope = metadata.get("scope", "")
     if scope and scope.lower() != "organization":
         checks.append(
             f"スコープ={scope}: 実行ユーザーで結果が変わる。 OwnerId 等の条件を足すか確認"
         )
 
-    # ── ORDER BY / LIMIT ────────────────────────────────────────────────
-    order_by_clause, order_missing, order_checks = _build_order_by_clause(metadata, column_lookup)
-    missing.extend(order_missing)
-    checks.extend(order_checks)
 
-    # ── SOQL を組み立てる ───────────────────────────────────────────────
+def _assemble_soql_text(
+    select_lines: list[str],
+    where_lines: list[str],
+    order_by_clause: str,
+    main_object: str,
+) -> tuple[str, str]:
+    """組み立て済みの SELECT / WHERE / ORDER BY から、 本文用と件数用の SOQL を返す。"""
+    # 条件のリストを直接整形する ( 文字列リテラル内の ' AND ' で改行を入れて値を変えない )
+    where_block = "\n  AND\n  ".join(where_lines) if where_lines else ""
     select_block = ",\n  ".join(select_lines)
-    lines: list[str] = [f"SELECT {select_block}", f"FROM {main_object}"]
-    if where_lines:
-        # 条件のリストを直接整形する ( 文字列リテラル内の ' AND ' で改行を入れて値を変えない )
-        where_block = "\n  AND\n  ".join(where_lines)
-        lines.append(f"WHERE {where_block}")
+    soql_lines: list[str] = [f"SELECT {select_block}", f"FROM {main_object}"]
+    if where_block:
+        soql_lines.append(f"WHERE {where_block}")
     if order_by_clause:
-        lines.append(order_by_clause)
+        soql_lines.append(order_by_clause)
+    soql = "\n".join(soql_lines)
 
-    soql = "\n".join(lines)
-
-    # ── 件数用 SOQL を組み立てる ─────────────────────────────────────────
-    # 同じ ``select_lines`` / ``where_lines`` から組み立てる （ 文字列の
-    # 切り貼りをしない ）。 ``ORDER BY`` / ``LIMIT`` は付けない。
+    # 件数用は同じ ``select_lines`` / ``where_lines`` から組み立てる ( 文字列の切り貼りをしない )
     count_lines: list[str] = ["SELECT COUNT()", f"FROM {main_object}"]
-    if where_lines:
-        where_block_count = "\n  AND\n  ".join(where_lines)
-        count_lines.append(f"WHERE {where_block_count}")
+    if where_block:
+        count_lines.append(f"WHERE {where_block}")
     count_soql = "\n".join(count_lines)
+    return soql, count_soql
 
-    # ── topRows.rowLimit から ``limit`` を抽出 ────────────────────────
-    limit: int | None = _extract_top_rows_limit(metadata)
 
-    # ── 状態の決定 ──────────────────────────────────────────────────────
+def _decide_status(missing: list[str], checks: list[str]) -> str:
+    """``missing`` / ``checks`` の有無から ``status`` を決める。"""
     if missing:
-        status = STATUS_PARTIAL
-    elif checks:
-        status = STATUS_NEEDS_CHECK
-    else:
-        status = STATUS_CREATED
+        return STATUS_PARTIAL
+    if checks:
+        return STATUS_NEEDS_CHECK
+    return STATUS_CREATED
 
-    # ── 安全策: 一部作れず の SOQL には 1 行目に印を付ける ────────────
-    # この行は構文上不正なので、 そのまま Salesforce に投げると必ずエラーになり、
-    # レポート以上の範囲を取る危険を物理的に防ぐ。 ダウンローダーはこの印を
-    # 見て実行前に止める。 ``要確認`` には付けない （ 印が付くと SOQL として
-    # 動かなくなるため、 実行前に人が補う想定のチェックだけの場合は付けない ）
-    if status == STATUS_PARTIAL:
-        soql = f"{INCOMPLETE_MARKER}\n{soql}"
-        count_soql = f"{INCOMPLETE_MARKER}\n{count_soql}"
 
-    return SoqlDraft(
-        soql=soql,
-        status=status,
-        missing=tuple(missing),
-        checks=tuple(checks),
-        count_soql=count_soql,
-        limit=limit,
-    )
+def _apply_incomplete_marker(
+    soql: str,
+    count_soql: str,
+    status: str,
+) -> tuple[str, str]:
+    """``一部作れず`` の SOQL には 1 行目に印を付ける ( ダウンローダーが実行前に止める ) 。"""
+    if status != STATUS_PARTIAL:
+        return soql, count_soql
+    return f"{INCOMPLETE_MARKER}\n{soql}", f"{INCOMPLETE_MARKER}\n{count_soql}"
 
 
 def build_count_soql(record: ReportRecord) -> tuple[str | None, int | None]:
