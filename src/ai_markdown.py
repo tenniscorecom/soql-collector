@@ -51,9 +51,13 @@ def write_ai_markdowns(
     records: Sequence[ReportRecord],
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
+    diagrams: dict[str, relation_diagram.Diagram] | None = None,
 ) -> tuple[Any, ...]:
     """``records`` の各 ``ReportRecord`` について
     ``output_dir/SOQL資料/{key}.md`` を書く。
+
+    ``diagrams`` は ``{主オブジェクト: Diagram}``（ 表を作るときに 1 回組んだもの ）。
+    渡せばレポートごとに関係図を組み直さない。
 
     ``record`` が ``None`` のもの （ 失敗したもの ） は書かない。 既存の
     ファイル （ 今回取れなかった管理番号のファイルや、 古い失敗ファイル ） は
@@ -63,7 +67,8 @@ def write_ai_markdowns(
     target_dir.mkdir(parents=True, exist_ok=True)
     wrote: list[Any] = []
     for record in records:
-        path = write_ai_markdown(target_dir, record, similar_lookup=similar_lookup)
+        diagram = (diagrams or {}).get(record.main_object or "")
+        path = write_ai_markdown(target_dir, record, similar_lookup=similar_lookup, diagram=diagram)
         if path is not None:
             wrote.append(path)
     if wrote:
@@ -76,13 +81,14 @@ def write_ai_markdown(
     record: ReportRecord,
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
+    diagram: relation_diagram.Diagram | None = None,
 ) -> Any | None:
     """1 record ぶんの Markdown を ``target_dir/{key}.md`` に書く。"""
     key = record.key
     if not key:
         return None
     path = target_dir / f"{key}.md"
-    content = build_markdown(record, similar_lookup=similar_lookup)
+    content = build_markdown(record, similar_lookup=similar_lookup, diagram=diagram)
     path.write_text(content, encoding=_ENCODING, newline=_NEWLINE)
     return path
 
@@ -91,6 +97,7 @@ def build_markdown(
     record: ReportRecord,
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
+    diagram: relation_diagram.Diagram | None = None,
 ) -> str:
     """1 record ぶんの Markdown 文字列を組み立てる （ 純粋関数 ） 。
 
@@ -192,7 +199,12 @@ def build_markdown(
     parts.append("")
 
     # 関係図ファイルへの相対リンクと、 字下げ版のツリーを添える
-    diagram_tree = relation_diagram.render_inline_tree_for_record(record)
+    # 表を作るときに組んだ関係図があればそれを使い、 単独で書くときだけ組む
+    diagram_tree = (
+        tuple(diagram.render_tree_lines())
+        if diagram is not None
+        else relation_diagram.render_inline_tree_for_record(record)
+    )
     if diagram_tree:
         parts.append("関係図 （ Mermaid ）: ")
         main_object = record.main_object or ""

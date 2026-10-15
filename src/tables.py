@@ -269,7 +269,9 @@ def run_tables(
     # ``similar_lookup`` で渡すと、 Markdown の 「 似たレポート 」 セクションに
     # 反映される
     wrote.extend(
-        ai_markdown.write_ai_markdowns(output_dir, sorted_records, similar_lookup=key_to_group)
+        ai_markdown.write_ai_markdowns(
+            output_dir, sorted_records, similar_lookup=key_to_group, diagrams=diagrams
+        )
     )
 
     return TableOutcome(wrote=tuple(wrote), skipped=())

@@ -144,6 +144,7 @@ def build_main_object_diagrams(
     """
     merged_edges: dict[str, set[tuple[str, str, str]]] = {}
     merged_field_order: dict[str, list[tuple[str, str]]] = {}
+    seen_field_order: dict[str, set[tuple[str, str]]] = {}
     main_objects: set[str] = set()
 
     for record in records:
@@ -163,9 +164,11 @@ def build_main_object_diagrams(
             merged_edges.setdefault(main_object, set()).add(edge_key)
             # 親ごとに項目の出現順を保持 （ リレーション名は表示用 ） 。
             # 同じ辺が既に登録されていても順序は変えない
-            order = merged_field_order.setdefault(main_object, [])
-            if not any(item == (field_api, rel_name or "") for item in order):
-                order.append((field_api, rel_name or ""))
+            item = (field_api, rel_name or "")
+            seen = seen_field_order.setdefault(main_object, set())
+            if item not in seen:
+                seen.add(item)
+                merged_field_order.setdefault(main_object, []).append(item)
 
     diagrams: dict[str, Diagram] = {}
     for main_object in main_objects:
