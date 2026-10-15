@@ -498,11 +498,21 @@ def _slim_report(metadata: object) -> SlimReport:
     for key in ("detailColumns", "aggregates"):
         if key in slimmed_metadata:
             slimmed_metadata[key] = _str_list(slimmed_metadata[key])
-    for key in ("reportFilters", "groupingsDown", "groupingsAcross", "sortBy"):
+    # 要素の中で文字列として読む値の型もそろえる。 要素は落とさない
+    # （ 絞り込みの並び順は組立式の番号と対応しているため ）
+    for key, text_keys in _TEXT_KEYS_IN_LIST_ITEMS.items():
         if key in slimmed_metadata:
-            slimmed_metadata[key] = _dict_list(slimmed_metadata[key])
-    if "reportType" in slimmed_metadata and not isinstance(slimmed_metadata["reportType"], dict):
-        slimmed_metadata["reportType"] = {}
+            slimmed_metadata[key] = [
+                _with_text_values(item, text_keys)
+                for item in _dict_list(slimmed_metadata[key])
+            ]
+    for key, text_keys in _TEXT_KEYS_IN_DICT_VALUES.items():
+        if key not in slimmed_metadata:
+            continue
+        value = slimmed_metadata[key]
+        slimmed_metadata[key] = (
+            _with_text_values(value, text_keys) if isinstance(value, dict) else None
+        )
 
     slimmed_extended = {
         key: {
@@ -514,6 +524,32 @@ def _slim_report(metadata: object) -> SlimReport:
         if key in REPORT_EXTENDED_METADATA_KEYS and isinstance(value, dict)
     }
     return {"reportMetadata": slimmed_metadata, "reportExtendedMetadata": slimmed_extended}
+
+
+# リストの要素（ dict ）の中で、 文字列として読む値のキー
+_TEXT_KEYS_IN_LIST_ITEMS: dict[str, tuple[str, ...]] = {
+    "reportFilters": ("column", "operator"),
+    "groupingsDown": ("name", "sortOrder", "dateGranularity"),
+    "groupingsAcross": ("name", "sortOrder", "dateGranularity"),
+    "sortBy": ("sortColumn", "sortOrder"),
+}
+
+# dict の値の中で、 文字列として読む値のキー（ dict でなければ None。 Salesforce は
+# 使わない項目を null で返す ）
+_TEXT_KEYS_IN_DICT_VALUES: dict[str, tuple[str, ...]] = {
+    "reportType": ("type",),
+    "standardDateFilter": ("column", "durationValue", "startDate", "endDate"),
+    "topRows": ("direction",),
+}
+
+
+def _with_text_values(item: dict[str, Any], text_keys: tuple[str, ...]) -> dict[str, Any]:
+    """``item`` の ``text_keys`` のうち、 ある値を str にそろえる。 そろっていれば元の dict。"""
+    if all(isinstance(item.get(key), str) for key in text_keys if key in item):
+        return item
+    return {
+        key: _text(value) if key in text_keys else value for key, value in item.items()
+    }
 
 
 def _str_list(value: object) -> list[str]:

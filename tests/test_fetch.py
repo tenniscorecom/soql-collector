@@ -1522,7 +1522,7 @@ def _make_report_metadata_with_extras() -> dict:
             "groupingsAcross": [],
             "aggregates": [],
             "sortBy": [],
-            "topRows": "10",
+            "topRows": {"rowLimit": 10, "direction": "Desc"},
             "historicalSnapshotDates": [],
             "buckets": [],
             "customSummaryFormula": [],
@@ -1652,7 +1652,7 @@ def test_slim_report_normalizes_list_items() -> None:
     assert metadata["aggregates"] == ["s!Amount"]
     assert metadata["reportFilters"] == [{"column": "A"}]
     assert metadata["groupingsDown"] == []
-    assert metadata["reportType"] == {}
+    assert metadata["reportType"] is None
     assert result["reportExtendedMetadata"] == {"detailColumnInfo": {"A": {"label": "A"}}}
 
 
