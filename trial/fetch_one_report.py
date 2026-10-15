@@ -23,9 +23,11 @@ import logging
 import sys
 from collections.abc import Callable
 
+from comken import config
+
 from src.fetch import run_fetch
 from src.master import MasterEntry
-from src.run import FilePaths, read_file_paths, read_survey_config
+from src.run import FilePaths, read_file_paths
 from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
@@ -102,7 +104,7 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
 
     if records:
         try:
-            _, _, _, similar_threshold = read_survey_config()
+            similar_threshold = config.SURVEY.SIMILAR_COLUMN_THRESHOLD
             run_tables(
                 file_paths.output_dir,
                 records,

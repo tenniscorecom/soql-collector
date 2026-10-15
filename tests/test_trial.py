@@ -119,13 +119,17 @@ def _patch_read_file_paths(
 ) -> None:
     """``module._read_trial_file_paths`` を ``project_root`` からの読み込みに差し替える。
 
-    trial モジュールは内部で ``_read_trial_file_paths`` と
-    ``read_survey_config`` を呼ぶので、 両方を ``project_root`` ベース
-    の config.ini で読むバージョンに差し替える。
+    trial モジュールは ``config.SURVEY.X`` を comken のデフォルト config から
+    読むので、 ``sys.argv`` を ``project_root`` に向けてキャッシュも破棄する。
     """
+    import sys
+
     from comken.core.config import Config, _reset_cached_config
 
     from src.run import FilePaths
+
+    _reset_cached_config()
+    monkeypatch.setattr(sys, "argv", [str(project_root / "main.py")])
 
     def patched() -> FilePaths:
         cfg = Config(project_root / "config.ini")
@@ -139,25 +143,7 @@ def _patch_read_file_paths(
             diagram_dir="関係図",
         )
 
-    def patched_survey() -> tuple[int, int, bool, float]:
-        cfg = Config(project_root / "config.ini")
-        return (
-            int(cfg.SURVEY.RELATED_DEPTH),
-            int(cfg.SURVEY.RELATED_MAX),
-            str(cfg.SURVEY.ROW_LIMIT_CHECK) == "○",
-            float(cfg.SURVEY.SIMILAR_COLUMN_THRESHOLD),
-        )
-
     monkeypatch.setattr(module, "_read_trial_file_paths", patched)
-    # trial モジュールは ``from src.run import read_survey_config`` で取り込んで
-    # いるので、 取り込み元の src.run と取り込み先の module 両方を差し替える
-    import src.run as run_module
-
-    monkeypatch.setattr(run_module, "read_survey_config", patched_survey)
-    if hasattr(module, "read_survey_config"):
-        monkeypatch.setattr(module, "read_survey_config", patched_survey)
-    # 念のためキャッシュもクリア
-    _reset_cached_config()
 
 
 def _path_from_cfg(cfg, key: str, project_root: Path) -> Path:

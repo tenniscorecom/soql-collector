@@ -98,22 +98,24 @@ def _make_file_paths(tmp_path: Path, master: Path) -> Any:
     )
 
 
-def _patch_read_file_paths(monkeypatch: pytest.MonkeyPatch, file_paths: Any) -> None:
-    """``src.run.read_file_paths`` を差し替え。 ``run()`` が config.ini から
-    読む ``[SURVEY]`` / ``[PII]`` も既定値で差し替える。"""
+def _patch_read_file_paths(
+    monkeypatch: pytest.MonkeyPatch, file_paths: Any, tmp_path: Path
+) -> None:
+    """``src.run.read_file_paths`` を差し替え、 ``run()`` が comken の
+    デフォルト config から ``[SURVEY]`` / ``[PII]`` を読む先を ``tmp_path``
+    の ``config.ini`` に向ける （ ``_reset_cached_config`` でキャッシュも
+    破棄 ）。
+    """
+    import sys
+
+    from comken.core.config import _reset_cached_config
+
     import src.run as run_module
 
+    _reset_cached_config()
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "fake_main.py")])
+
     monkeypatch.setattr(run_module, "read_file_paths", lambda: file_paths)
-    monkeypatch.setattr(
-        run_module,
-        "read_survey_config",
-        lambda: (3, 40, True, 0.8),
-    )
-    monkeypatch.setattr(
-        run_module,
-        "read_pii_config",
-        lambda: (("氏名", "名前"), ("Contact", "Lead")),
-    )
 
 
 # ── 偽物のクライアント ─────────────────────────────────────────────────
@@ -229,7 +231,9 @@ def test_run_with_argv_returns_2_and_skips_site_for(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master))
+    _patch_read_file_paths(
+        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
+    )
 
     def site_for(url: str):
         called["site_for"] += 1
@@ -251,7 +255,9 @@ def test_run_with_none_argv_uses_sys_argv(
     master = tmp_path / "master.xlsx"
     _build_master(master, [])
     _write_ini(tmp_path, master)
-    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master))
+    _patch_read_file_paths(
+        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
+    )
 
     monkeypatch.setattr(sys, "argv", ["main.py", "--help"])
 
@@ -279,7 +285,9 @@ def test_run_filters_disabled_rows(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master))
+    _patch_read_file_paths(
+        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
+    )
 
     captured_keys: list[str] = []
 
@@ -401,7 +409,9 @@ def test_run_no_enabled_rows_returns_2(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master))
+    _patch_read_file_paths(
+        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
+    )
 
     called = {"site_for": 0}
 
@@ -435,7 +445,9 @@ def test_run_writes_jsons_and_csvs(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master))
+    _patch_read_file_paths(
+        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
+    )
 
     def fake_run_fetch(
         entries,
@@ -509,7 +521,7 @@ def test_run_partial_failure_continues_and_returns_1(
     )
     _write_ini(tmp_path, master)
     file_paths = _make_file_paths(tmp_path, master)
-    _patch_read_file_paths(monkeypatch, file_paths)
+    _patch_read_file_paths(monkeypatch, file_paths, tmp_path)
 
     # 失敗 ID の既存 CSV を残しておく
     file_paths.output_dir.mkdir(parents=True, exist_ok=True)
@@ -591,7 +603,7 @@ def test_run_dry_run_skips_site_for_and_writes(
     )
     _write_ini(tmp_path, master)
     file_paths = _make_file_paths(tmp_path, master)
-    _patch_read_file_paths(monkeypatch, file_paths)
+    _patch_read_file_paths(monkeypatch, file_paths, tmp_path)
 
     called = {"fetch": 0, "tables": 0}
 

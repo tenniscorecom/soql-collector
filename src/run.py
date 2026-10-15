@@ -19,11 +19,15 @@ describe を取って ``ReportRecord`` に詰める。 その record の一覧�
 （ ``src/fetch.py`` ） が持つ。 同じ事実を重ねて出さない。
 
 設定は comken の ``Config`` から直接読む（ ``from comken import config``
-で ``config.FILES.MASTER_XLSX_PATH`` のように ）。 設定値の型変換のうち
-comken がやってくれない 2 種類だけ下の小さなヘルパーで行う
-（ ○/× → bool、 カンマ区切りの素の文字列 → tuple ）。 範囲チェックや
-既定値の補完はここには持たせない。 キーが無いときは comken の
-``ConfigError`` をそのまま使う側へ流す。
+で ``config.FILES.MASTER_XLSX_PATH`` のように ）。 comken が自動で
+やってくれない変換は 2 行だけ:
+
+- ``[SURVEY] ROW_LIMIT_CHECK`` が ○/× で書かれているので ``== "○"`` で bool にする
+- ``[PII] KEYWORDS`` / ``PERSON_OBJECTS`` が ``[ ]`` なしの素のカンマ区切りで
+  書かれているので ``split(",")`` で tuple にする
+
+範囲チェック・既定値の補完はここには持たせない（ 設定の規約にも反するため ）。
+キーが無いときは comken の ``ConfigError`` をそのまま使う側へ流す。
 """
 
 from __future__ import annotations
@@ -67,112 +71,16 @@ class FilePaths:
     diagram_dir: str
 
 
-# ── comken の Config に無い型変換ヘルパー ─────────────────────────────
-# comken の ``Config`` は次の変換は自動でやってくれる （ comken/core/config/
-# ``_parse_value`` ）:
-#   - ``true`` / ``false`` → bool
-#   - ``[a, b, c]`` → list[str]
-#   - 絶対パス / 相対パス（ ``/`` か ``\\`` を含む ） → Path
-#   - 整数 / 小数
-# それ以外の 2 種類は config.ini の流儀に合わせてここで小さく書く:
-#   - ``ROW_LIMIT_CHECK`` が ○/× で書かれるので bool に直す
-#   - ``[PII] KEYWORDS`` / ``PERSON_OBJECTS`` が ``[ ]`` なしの素のカンマ区切りで
-#     書かれているので tuple に直す
-# 範囲チェック・既定値補完は持たせない （ 設定の規約にも反するため ） 。
-
-
-def _coerce_bool_jp(value: object, *, key: str) -> bool:
-    """``ROW_LIMIT_CHECK`` の値を bool にする。
-
-    comken は ``true`` / ``false`` だけを bool に変換するので、 ○/× などの
-    和語表記はここで受ける。 不正値は ``ConfigError`` を上げて止める
-    （ 「 握りつぶさない 」 規約 ）。
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in ("○", "o", "true", "on", "yes", "1", "はい"):
-            return True
-        if text in ("×", "x", "false", "off", "no", "0", "いいえ"):
-            return False
-    raise ConfigError(
-        f"config.ini の [SURVEY] {key}={value!r} は ○/× などで書かれていません。"
-        f" 例: {key} = ○"
-    )
-
-
-def _coerce_csv_tuple(value: object, *, key: str) -> tuple[str, ...]:
-    """カンマ区切りの文字列 / list を tuple[str, ...] にする。
-
-    comken は ``[a, b, c]`` の形にだけ list 変換するので、 素の
-    ``a, b, c`` （ このプロジェクトの config.ini.example の書き方 ） は
-    ここで split する。 list / tuple で返ってきたときは strip して
-    空文字を除いて tuple にする。
-    """
-    if isinstance(value, str):
-        parts = [part.strip() for part in value.split(",")]
-        return tuple(part for part in parts if part)
-    if isinstance(value, (list, tuple)):
-        return tuple(str(item).strip() for item in value if str(item).strip())
-    raise ConfigError(
-        f"config.ini の [PII] {key} の値が読み取れません: {value!r}"
-    )
-
-
-def _coerce_path(value: object) -> Path:
-    """``[FILES]`` の値を ``Path`` に正規化する。
-
-    comken はパスらしき値を ``Path`` で返すが、 区切り文字を含まない素の
-    ファイル名（ テスト用 ``master.xlsx`` 等 ） は str のまま返る。 両方を
-    受け取って ``Path`` に揃える。
-    """
-    if isinstance(value, Path):
-        return value
-    return Path(str(value))
-
-
 def read_file_paths() -> FilePaths:
-    """``config.ini [FILES]`` からパスを ``FilePaths`` として読む。
-
-    comken の ``Config`` から直接読む。 キーが無いときは comken が
-    ``ConfigError`` を投げるので、 そのまま上位へ伝える。
-    """
+    """``config.ini [FILES]`` から ``FilePaths`` を読む。"""
     return FilePaths(
-        master_xlsx_path=_coerce_path(config.FILES.MASTER_XLSX_PATH),
-        output_dir=_coerce_path(config.FILES.OUTPUT_DIR),
-        describe_csv_path=_coerce_path(config.FILES.DESCRIBE_CSV_PATH),
-        column_fix_xlsx_path=_coerce_path(config.FILES.COLUMN_FIX_XLSX_PATH),
-        xlsx_name=str(config.FILES.XLSX_NAME),
-        markdown_dir=str(config.FILES.MARKDOWN_DIR),
-        diagram_dir=str(config.FILES.DIAGRAM_DIR),
-    )
-
-
-def read_survey_config() -> tuple[int, int, bool, float]:
-    """``config.ini [SURVEY]`` から調査の調整値を 1 回読む。
-
-    戻り値は ``(related_depth, related_max, row_limit_enabled,
-    similar_column_threshold)`` 。 キーが無いときは comken の
-    ``ConfigError`` をそのまま上位へ流す。
-    """
-    return (
-        int(config.SURVEY.RELATED_DEPTH),
-        int(config.SURVEY.RELATED_MAX),
-        _coerce_bool_jp(config.SURVEY.ROW_LIMIT_CHECK, key="ROW_LIMIT_CHECK"),
-        float(config.SURVEY.SIMILAR_COLUMN_THRESHOLD),
-    )
-
-
-def read_pii_config() -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``config.ini [PII]`` から PII 判定の調整値を 1 回読む。
-
-    戻り値は ``(keywords, person_objects)`` 。 キーが無いときは comken の
-    ``ConfigError`` をそのまま上位へ流す。
-    """
-    return (
-        _coerce_csv_tuple(config.PII.KEYWORDS, key="KEYWORDS"),
-        _coerce_csv_tuple(config.PII.PERSON_OBJECTS, key="PERSON_OBJECTS"),
+        master_xlsx_path=Path(config.FILES.MASTER_XLSX_PATH),
+        output_dir=Path(config.FILES.OUTPUT_DIR),
+        describe_csv_path=Path(config.FILES.DESCRIBE_CSV_PATH),
+        column_fix_xlsx_path=Path(config.FILES.COLUMN_FIX_XLSX_PATH),
+        xlsx_name=config.FILES.XLSX_NAME,
+        markdown_dir=config.FILES.MARKDOWN_DIR,
+        diagram_dir=config.FILES.DIAGRAM_DIR,
     )
 
 
@@ -181,12 +89,6 @@ def run(
     *,
     site_for: SiteFor | None = None,
     file_paths: FilePaths | None = None,
-    related_depth: int | None = None,
-    related_max: int | None = None,
-    row_limit_enabled: bool | None = None,
-    similar_column_threshold: float | None = None,
-    pii_keywords: tuple[str, ...] | None = None,
-    pii_person_objects: tuple[str, ...] | None = None,
 ) -> int:
     """``実行.bat`` / RPA から呼ばれる入口。
 
@@ -196,9 +98,6 @@ def run(
         site_for: URL → Salesforce サイトクラスの関数。 テスト用差し替え。
         file_paths: ``config.ini [FILES]`` の値。 省略時は ``read_file_paths()`` で
             読む。 テストで差し替えるために引数で受ける。
-        related_depth / related_max / row_limit_enabled /
-        similar_column_threshold / pii_keywords / pii_person_objects: 同上。
-            ``None`` のものは ``[SURVEY]`` / ``[PII]`` から読む。
 
     Returns:
         0 … 全件成功
@@ -212,41 +111,25 @@ def run(
         logger.error("引数は使いません。取るレポートは管理表の『有効』列が ○ の行で決まります")
         return 2
 
-    try:
-        if file_paths is None:
+    if file_paths is None:
+        try:
             file_paths = read_file_paths()
-        if related_depth is None:
-            related_depth, related_max, row_limit_enabled, similar_column_threshold = (
-                read_survey_config()
-            )
-        else:
-            # 全部 None でなく揃って渡されるパス （ テスト用 ） 。 省略キーは
-            # 既定では補わないので、 ここで個別に読む形に倒すと齟齬が出る。
-            # 「全部 None か全部値」 の二択だけを許し、 中途半端は ConfigError 。
-            if (
-                related_max is None
-                or row_limit_enabled is None
-                or similar_column_threshold is None
-            ):
-                raise ConfigError(
-                    "src.run.run() に related_depth を渡すなら related_max / "
-                    "row_limit_enabled / similar_column_threshold も一緒に渡してください"
-                )
-        if pii_keywords is None or pii_person_objects is None:
-            if pii_keywords is None and pii_person_objects is None:
-                pii_keywords, pii_person_objects = read_pii_config()
-            else:
-                raise ConfigError(
-                    "src.run.run() に pii_keywords を渡すなら pii_person_objects も一緒に渡してください"
-                )
-    except ConfigError as exc:
-        logger.error("%s", exc)
-        return 2
+        except ConfigError as exc:
+            logger.error("%s", exc)
+            return 2
 
     all_entries = read_master(file_paths.master_xlsx_path)
     entries = filter_enabled(all_entries)
     enabled_count = len(entries)
     total_count = len(all_entries)
+
+    # config.ini の値読み取り （ キー無しは comken の ConfigError ）
+    related_depth = config.SURVEY.RELATED_DEPTH
+    related_max = config.SURVEY.RELATED_MAX
+    row_limit_enabled = config.SURVEY.ROW_LIMIT_CHECK == "○"
+    similar_threshold = config.SURVEY.SIMILAR_COLUMN_THRESHOLD
+    pii_keywords = tuple(s.strip() for s in config.PII.KEYWORDS.split(","))
+    pii_person_objects = tuple(s.strip() for s in config.PII.PERSON_OBJECTS.split(","))
 
     logger.info(
         "取得開始: 管理表=%s 全行数=%d 有効=%d 出力先=%s "
@@ -258,7 +141,7 @@ def run(
         related_depth,
         related_max,
         "○" if row_limit_enabled else "×",
-        similar_column_threshold,
+        similar_threshold,
     )
 
     if is_dry_run():
@@ -338,7 +221,7 @@ def run(
             file_paths.output_dir,
             records,
             only_keys=ok_keys,
-            similar_threshold=similar_column_threshold,
+            similar_threshold=similar_threshold,
             xlsx_name=file_paths.xlsx_name,
         )
     except Exception as exc:
