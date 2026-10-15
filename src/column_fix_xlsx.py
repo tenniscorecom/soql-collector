@@ -36,11 +36,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from comken.exceptions import ExcelError
 
 from src import xlsx_style
+from src.text_utils import coerce_str as _coerce_str
+
+if TYPE_CHECKING:
+    from src.fetch import ReportRecord
 
 logger = logging.getLogger(__name__)
 
@@ -730,15 +734,11 @@ def _normalize_key(main_object: str, column_key: str) -> tuple[str, str]:
     return (main_object.strip().lower(), column_key)
 
 
-def _coerce_str(value: object) -> str:
-    return "" if value is None else str(value)
-
-
 def _merge_and_write_after_run(
     *,
     path: Path,
     existing: dict[tuple[str, str], ColumnFixRow],
-    records: list[Any],
+    records: list[ReportRecord],
     today: date,
 ) -> None:
     """``run`` の最後に ``列の直し.xlsx`` をマージして書く薄いラッパー。
@@ -749,15 +749,11 @@ def _merge_and_write_after_run(
     observed: list[ObservedAutoRow] = []
     report_keys: dict[tuple[str, str], set[str]] = {}
     for record in records:
-        column_map_rows = getattr(record, "column_map", None)
-        if not isinstance(column_map_rows, list):
-            continue
-        main_object = getattr(record, "main_object", None)
-        main_object_text = main_object if isinstance(main_object, str) and main_object else ""
+        main_object_text = record.main_object or ""
         if not main_object_text:
             continue
-        record_key = getattr(record, "key", "") or ""
-        for row in column_map_rows:
+        record_key = record.key
+        for row in record.column_map:
             if not isinstance(row, dict):
                 continue
             column_key = _coerce_str(row.get("列キー"))

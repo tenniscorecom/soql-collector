@@ -7,7 +7,6 @@ record だけでネットワークには繋がない ） 。 仕様の見出し�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 from src import pii
@@ -16,6 +15,7 @@ from src.ai_markdown import (
     build_markdown,
 )
 from src.fetch import RelationRecord, ReportRecord, RowCheck
+from src.soql_builder import SoqlDraft
 from src.tables import run_tables
 
 # ── ヘルパー ─────────────────────────────────────────────────────────────
@@ -470,22 +470,10 @@ def test_run_tables_writes_markdown_per_record(tmp_path: Path) -> None:
 # ── SOQL の下書き ──────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class _SimpleSoqlDraft:
-    """``SoqlDraft`` 互換のテスト用 dataclass。"""
-
-    soql: str
-    status: str
-    missing: tuple[str, ...] = ()
-    checks: tuple[str, ...] = ()
-    count_soql: str = ""
-    limit: int | None = None
-
-
 def test_markdown_has_soql_section_for_created_draft() -> None:
     """``作成済み`` のドラフトなら ``## SOQL の下書き`` 節が出る。"""
     record = _make_record(
-        soql_draft=_SimpleSoqlDraft(
+        soql_draft=SoqlDraft(
             soql="SELECT Subject, What.Name\nFROM Task\nWHERE Subject LIKE '%A%'",
             status="作成済み",
             missing=(),
@@ -510,7 +498,7 @@ def test_markdown_soql_section_keeps_incomplete_marker_for_partial() -> None:
     分かるように、 印はそのまま載せる。 ``作れなかった部分`` のリストも出る。
     """
     record = _make_record(
-        soql_draft=_SimpleSoqlDraft(
+        soql_draft=SoqlDraft(
             soql=(
                 "【未完成】作れなかった部分があります。このままでは実行できません。\n"
                 "SELECT Subject\nFROM Task"
@@ -530,7 +518,7 @@ def test_markdown_soql_section_keeps_incomplete_marker_for_partial() -> None:
 def test_markdown_soql_section_omits_body_for_none_status() -> None:
     """``作れず`` は本文が無いので 「 SOQL: なし 」 と書く。"""
     record = _make_record(
-        soql_draft=_SimpleSoqlDraft(
+        soql_draft=SoqlDraft(
             soql="",
             status="作れず",
             missing=("主オブジェクトが不明のため作れず",),
@@ -552,7 +540,7 @@ def test_markdown_soql_section_omitted_without_draft() -> None:
 def test_markdown_soql_section_includes_checks_when_needs_check() -> None:
     """``要確認`` には SOQL 本文は出るが 「 要確認: 」 のリストも添える。"""
     record = _make_record(
-        soql_draft=_SimpleSoqlDraft(
+        soql_draft=SoqlDraft(
             soql="SELECT Subject FROM Task",
             status="要確認",
             missing=(),

@@ -38,7 +38,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.fetch import ReportRecord
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +121,7 @@ class Diagram:
 
 
 def build_main_object_diagrams(
-    records: Sequence[Any],
+    records: Sequence[ReportRecord],
     *,
     max_depth: int = 3,
 ) -> dict[str, Diagram]:
@@ -144,24 +147,17 @@ def build_main_object_diagrams(
     main_objects: set[str] = set()
 
     for record in records:
-        main_object = getattr(record, "main_object", None)
-        if not isinstance(main_object, str) or not main_object:
+        main_object = record.main_object
+        if not main_object:
             continue
         main_objects.add(main_object)
-        relations = getattr(record, "relations", ()) or ()
+        relations = record.relations
         for rel in relations:
-            parent = getattr(rel, "parent", None)
-            field_api = getattr(rel, "field", None)
-            rel_name = getattr(rel, "relationship_name", None)
-            child = getattr(rel, "child", None)
-            if not (
-                isinstance(parent, str)
-                and isinstance(child, str)
-                and isinstance(field_api, str)
-                and parent
-                and field_api
-                and child
-            ):
+            parent = rel.parent
+            field_api = rel.field
+            rel_name = rel.relationship_name
+            child = rel.child
+            if not (parent and field_api and child):
                 continue
             edge_key = (parent, field_api, child)
             merged_edges.setdefault(main_object, set()).add(edge_key)
@@ -444,7 +440,7 @@ def _render_markdown(diagram: Diagram) -> str:
 
 
 def render_inline_tree_for_record(
-    record: Any,
+    record: ReportRecord,
     *,
     max_depth: int = 3,
 ) -> tuple[str, ...]:
@@ -457,7 +453,7 @@ def render_inline_tree_for_record(
     動かす
     """
     diagrams = build_main_object_diagrams([record], max_depth=max_depth)
-    diagram = diagrams.get(getattr(record, "main_object", "") or "")
+    diagram = diagrams.get(record.main_object or "")
     if diagram is None:
         return ()
     return tuple(diagram.render_tree_lines())

@@ -22,9 +22,13 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src import relation_diagram
+from src.text_utils import coerce_str as _coerce_str
+
+if TYPE_CHECKING:
+    from src.fetch import RelationRecord, ReportRecord
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +48,7 @@ _SCOPE_MY = "my"
 
 def write_ai_markdowns(
     output_dir: Any,
-    records: Sequence[Any],
+    records: Sequence[ReportRecord],
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
 ) -> tuple[Any, ...]:
@@ -59,8 +63,6 @@ def write_ai_markdowns(
     target_dir.mkdir(parents=True, exist_ok=True)
     wrote: list[Any] = []
     for record in records:
-        if record is None:
-            continue
         path = write_ai_markdown(target_dir, record, similar_lookup=similar_lookup)
         if path is not None:
             wrote.append(path)
@@ -71,13 +73,13 @@ def write_ai_markdowns(
 
 def write_ai_markdown(
     target_dir: Any,
-    record: Any,
+    record: ReportRecord,
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
 ) -> Any | None:
     """1 record ぶんの Markdown を ``target_dir/{key}.md`` に書く。"""
-    key = getattr(record, "key", "")
-    if not isinstance(key, str) or not key:
+    key = record.key
+    if not key:
         return None
     path = target_dir / f"{key}.md"
     content = build_markdown(record, similar_lookup=similar_lookup)
@@ -86,7 +88,7 @@ def write_ai_markdown(
 
 
 def build_markdown(
-    record: Any,
+    record: ReportRecord,
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
 ) -> str:
@@ -105,7 +107,7 @@ def build_markdown(
     """
     metadata = _report_metadata(record)
     fmt = _format_of(metadata)
-    column_map = _list_of(getattr(record, "column_map", None))
+    column_map = record.column_map
     column_map_by_key = _column_map_by_key(column_map)
     detail_columns = _list_of(metadata.get("detailColumns"))
 
@@ -120,7 +122,7 @@ def build_markdown(
     parts.append("")
 
     # ヘッダー （ 5 行のメタ ）
-    parts.append(f"- レポートID: {_text(getattr(record, 'report_id', ''))}")
+    parts.append(f"- レポートID: {_text(record.report_id)}")
     parts.append(f"- 主オブジェクト: {_format_main_object(record)}")
     parts.append(f"- レポート形式: {_text(fmt)}")
     parts.append(f"- 2000件超: {_format_row_check(record)}")
@@ -175,7 +177,7 @@ def build_markdown(
 
     # 似たレポート
     parts.append("## 似たレポート")
-    similar_text = _format_similar(similar_lookup, key=str(getattr(record, "key", "")))
+    similar_text = _format_similar(similar_lookup, key=record.key)
     parts.append(similar_text)
     parts.append("")
 
@@ -193,7 +195,7 @@ def build_markdown(
     diagram_tree = relation_diagram.render_inline_tree_for_record(record)
     if diagram_tree:
         parts.append("関係図 （ Mermaid ）: ")
-        main_object = getattr(record, "main_object", "") or ""
+        main_object = record.main_object or ""
         if main_object:
             parts.append(f"../関係図/{main_object}.md")
         parts.append("")
@@ -233,11 +235,11 @@ def _ai_instruction_header() -> str:
     )
 
 
-def _title(record: Any) -> str:
-    return f"# {_text(getattr(record, 'key', ''))} {_text(getattr(record, 'summary', ''))}"
+def _title(record: ReportRecord) -> str:
+    return f"# {_text(record.key)} {_text(record.summary)}"
 
 
-def _format_main_object(record: Any) -> str:
+def _format_main_object(record: ReportRecord) -> str:
     """主オブジェクトが取れなかったときは、 警告の先頭から理由を拾う。
 
     ``fetch._choose_main`` が ``candidate_failure_reason()`` で作った
@@ -245,38 +247,36 @@ def _format_main_object(record: Any) -> str:
     ``warnings`` に乗っているので、 その 1 行を丸ごと理由として添える。
     該当が無ければ 「 不明 」 だけにする
     """
-    main_object = getattr(record, "main_object", None)
-    if isinstance(main_object, str) and main_object:
+    main_object = record.main_object
+    if main_object:
         return main_object
-    warnings = getattr(record, "warnings", ()) or ()
-    for warning in warnings:
-        if isinstance(warning, str) and warning.startswith("レポートタイプ"):
+    for warning in record.warnings:
+        if warning.startswith("レポートタイプ"):
             return f"不明（{warning}）"
     return "不明"
 
 
-def _format_row_check(record: Any) -> str:
+def _format_row_check(record: ReportRecord) -> str:
     """``row_check`` の判定を 「 超えていない（N 件 ） 」 の形に整える。
 
     ``status`` だけだと行数が分からないので、 AI が WHERE を組み立てる
     手掛かりになるよう件数も添える
     """
-    row_check = getattr(record, "row_check", None)
+    row_check = record.row_check
     if row_check is None:
         return "未実施"
-    status = getattr(row_check, "status", "") or ""
-    rows = getattr(row_check, "rows", None)
+    status = row_check.status or ""
+    rows = row_check.rows
     if status == "超えていない" and isinstance(rows, int):
         return f"超えていない（{rows}件）"
     return status or "未実施"
 
 
-def _format_pii(record: Any) -> str:
-    pii_result = getattr(record, "pii", None)
+def _format_pii(record: ReportRecord) -> str:
+    pii_result = record.pii
     if pii_result is None:
         return "なし"
-    status = getattr(pii_result, "status", "") or "なし"
-    return status
+    return pii_result.status or "なし"
 
 
 # ── 列の対応 ───────────────────────────────────────────────────────────────
@@ -351,12 +351,9 @@ def _format_similar(
 # ── 警告 ────────────────────────────────────────────────────────────────────
 
 
-def _build_warning_lines(record: Any) -> list[str]:
+def _build_warning_lines(record: ReportRecord) -> list[str]:
     """``record.warnings`` の各警告を 1 行ずつ取り出す。 空 / 無いときは空リスト"""
-    raw = getattr(record, "warnings", ()) or ()
-    if not isinstance(raw, (list, tuple)):
-        return []
-    return [str(w) for w in raw if isinstance(w, str) and w]
+    return [w for w in record.warnings if w]
 
 
 # ── 絞り込み ───────────────────────────────────────────────────────────────
@@ -566,19 +563,19 @@ def _format_grouping(grouping: dict[str, Any]) -> str:
 # ── 関連オブジェクトの経路 ─────────────────────────────────────────────────
 
 
-def _build_used_chain_lines(record: Any) -> list[str]:
+def _build_used_chain_lines(record: ReportRecord) -> list[str]:
     """主オブジェクトから、 出力列・絞り込みで使っている経路だけを箇条書きにする。
 
     ``detailColumns`` と ``reportFilters`` のうち ``column_map`` で **解決
     できた multi-hop の 対応フィールドAPI名** だけを材料にする。 経路が無い
     ときは空リスト
     """
-    main_object = getattr(record, "main_object", None)
-    if not isinstance(main_object, str) or not main_object:
+    main_object = record.main_object
+    if not main_object:
         return []
 
     metadata = _report_metadata(record)
-    column_map_by_key = _column_map_by_key(_list_of(getattr(record, "column_map", None)))
+    column_map_by_key = _column_map_by_key(record.column_map)
 
     used_keys: list[str] = []
     for col_key in metadata.get("detailColumns") or []:
@@ -593,7 +590,7 @@ def _build_used_chain_lines(record: Any) -> list[str]:
             if isinstance(col_key, str) and col_key and col_key not in used_keys:
                 used_keys.append(col_key)
 
-    rel_edges = _build_relation_edges(getattr(record, "relations", ()) or ())
+    rel_edges = _build_relation_edges(record.relations)
 
     chains_by_object: dict[str, list[tuple[str, str]]] = {}
     for col_key in used_keys:
@@ -628,22 +625,22 @@ def _build_used_chain_lines(record: Any) -> list[str]:
     return lines
 
 
-def _build_relation_edges(relations: Any) -> dict[str, list[tuple[str, str]]]:
+def _build_relation_edges(
+    relations: tuple[RelationRecord, ...],
+) -> dict[str, list[tuple[str, str]]]:
     """``RelationRecord`` のリストを ``parent -> [(rel_name, child), ...]`` に整える。
 
     同じ ``(parent, rel_name)`` の重複は入力順で先頭だけ残す
     """
     edges: dict[str, list[tuple[str, str]]] = {}
-    if not isinstance(relations, (list, tuple)):
-        return edges
     seen: set[tuple[str, str]] = set()
     for rel in relations:
-        parent = getattr(rel, "parent", None)
-        child = getattr(rel, "child", None)
-        rel_name = getattr(rel, "relationship_name", None)
-        if not (isinstance(parent, str) and isinstance(child, str) and parent and child):
+        parent = rel.parent
+        child = rel.child
+        rel_name = rel.relationship_name
+        if not (parent and child):
             continue
-        name = rel_name if isinstance(rel_name, str) else ""
+        name = rel_name or ""
         key = (parent, name)
         if key in seen:
             continue
@@ -679,14 +676,14 @@ def _walk_chain(
 # ── SOQL の下書き ───────────────────────────────────────────────────────
 
 
-def _build_soql_section(record: Any) -> list[str]:
+def _build_soql_section(record: ReportRecord) -> list[str]:
     """``record.soql_draft`` から ``## SOQL の下書き`` セクションを組み立てる。
 
     AI が下書きを直しやすいように、 状態・SOQL本文（ 印付き ） ・作れなかった
     部分・要確認をそのまま載せる。 ``soql_draft`` が無い record は空リスト
     （ セクションを出さない ） 。 ``作れず`` は本文が無いので状態・行だけ。
     """
-    draft = getattr(record, "soql_draft", None)
+    draft = record.soql_draft
     if draft is None:
         return []
     status = _coerce_str(getattr(draft, "status", "")) or "(不明)"
@@ -729,14 +726,14 @@ def _build_soql_section(record: Any) -> list[str]:
 # ── 注意 ───────────────────────────────────────────────────────────────────
 
 
-def _build_notes(record: Any, metadata: dict[str, Any]) -> list[str]:
+def _build_notes(record: ReportRecord, metadata: dict[str, Any]) -> list[str]:
     """``SOQL を組むときの注意`` セクションの箇条書きを組み立てる。
 
     当てはまるものだけを出す。 1 つもなければ空リスト
     """
     notes: list[str] = []
 
-    column_map = _list_of(getattr(record, "column_map", None))
+    column_map = record.column_map
     has_unresolved = False
     has_multiple = False
     for col in column_map:
@@ -760,8 +757,8 @@ def _build_notes(record: Any, metadata: dict[str, Any]) -> list[str]:
     if isinstance(metadata.get("standardDateFilter"), dict) and metadata.get("standardDateFilter"):
         notes.append("- 日時の条件はタイムゾーンに注意")
 
-    row_check = getattr(record, "row_check", None)
-    if row_check is not None and getattr(row_check, "status", "") == "超えている":
+    row_check = record.row_check
+    if row_check is not None and row_check.status == "超えている":
         notes.append("- 2000件超なので Bulk で取る")
 
     cross_filters = metadata.get("crossFilters")
@@ -777,11 +774,13 @@ def _build_notes(record: Any, metadata: dict[str, Any]) -> list[str]:
 # ── 共通ヘルパー ───────────────────────────────────────────────────────────
 
 
-def _report_metadata(record: Any) -> dict[str, Any]:
-    """``record.report.reportMetadata`` を取り出す。 壊れていれば空 dict。"""
-    report = getattr(record, "report", None)
-    if not isinstance(report, dict):
-        return {}
+def _report_metadata(record: ReportRecord) -> dict[str, Any]:
+    """``record.report.reportMetadata`` を取り出す。 壊れていれば空 dict。
+
+    ``record.report`` は ``_slim_report`` の戻り値で ``dict[str, Any]`` 。
+    壊れた record のために ``dict`` 形だけ確認する
+    """
+    report = record.report if isinstance(record.report, dict) else {}
     metadata = report.get("reportMetadata")
     return metadata if isinstance(metadata, dict) else {}
 
@@ -852,13 +851,6 @@ def _format_top_rows(top_rows: Any) -> str:
     if isinstance(direction, str) and direction:
         parts.append(direction)
     return " ".join(parts)
-
-
-def _coerce_str(value: Any) -> str:
-    """``None`` を空文字に、 他の値はそのまま ``str`` にする。"""
-    if value is None:
-        return ""
-    return str(value)
 
 
 def _text(value: Any) -> str:

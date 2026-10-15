@@ -40,7 +40,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from comken.exceptions import (
     ComkenError,
@@ -54,6 +54,7 @@ from comken.toolbox.salesforce.report import report_id_from_url
 from src import column_fix_xlsx, mapping, pii, soql_builder
 from src.describe_store import DescribeStore, org_from_url
 from src.master import MasterEntry
+from src.text_utils import coerce_str as _coerce_str
 
 logger = logging.getLogger(__name__)
 
@@ -459,7 +460,24 @@ def _log_pii(pii_result: pii.ReportPIIResult) -> None:
 # slim は ``_fetch_one`` の最後、 record に詰める直前だけ行う。
 
 
-def _slim_report(metadata: object) -> dict[str, Any]:
+# ── slim 後のデータ型 ─────────────────────────────────────────────
+# SOQL 組立と ``tables`` / ``ai_markdown`` が読む範囲だけを型で示す。
+# SlimReport は ``reportMetadata`` / ``reportExtendedMetadata`` を持つ dict。
+# SlimObject は ``_slim_object`` の戻り値の構造（ TypedDict ） 。 フィールドは
+# 全部 optional にして、 境界検証に失敗したときの欠落キーを表現する。
+SlimReport = dict[str, Any]
+
+
+class SlimObject(TypedDict, total=False):
+    """``_slim_object`` の戻り値の構造。"""
+
+    name: str
+    label: str
+    custom: bool
+    fields: list[dict[str, Any]]
+
+
+def _slim_report(metadata: object) -> SlimReport:
     """``client.report.describe()`` の戻り値から SOQL 組立に必要な構造だけを返す。
 
     - ``reportMetadata``: ``REPORT_METADATA_KEYS`` にあるキーだけを**そのまま**
@@ -530,7 +548,7 @@ def _collect_dropped_keys(metadata: object) -> tuple[str, ...]:
     return tuple(buckets)
 
 
-def _slim_object(describe: object) -> dict[str, Any]:
+def _slim_object(describe: object) -> SlimObject:
     """``client.describe_object()`` の戻り値から、 SOQL 組立に必要な構造だけを返す。
 
     - 残す: ``name`` / ``label`` / ``custom`` / ``fields``
@@ -719,7 +737,7 @@ def _format_error_reason(exc: BaseException) -> str:
 
 
 def _evaluate_record_pii(
-    slim_report: dict[str, Any],
+    slim_report: SlimReport,
     column_map: list[dict[str, str]],
     slim_objects: dict[str, dict[str, Any]],
     config: pii.PIIConfig,
@@ -730,7 +748,7 @@ def _evaluate_record_pii(
 
 
 def _collect_output_column_refs(
-    slim_report: dict[str, Any],
+    slim_report: SlimReport,
     column_map: list[dict[str, str]],
 ) -> list[pii.ColumnRef]:
     """レポートの出力列（ detailColumns / groupingsDown / groupingsAcross /
@@ -814,12 +832,6 @@ def _field_name_from_soql(soql_name: str) -> str:
     return soql_name
 
 
-def _coerce_str(value: object) -> str:
-    if value is None:
-        return ""
-    return str(value)
-
-
 def _fetch_one(
     entry: MasterEntry,
     *,
@@ -871,6 +883,8 @@ def _fetch_one(
         )
 
     # 接続〜取得
+    # ``objects`` は API から生で取った dict、 ``slim_objects`` は
+    # ``_slim_object`` で絞った dict。 同じ主キーを共有し両方を更新する
     objects: dict[str, dict[str, Any]] = {}
     main_object_name: str | None = None
     metadata: dict[str, Any] = {}

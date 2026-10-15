@@ -19,7 +19,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.fetch import RelationRecord
 
 # カスタムレポートタイプの ``reportType.type`` に前置される ``CustomEntity``
 # プレースホルダを候補抽出時に除くための正規表現。
@@ -409,7 +412,7 @@ class _ChainCandidate:
 
 
 def build_relation_chains(
-    relations: list[Any],
+    relations: list[RelationRecord],
     main_object: str | None,
 ) -> dict[str, list[_ChainCandidate]]:
     """``relations`` から「 主→ そのオブジェクトまでのリレーション鎖 」 を作る。
@@ -437,12 +440,10 @@ def build_relation_chains(
     # 主→子の直エッジをまず集める
     adjacency: dict[str, list[tuple[str, str | None, str]]] = {}
     for rel in relations:
-        if not hasattr(rel, "parent") or not hasattr(rel, "child"):
-            continue
-        parent = getattr(rel, "parent", None)
-        child = getattr(rel, "child", None)
-        rel_name = getattr(rel, "relationship_name", None)
-        if not isinstance(parent, str) or not isinstance(child, str):
+        parent = rel.parent
+        child = rel.child
+        rel_name = rel.relationship_name
+        if not (parent and child):
             continue
         if parent == main_object:
             # 主からの直エッジは depth=1 の chain になる
@@ -450,12 +451,10 @@ def build_relation_chains(
 
     # より深い段も集める （ 内部の関連 ）
     for rel in relations:
-        if not hasattr(rel, "parent") or not hasattr(rel, "child"):
-            continue
-        parent = getattr(rel, "parent", None)
-        child = getattr(rel, "child", None)
-        rel_name = getattr(rel, "relationship_name", None)
-        if not isinstance(parent, str) or not isinstance(child, str):
+        parent = rel.parent
+        child = rel.child
+        rel_name = rel.relationship_name
+        if not (parent and child):
             continue
         if parent != main_object:
             adjacency.setdefault(parent, []).append((child, rel_name, child))
@@ -678,7 +677,7 @@ def build_column_map(
     reason: str | None,
     *,
     related_describes: dict[str, dict[str, Any]] | None = None,
-    relations: list[Any] | None = None,
+    relations: list[RelationRecord] | None = None,
     main_object: str | None = None,
     fetch_object: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> list[dict[str, str]]:
@@ -834,6 +833,9 @@ def build_column_map(
             and "." in column_key
             and _starts_with_main_object(column_key, main_object)
         ):
+            # ``main_describe`` はこの分岐に到達する時点で dict
+            # （ ``field_index is None`` を上で弾いている ）
+            assert isinstance(main_describe, dict)
             (
                 soql_name,
                 field_type,

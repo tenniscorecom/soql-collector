@@ -22,7 +22,12 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from src.text_utils import coerce_str as _coerce_str
+
+if TYPE_CHECKING:
+    from src.fetch import ReportRecord
 
 # ── データ構造 ──────────────────────────────────────────────────────────
 
@@ -86,7 +91,7 @@ class SimilarGroup:
 
 
 def find_similar_groups(
-    records: Iterable[object],
+    records: Iterable[ReportRecord],
     *,
     column_similarity_threshold: float,
 ) -> list[SimilarGroup]:
@@ -98,7 +103,7 @@ def find_similar_groups(
     - 基準と各比較対象の ``_PairResult`` が ``pairs`` に入る
     - グループは 1 から連番、 基準の管理番号の昇順で採番
     """
-    items = [(getattr(r, "key", ""), r) for r in records]
+    items = [(r.key, r) for r in records]
     items.sort(key=lambda t: t[0])
 
     # （ レポートタイプ, 形式 ） でバケットに分ける
@@ -199,9 +204,13 @@ def _compare_pair(
 # ── 構造と条件の抽出 ──────────────────────────────────────────────────
 
 
-def _extract(record: object) -> tuple[_Structure | None, _Condition | None]:
-    """``ReportRecord`` から 構造と条件を取り出す。 取れなければ ``(None, None)``。"""
-    report = getattr(record, "report", None)
+def _extract(record: ReportRecord) -> tuple[_Structure | None, _Condition | None]:
+    """``ReportRecord`` から 構造と条件を取り出す。 取れなければ ``(None, None)``。
+
+    ``record.report`` は ``_slim_report`` の戻り値で ``dict[str, Any]`` 。
+    壊れた record のために ``dict`` 形だけ確認する
+    """
+    report = record.report
     if not isinstance(report, dict):
         return None, None
     metadata = report.get("reportMetadata")
@@ -331,12 +340,6 @@ def _normalize_json(value: object) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     except (TypeError, ValueError):
         return _coerce_str(value)
-
-
-def _coerce_str(value: object) -> str:
-    if value is None:
-        return ""
-    return str(value)
 
 
 # ── 構造・条件の比較 ──────────────────────────────────────────────────
@@ -505,7 +508,7 @@ def _describe_column_diff(a: _Structure, b: _Structure) -> str:
 
 
 def _group_pairs(
-    items: list[tuple[str, object]],
+    items: list[tuple[str, ReportRecord]],
     pairs: list[_PairResult],
 ) -> list[SimilarGroup]:
     """``_PairResult`` のグラフを連結成分に分け、 グループにまとめる。"""

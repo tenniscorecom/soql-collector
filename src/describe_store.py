@@ -34,6 +34,8 @@ from comken.core.table import Table
 from comken.exceptions import CSVError
 from comken.toolbox.csv import CSV
 
+from src.text_utils import coerce_str as _coerce_str
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,11 +89,6 @@ def _normalize_object(name: str) -> str:
 def _key(org: str, object_name: str) -> tuple[str, str]:
     """メモリ辞書 / CSV の共通キー ``(org_lower, object_lower)`` を組み立てる。"""
     return (org.strip().lower(), _normalize_object(object_name))
-
-
-def _coerce_str(value: object) -> str:
-    """``None`` を空文字に、 他は ``str`` にする。"""
-    return "" if value is None else str(value)
 
 
 def _bool_mark(value: object) -> bool:

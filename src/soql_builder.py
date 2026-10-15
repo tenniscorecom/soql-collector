@@ -22,7 +22,12 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date as _date
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from src.text_utils import coerce_str as _coerce_str
+
+if TYPE_CHECKING:
+    from src.fetch import ReportRecord
 
 logger = logging.getLogger(__name__)
 
@@ -134,13 +139,6 @@ class SoqlDraft:
     checks: tuple[str, ...]
     count_soql: str = field(default="")
     limit: int | None = field(default=None)
-
-
-def _coerce_str(value: object) -> str:
-    """値を ``str`` にする。 ``None`` は空文字。"""
-    if value is None:
-        return ""
-    return str(value)
 
 
 def _escape_string_literal(value: str) -> str:
@@ -732,7 +730,7 @@ def _build_order_by_clause(
     return result, missing, checks
 
 
-def build_soql(record: Any) -> SoqlDraft:
+def build_soql(record: ReportRecord) -> SoqlDraft:
     """``record`` (``ReportRecord``) から ``SoqlDraft`` を組み立てる ( 純粋関数 ) 。
 
     規則は依頼仕様 ( ルール詳細 ) に従う。 ``record`` は ``ReportRecord``
@@ -749,8 +747,8 @@ def build_soql(record: Any) -> SoqlDraft:
     - ``要確認`` … ``missing`` は無いが ``checks`` に 1 件以上ある。
     - ``作成済み`` … ``missing`` も ``checks`` も無い。
     """
-    main_object = getattr(record, "main_object", None)
-    if not isinstance(main_object, str) or not main_object:
+    main_object = record.main_object
+    if not main_object:
         return SoqlDraft(
             soql="",
             status=STATUS_NONE,
@@ -758,16 +756,13 @@ def build_soql(record: Any) -> SoqlDraft:
             checks=(),
         )
 
-    report = getattr(record, "report", {}) or {}
-    if not isinstance(report, dict):
-        report = {}
-    metadata = report.get("reportMetadata") if isinstance(report, dict) else None
-    if not isinstance(metadata, dict):
-        metadata = {}
+    # ``record.report`` は ``_slim_report`` の戻り値（ dict[str, Any] ）。
+    # 境界で正規化済みだが、 壊れた record のために dict 形だけ確認する
+    report_dict = record.report if isinstance(record.report, dict) else {}
+    metadata_raw = report_dict.get("reportMetadata")
+    metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
 
-    column_map = getattr(record, "column_map", []) or []
-    if not isinstance(column_map, list):
-        column_map = []
+    column_map = record.column_map if isinstance(record.column_map, list) else []
 
     column_lookup = _build_column_lookup(column_map)
 
@@ -803,10 +798,11 @@ def build_soql(record: Any) -> SoqlDraft:
     buckets = metadata.get("buckets")
     if isinstance(buckets, list) and buckets:
         for index, bucket in enumerate(buckets, start=1):
-            label = _coerce_str(bucket.get("label") if isinstance(bucket, dict) else "")
-            name = _coerce_str(
-                bucket.get("developerName") if isinstance(bucket, dict) else ""
-            ) or _coerce_str(bucket.get("name") if isinstance(bucket, dict) else "")
+            bucket_dict = bucket if isinstance(bucket, dict) else {}
+            label = _coerce_str(bucket_dict.get("label"))
+            name = _coerce_str(bucket_dict.get("developerName")) or _coerce_str(
+                bucket_dict.get("name")
+            )
             missing.append(
                 f"バケット {index}: {name or '(名称不明)'} ( {label} ) "
                 "( 集計のため SOQL には入れない )"
@@ -815,8 +811,9 @@ def build_soql(record: Any) -> SoqlDraft:
     custom_summary_formula = metadata.get("customSummaryFormula")
     if isinstance(custom_summary_formula, list) and custom_summary_formula:
         for index, csf in enumerate(custom_summary_formula, start=1):
-            label = _coerce_str(csf.get("label") if isinstance(csf, dict) else "")
-            formula = _coerce_str(csf.get("formula") if isinstance(csf, dict) else "")
+            csf_dict = csf if isinstance(csf, dict) else {}
+            label = _coerce_str(csf_dict.get("label"))
+            formula = _coerce_str(csf_dict.get("formula"))
             missing.append(
                 f"独自計算式 {index}: {label or '(ラベル不明)'} = {formula} ( SOQL には入れない )"
             )
@@ -928,7 +925,7 @@ def build_soql(record: Any) -> SoqlDraft:
     )
 
 
-def build_count_soql(record: Any) -> tuple[str | None, int | None]:
+def build_count_soql(record: ReportRecord) -> tuple[str | None, int | None]:
     """``record.soql_draft`` に組み立て済みの件数用 SOQL と ``limit`` を返す。
 
     文字列の切り貼りはしない。 ``build_soql(record)`` が同じ部品
@@ -947,7 +944,7 @@ def build_count_soql(record: Any) -> tuple[str | None, int | None]:
           ``build_soql`` が ``作れず`` のときは ``None`` 。
         - ``limit`` … ``topRows.rowLimit`` の値。 無い / 読めないときは ``None`` 。
     """
-    soql_draft = getattr(record, "soql_draft", None)
+    soql_draft = record.soql_draft
     if not isinstance(soql_draft, SoqlDraft):
         soql_draft = build_soql(record)
 

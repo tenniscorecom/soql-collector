@@ -36,6 +36,7 @@ from src.describe_store import DescribeStore, org_from_url
 from src.fetch import FATAL_STATUS_CODES
 from src.master import read_master
 from src.run import FilePaths
+from src.text_utils import coerce_str as _coerce_str
 
 logger = logging.getLogger(__name__)
 
@@ -289,13 +290,6 @@ def _build_output_rows(
                 }
             )
     return rows
-
-
-def _coerce_str(value: object) -> str:
-    """``None`` を空文字に、 他は ``str`` にする。"""
-    if value is None:
-        return ""
-    return str(value)
 
 
 def _write_output_csv(path, results: list[tuple[str, dict]]) -> None:
