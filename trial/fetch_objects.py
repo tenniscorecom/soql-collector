@@ -35,7 +35,7 @@ from comken.toolbox.csv import CSV
 from src.describe_store import DescribeStore, org_from_url
 from src.fetch import FATAL_STATUS_CODES
 from src.master import read_master
-from src.run import FilePaths
+from src.run import FilePaths, read_file_paths
 from src.text_utils import coerce_str as _coerce_str
 
 logger = logging.getLogger(__name__)
@@ -301,23 +301,8 @@ def _write_output_csv(path, results: list[tuple[str, dict]]) -> None:
 
 
 def _read_trial_file_paths() -> FilePaths:
-    """trial 用の ``FilePaths`` を読む。 キーが無いときは ``config_defaults`` の
-    既定値で埋める。
-    """
-    from pathlib import Path
-
-    from src.config_defaults import AppConfig
-
-    app = AppConfig.load()
-    return FilePaths(
-        master_xlsx_path=Path(app.files.master_xlsx_path),
-        output_dir=Path(app.files.output_dir),
-        describe_csv_path=Path(app.files.describe_csv_path),
-        column_fix_xlsx_path=Path(app.files.column_fix_xlsx_path),
-        xlsx_name=app.files.xlsx_name,
-        markdown_dir=app.files.markdown_dir,
-        diagram_dir=app.files.diagram_dir,
-    )
+    """trial 用の ``FilePaths`` を ``src.run.read_file_paths`` から読む。"""
+    return read_file_paths()
 
 
 if __name__ == "__main__":

@@ -57,9 +57,9 @@ CSV / ログ / 警告 / 例外メッセージには絶対に出さない。
 
 1. Python 3.11 以上を用意する
 2. `config.ini.example` を `config.ini` にコピーし、 必要に応じてキーを書き
-   換える。 `[FILES]` `[SURVEY]` `[PII]` の各キーは **省略可** 。 旧 config.ini
-   にキーが無いときは `src/config_defaults.py` の既定値で動く。 値はある
-   けれど不正なときはメッセージを出して止める
+   換える。 `[FILES]` `[SURVEY]` `[PII]` の **すべてのキーが必須** 。 キーが
+   足りないと comken の `ConfigError` で止まる（既定値での補完はしない）。
+   値はあるけれど不正なときも `ConfigError` で止める
 3. comken の親（既定 `F:\dev`）を `PYTHONPATH` に含める。 `実行.bat` を
    使うと PYTHONPATH の設定を代行してくれる
 

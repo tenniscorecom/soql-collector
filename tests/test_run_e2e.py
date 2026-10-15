@@ -30,6 +30,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.table import Table as XlsxTable
 from openpyxl.worksheet.table import TableStyleInfo
@@ -71,11 +72,35 @@ def _build_master(path: Path) -> None:
     workbook.save(path)
 
 
+def _write_full_ini(proj: Path) -> None:
+    """``[FILES]`` の全キーと ``[SURVEY]`` / ``[PII]`` を ``config.ini`` に書く。"""
+    (proj / "config.ini").write_text(
+        "[FILES]\n"
+        "MASTER_XLSX_PATH = ./input/レポート管理表.xlsx\n"
+        "OUTPUT_DIR = ./output\n"
+        "DESCRIBE_CSV_PATH = ./data/項目定義.csv\n"
+        "COLUMN_FIX_XLSX_PATH = ./input/列の直し.xlsx\n"
+        "XLSX_NAME = SOQL調査.xlsx\n"
+        "MARKDOWN_DIR = SOQL資料\n"
+        "DIAGRAM_DIR = 関係図\n"
+        "[SURVEY]\n"
+        "RELATED_DEPTH = 3\n"
+        "RELATED_MAX = 40\n"
+        "ROW_LIMIT_CHECK = ○\n"
+        "SIMILAR_COLUMN_THRESHOLD = 0.8\n"
+        "[PII]\n"
+        "KEYWORDS = 氏名, 名前\n"
+        "PERSON_OBJECTS = Contact, Lead\n",
+        encoding="utf-8",
+    )
+
+
 def _write_legacy_ini(proj: Path) -> None:
     """``[FILES]`` に 4 つのキーしか無い旧 config.ini を書く。
 
-    ``COLUMN_FIX_XLSX_PATH`` / ``XLSX_NAME`` / ``MARKDOWN_DIR`` / ``DIAGRAM_DIR``
-    は書かない。 既定値で動くかを見るための経路
+    新しいキー（ ``COLUMN_FIX_XLSX_PATH`` 等 ） が無いことで、 comken の
+    ``ConfigError`` が上がることを確認する経路 （ 2026-10-16 で既定値
+    補完を廃止したため ）
     """
     (proj / "config.ini").write_text(
         "[FILES]\n"
@@ -196,7 +221,7 @@ def _setup_project(tmp_path: Path, client: _FakeClient) -> Path:
     (proj / "input").mkdir()
     (proj / "data").mkdir()
     _build_master(proj / "input" / "レポート管理表.xlsx")
-    _write_legacy_ini(proj)
+    _write_full_ini(proj)
     return proj
 
 
@@ -305,19 +330,36 @@ def test_run_e2e_second_run_preserves_user_fix_and_uses_it(tmp_path: Path) -> No
     assert fix_rows[("Task", "MYSTERY")]["状態"] == "要確認"
 
 
-def test_run_e2e_works_with_legacy_config(tmp_path: Path) -> None:
+def test_run_e2e_legacy_config_without_required_keys_aborts(tmp_path: Path) -> None:
     """旧 ``config.ini`` （ ``COLUMN_FIX_XLSX_PATH`` などの新しいキーが無い ）
-    でも動く。 既定値で ``input/列の直し.xlsx`` が作られる
+    は comken の ``ConfigError`` で止まる。 既定値での補完はしない
+    （ 2026-10-16 ） 。
     """
+    from comken.core.config import _reset_cached_config
+    from comken.exceptions import ConfigError, ConfigKeyNotFoundError
+
+    from src.run import read_file_paths
+
     describe, objs = _scenario_describe_and_objects()
     client = _FakeClient(describe, objs)
-    proj = _setup_project(tmp_path, client)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "input").mkdir()
+    (proj / "data").mkdir()
+    _build_master(proj / "input" / "レポート管理表.xlsx")
+    _write_legacy_ini(proj)
 
-    assert _do_run(proj, client) == 0
-
-    # 旧 config.ini では COLUMN_FIX_XLSX_PATH が無いので、 既定値の
-    # ``./input/列の直し.xlsx`` が proj 配下に作られる
-    assert (proj / "input" / "列の直し.xlsx").exists()
+    _reset_cached_config()
+    original = sys.argv
+    sys.argv = [str(proj / "main.py")]
+    try:
+        with pytest.raises(ConfigKeyNotFoundError) as exc_info:
+            read_file_paths()
+        assert isinstance(exc_info.value, ConfigError)
+        assert "COLUMN_FIX_XLSX_PATH" in str(exc_info.value)
+    finally:
+        sys.argv = original
+        _reset_cached_config()
 
 
 # ── 人が書いた値がたどれない （Issue 2 ） ─────────────────────────

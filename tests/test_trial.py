@@ -71,15 +71,27 @@ def _build_master_with_rows(path: Path, rows: list[tuple[str, str, str, str]]) -
 
 
 def _write_ini(tmp_path: Path, master: Path) -> None:
-    """テスト用 ``config.ini`` を ``tmp_path`` に書く。 7 つのキーは省略可
-    （ ``config_defaults`` の既定値） だが、 テストでは全て書く。
+    """テスト用 ``config.ini`` を ``tmp_path`` に書く。 ``[FILES]`` の 7 つの
+    キーは必須なので、 全て書く。 ``[SURVEY]`` / ``[PII]`` も ``run_fetch``
+    等が読むので書く。
     """
     (tmp_path / "config.ini").write_text(
         "[FILES]\n"
         f"MASTER_XLSX_PATH = {master.name}\n"
         "OUTPUT_DIR = ./output\n"
         "DESCRIBE_CSV_PATH = ./data/項目定義.csv\n"
-        "COLUMN_FIX_XLSX_PATH = ./input/列の直し.xlsx\n",
+        "COLUMN_FIX_XLSX_PATH = ./input/列の直し.xlsx\n"
+        "XLSX_NAME = SOQL調査.xlsx\n"
+        "MARKDOWN_DIR = SOQL資料\n"
+        "DIAGRAM_DIR = 関係図\n"
+        "[SURVEY]\n"
+        "RELATED_DEPTH = 3\n"
+        "RELATED_MAX = 40\n"
+        "ROW_LIMIT_CHECK = ○\n"
+        "SIMILAR_COLUMN_THRESHOLD = 0.8\n"
+        "[PII]\n"
+        "KEYWORDS = 氏名, 名前\n"
+        "PERSON_OBJECTS = Contact, Lead\n",
         encoding="utf-8",
     )
 
@@ -107,8 +119,9 @@ def _patch_read_file_paths(
 ) -> None:
     """``module._read_trial_file_paths`` を ``project_root`` からの読み込みに差し替える。
 
-    trial モジュールは内部で ``_read_trial_file_paths`` を呼ぶので、 それを
-    ``project_root`` ベースの config.ini で読むバージョンに差し替える。
+    trial モジュールは内部で ``_read_trial_file_paths`` と
+    ``read_survey_config`` を呼ぶので、 両方を ``project_root`` ベース
+    の config.ini で読むバージョンに差し替える。
     """
     from comken.core.config import Config, _reset_cached_config
 
@@ -126,7 +139,23 @@ def _patch_read_file_paths(
             diagram_dir="関係図",
         )
 
+    def patched_survey() -> tuple[int, int, bool, float]:
+        cfg = Config(project_root / "config.ini")
+        return (
+            int(cfg.SURVEY.RELATED_DEPTH),
+            int(cfg.SURVEY.RELATED_MAX),
+            str(cfg.SURVEY.ROW_LIMIT_CHECK) == "○",
+            float(cfg.SURVEY.SIMILAR_COLUMN_THRESHOLD),
+        )
+
     monkeypatch.setattr(module, "_read_trial_file_paths", patched)
+    # trial モジュールは ``from src.run import read_survey_config`` で取り込んで
+    # いるので、 取り込み元の src.run と取り込み先の module 両方を差し替える
+    import src.run as run_module
+
+    monkeypatch.setattr(run_module, "read_survey_config", patched_survey)
+    if hasattr(module, "read_survey_config"):
+        monkeypatch.setattr(module, "read_survey_config", patched_survey)
     # 念のためキャッシュもクリア
     _reset_cached_config()
 

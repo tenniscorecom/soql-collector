@@ -22,12 +22,10 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable
-from pathlib import Path
 
-from src.config_defaults import DEFAULT_SIMILAR_COLUMN_THRESHOLD
 from src.fetch import run_fetch
 from src.master import MasterEntry
-from src.run import FilePaths
+from src.run import FilePaths, read_file_paths, read_survey_config
 from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
@@ -104,11 +102,12 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
 
     if records:
         try:
+            _, _, _, similar_threshold = read_survey_config()
             run_tables(
                 file_paths.output_dir,
                 records,
                 only_keys=ok_keys,
-                similar_threshold=DEFAULT_SIMILAR_COLUMN_THRESHOLD,
+                similar_threshold=similar_threshold,
                 xlsx_name=file_paths.xlsx_name,
             )
         except Exception as exc:
@@ -118,21 +117,8 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
 
 
 def _read_trial_file_paths() -> FilePaths:
-    """trial 用の ``FilePaths`` を読む。 キーが無いときは ``config_defaults`` の
-    既定値で埋める。
-    """
-    from src.config_defaults import AppConfig
-
-    app = AppConfig.load()
-    return FilePaths(
-        master_xlsx_path=Path(app.files.master_xlsx_path),
-        output_dir=Path(app.files.output_dir),
-        describe_csv_path=Path(app.files.describe_csv_path),
-        column_fix_xlsx_path=Path(app.files.column_fix_xlsx_path),
-        xlsx_name=app.files.xlsx_name,
-        markdown_dir=app.files.markdown_dir,
-        diagram_dir=app.files.diagram_dir,
-    )
+    """trial 用の ``FilePaths`` を ``src.run.read_file_paths`` から読む。"""
+    return read_file_paths()
 
 
 if __name__ == "__main__":

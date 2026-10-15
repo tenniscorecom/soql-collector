@@ -741,13 +741,14 @@ def test_existing_csv_with_wrong_header_aborts(tmp_path: Path) -> None:
 # ── 必須キー欠落 ─────────────────────────────────────────────────────
 
 
-def test_settings_missing_describe_csv_uses_default(tmp_path: Path) -> None:
-    """config.ini に ``DESCRIBE_CSV_PATH`` が無いときは
-    ``config_defaults.DEFAULT_DESCRIBE_CSV_PATH`` の既定値で動く （ 2026-10-15 ） 。
+def test_settings_missing_describe_csv_raises(tmp_path: Path) -> None:
+    """config.ini に ``DESCRIBE_CSV_PATH`` が無いと comken の ``ConfigError``
+    （ サブクラスの ``ConfigKeyNotFoundError`` ） が上がる。 既定値での
+    補完はしない （ 2026-10-16 ） 。
     """
     from comken.core.config import _reset_cached_config
+    from comken.exceptions import ConfigError, ConfigKeyNotFoundError
 
-    from src.config_defaults import DEFAULT_DESCRIBE_CSV_PATH
     from src.run import read_file_paths
 
     _reset_cached_config()
@@ -758,21 +759,21 @@ def test_settings_missing_describe_csv_uses_default(tmp_path: Path) -> None:
         "[FILES]\n"
         "MASTER_XLSX_PATH = ./master.xlsx\n"
         "OUTPUT_DIR = ./output\n"
-        "COLUMN_MAP_CSV_PATH = ./data/列の対応.csv\n",
+        "COLUMN_FIX_XLSX_PATH = ./input/列の直し.xlsx\n"
+        "XLSX_NAME = SOQL調査.xlsx\n"
+        "MARKDOWN_DIR = SOQL資料\n"
+        "DIAGRAM_DIR = 関係図\n",
         encoding="utf-8",
     )
 
     original_argv = sys.argv
     sys.argv = [str(config_dir / "fake_main.py")]
     try:
-        file_paths = read_file_paths()
-        # 欠落していた DESCRIBE_CSV_PATH は 既定値 ./data/項目定義.csv で動く
-        assert "項目定義.csv" in str(file_paths.describe_csv_path)
-        assert (
-            str(file_paths.describe_csv_path)
-            .replace("\\", "/")
-            .endswith(DEFAULT_DESCRIBE_CSV_PATH.lstrip("./"))
-        )
+        with pytest.raises(ConfigKeyNotFoundError) as exc_info:
+            read_file_paths()
+        # ConfigKeyNotFoundError は ConfigError のサブクラスでもある
+        assert isinstance(exc_info.value, ConfigError)
+        assert "DESCRIBE_CSV_PATH" in str(exc_info.value)
     finally:
         sys.argv = original_argv
         _reset_cached_config()

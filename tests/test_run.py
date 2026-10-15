@@ -53,8 +53,8 @@ def _build_master(path: Path, rows: list[dict]) -> None:
 
 
 def _write_ini(tmp_path: Path, master_xlsx: Path, *, extra: str = "") -> None:
-    """テスト用 ``config.ini`` を書く。 ``[FILES]`` の 4 つのキーはすべて必須なので、
-    このヘルパでは 4 つ全部を書く。 追加でセクションを足したいときは
+    """テスト用 ``config.ini`` を書く。 ``[FILES]`` の 7 つのキーはすべて必須
+    なので、 このヘルパでは全部書く。 追加でセクションを足したいときは
     ``extra`` に ``"[OBJECTS]\\nNAMES = ..."`` のように渡す。 ``[OBJECTS]``
     が残っていても無視されることを確認するための経路として残しておく。
     """
@@ -64,7 +64,18 @@ def _write_ini(tmp_path: Path, master_xlsx: Path, *, extra: str = "") -> None:
         f"MASTER_XLSX_PATH = {master_xlsx}\n"
         "OUTPUT_DIR = ./output\n"
         "DESCRIBE_CSV_PATH = ./data/項目定義.csv\n"
-        "COLUMN_MAP_CSV_PATH = ./data/列の対応.csv\n",
+        "COLUMN_FIX_XLSX_PATH = ./input/列の直し.xlsx\n"
+        "XLSX_NAME = SOQL調査.xlsx\n"
+        "MARKDOWN_DIR = SOQL資料\n"
+        "DIAGRAM_DIR = 関係図\n"
+        "[SURVEY]\n"
+        "RELATED_DEPTH = 3\n"
+        "RELATED_MAX = 40\n"
+        "ROW_LIMIT_CHECK = ○\n"
+        "SIMILAR_COLUMN_THRESHOLD = 0.8\n"
+        "[PII]\n"
+        "KEYWORDS = 氏名, 名前\n"
+        "PERSON_OBJECTS = Contact, Lead\n",
         encoding="utf-8",
     )
     if extra:
@@ -88,10 +99,21 @@ def _make_file_paths(tmp_path: Path, master: Path) -> Any:
 
 
 def _patch_read_file_paths(monkeypatch: pytest.MonkeyPatch, file_paths: Any) -> None:
-    """``src.run.read_file_paths`` を差し替え。"""
+    """``src.run.read_file_paths`` を差し替え。 ``run()`` が config.ini から
+    読む ``[SURVEY]`` / ``[PII]`` も既定値で差し替える。"""
     import src.run as run_module
 
     monkeypatch.setattr(run_module, "read_file_paths", lambda: file_paths)
+    monkeypatch.setattr(
+        run_module,
+        "read_survey_config",
+        lambda: (3, 40, True, 0.8),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "read_pii_config",
+        lambda: (("氏名", "名前"), ("Contact", "Lead")),
+    )
 
 
 # ── 偽物のクライアント ─────────────────────────────────────────────────

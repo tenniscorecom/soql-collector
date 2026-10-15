@@ -44,15 +44,26 @@ def _build_master(path: Path) -> None:
 
 
 def _write_ini(tmp_path: Path, master: Path) -> None:
-    """テスト用 ``config.ini`` を ``tmp_path`` に書く。 ``[FILES]`` の 4 つの
-    キーはすべて必須なので、 このヘルパでは 4 つ全部を書く。
+    """テスト用 ``config.ini`` を ``tmp_path`` に書く。 ``[FILES]`` の 7 つの
+    キーはすべて必須なので、 このヘルパでは全部書く。
     """
     (tmp_path / "config.ini").write_text(
         "[FILES]\n"
         f"MASTER_XLSX_PATH = {master.name}\n"
         "OUTPUT_DIR = ./output\n"
         "DESCRIBE_CSV_PATH = ./data/項目定義.csv\n"
-        "COLUMN_MAP_CSV_PATH = ./data/列の対応.csv\n",
+        "COLUMN_FIX_XLSX_PATH = ./input/列の直し.xlsx\n"
+        "XLSX_NAME = SOQL調査.xlsx\n"
+        "MARKDOWN_DIR = SOQL資料\n"
+        "DIAGRAM_DIR = 関係図\n"
+        "[SURVEY]\n"
+        "RELATED_DEPTH = 3\n"
+        "RELATED_MAX = 40\n"
+        "ROW_LIMIT_CHECK = ○\n"
+        "SIMILAR_COLUMN_THRESHOLD = 0.8\n"
+        "[PII]\n"
+        "KEYWORDS = 氏名, 名前\n"
+        "PERSON_OBJECTS = Contact, Lead\n",
         encoding="utf-8",
     )
 
