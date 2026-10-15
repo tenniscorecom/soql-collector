@@ -392,10 +392,9 @@ def _build_columns_sheet_rows_from_records(
             status = mapping.column_status(col)
             where = mapping.column_source(col)
             candidates = mapping.column_candidates(col)
-            # 自動の値（ 人が直した値と、 人が直す前に自動が取っていた値が違うとき ） は
-            # column_map の段階で 「 直したSOQL列名 」 で上書きされて元の自動の値を
-            # 取れないので、 人が直した事実は 「 どこから 」 列で見せる。 ここでは空のまま
-            auto_value = ""
+            # 自動の値は、 人が直して自動と違う値になったときだけ見せる
+            auto = col.get("自動の値", "")
+            auto_value = auto if auto and auto != soql_name else ""
             rows.append(
                 {
                     "状態": status,

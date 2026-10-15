@@ -285,6 +285,9 @@ def test_run_e2e_second_run_preserves_user_fix_and_uses_it(tmp_path: Path) -> No
     by_key = {r["列キー"]: r for r in column_rows}
     assert by_key["SUBJECT"]["使うSOQL列名"] == "Owner.Name"
     assert by_key["SUBJECT"]["どこから"] == "人が直した"
+    # 自動が取っていた値は人の値で上書きされず、 自動の値として見える
+    assert fix_rows[("Task", "SUBJECT")]["自動のSOQL列名"] == "Subject"
+    assert by_key["SUBJECT"]["自動の値"] == "Subject"
 
     csv_text = (proj / "output" / "列名の対応.csv").read_text(encoding="utf-8-sig")
     assert "Task,Owner.Name" in csv_text

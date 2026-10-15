@@ -531,8 +531,10 @@ def apply_overrides(
         if override is None or not override.fixed_soql_name:
             new_rows.append(dict(row))
             continue
-        # 人の値で上書きする
+        # 人の値で上書きする。 自動が取っていた値は 「 自動の値 」 に残す
+        # （ 列の直し.xlsx の 「 自動のSOQL列名 」 と列の対応シートで見せるため ）
         new_row = dict(row)
+        new_row["自動の値"] = row["対応フィールドAPI名"]
         new_row["対応フィールドAPI名"] = override.fixed_soql_name
         # 型を describe から引く
         resolved_type = _walk_soql_path(
@@ -705,7 +707,8 @@ def _merge_and_write_after_run(
                     main_object=record.main_object,
                     column_key=row["列キー"],
                     display_name=row["表示名"],
-                    soql_name=row["対応フィールドAPI名"],
+                    # 人の値で上書きした行は、 上書き前の自動の値を見せる
+                    soql_name=row.get("自動の値", row["対応フィールドAPI名"]),
                     candidates=note if "複数候補あり" in note else "",
                     note=note,
                 )
