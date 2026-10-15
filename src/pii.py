@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 # 個人情報とみなす Salesforce 項目の型
@@ -118,6 +118,9 @@ class ReportPIIResult:
 
     status: str  # "あり" / "要確認" / "なし"
     matching_columns: tuple[tuple[str, str], ...]  # (表示名, 根拠) のリスト
+    #: 列キー → (状態, 根拠)。 ``あり`` / ``要確認`` の列だけ。 表を作るときに
+    #: 判定し直さずに使う
+    by_column: dict[str, tuple[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -191,11 +194,13 @@ def evaluate_report_pii(
     """
     statuses: list[str] = []
     matches: list[tuple[str, str]] = []
+    by_column: dict[str, tuple[str, str]] = {}
     for ref in refs:
         result = evaluate_column_pii(ref, config, objects)
         statuses.append(result.status)
         if result.status in ("あり", "要確認"):
             matches.append((result.label, result.basis))
+            by_column[ref.column_key] = (result.status, result.basis)
 
     if any(s == "あり" for s in statuses):
         status = "あり"
@@ -207,6 +212,7 @@ def evaluate_report_pii(
     return ReportPIIResult(
         status=status,
         matching_columns=tuple(matches[:MATCHING_COLUMNS_LIMIT]),
+        by_column=by_column,
     )
 
 

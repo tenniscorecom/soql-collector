@@ -278,7 +278,6 @@ def test_e2e_run_tables_writes_overview_and_columns_sheet(tmp_path: Path) -> Non
     run_tables(
         output,
         records,
-        pii_config=pii.PIIConfig(keywords=pii_keywords, person_objects=pii_person_objects),
         similar_threshold=0.8,
     )
 
@@ -344,7 +343,6 @@ def test_e2e_single_record_no_similar_text(tmp_path: Path) -> None:
     run_tables(
         output,
         [outcome.record],
-        pii_config=pii.PIIConfig(keywords=pii_keywords, person_objects=pii_person_objects),
         similar_threshold=0.8,
     )
     assert (output / "SOQL調査.xlsx").exists()
@@ -391,7 +389,6 @@ def test_e2e_columns_sheet_resolves_related_email(tmp_path: Path) -> None:
     run_tables(
         output,
         [outcome.record],
-        pii_config=pii.PIIConfig(keywords=pii_keywords, person_objects=pii_person_objects),
         similar_threshold=0.8,
     )
     sheets = _read_xlsx(output / "SOQL調査.xlsx")

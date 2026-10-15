@@ -24,7 +24,7 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from src import relation_diagram
+from src import mapping, relation_diagram
 from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
@@ -288,29 +288,23 @@ def _build_correspondence_rows(
 ) -> list[list[str]]:
     """``detailColumns`` の順に ``(表示名, 使う SOQL 列名, どこから, 候補)`` の行を作る。
 
-    使う SOQL 列名はそのまま SOQL に貼れる形 （ ``Owner.Name`` のような
-    ドット記法 ） 。 どこから は 「 自動 」 / 「 人が直した 」 / 「 取れず 」 で、
-    ``xlsx`` の 「 列の対応 」 シートと同じ判定。 候補は備考から
-    「 複数候補あり 」 を取り除いたもの。
+    使う SOQL 列名はそのまま SOQL に貼れる形 （ ``Owner.Name`` のようなドット記法 ）。
+    どこから・候補は xlsx の列の対応シートと同じ判定（ ``mapping.column_source`` ）。
     """
     rows: list[list[str]] = []
     for col_key in detail_columns:
-        col = column_map_by_key.get(col_key, {})
-        label = col.get("表示名") or col_key
-        soql = col.get("対応フィールドAPI名", "")
-        note = col.get("備考", "")
-        # 使う SOQL 列名は空のときに "(不明)" を見せる。 AI がそのまま貼れる形
-        use_soql = soql or "(不明)"
-        if "人が直した（要確認: たどれない）" in note:
-            where = "人が直した（要確認: たどれない）"
-        elif "直したSOQL列名" in note:
-            where = "人が直した"
-        elif soql and soql != "(不明)":
-            where = "自動"
-        else:
-            where = "取れず"
-        candidates = note.replace("複数候補あり: ", "") if "複数候補あり" in note else ""
-        rows.append([label, use_soql, where, candidates])
+        col = column_map_by_key.get(col_key)
+        if col is None:
+            rows.append([col_key, "(不明)", "取れず", ""])
+            continue
+        rows.append(
+            [
+                col["表示名"] or col_key,
+                col["対応フィールドAPI名"] or "(不明)",
+                mapping.column_source(col),
+                mapping.column_candidates(col),
+            ]
+        )
     return rows
 
 

@@ -30,8 +30,7 @@ from comken.core.table import Table
 from comken.exceptions import CSVError
 from comken.toolbox.csv import CSV
 
-from src import ai_markdown, pii, relation_diagram, similar, xlsx_style
-from src.text_utils import coerce_str as _coerce_str
+from src import ai_markdown, mapping, relation_diagram, similar, xlsx_style
 
 if TYPE_CHECKING:
     from src.fetch import ReportRecord
@@ -158,7 +157,6 @@ def run_tables(
     records: Iterable[ReportRecord],
     *,
     only_keys: Iterable[str] | None = None,
-    pii_config: pii.PIIConfig | None = None,
     similar_threshold: float = 0.8,
     xlsx_name: str = XLSX_NAME,
 ) -> TableOutcome:
@@ -168,7 +166,6 @@ def run_tables(
         output_dir: 出力フォルダ。 無ければ作る。
         records: ``fetch.ReportRecord`` のイテラブル。
         only_keys: 互換性のために受け取るが今回は使われない。
-        pii_config: PII 列を埋めるための設定。 ``None`` ならデフォルト。
         similar_threshold: 似たレポート判定の Jaccard 下限。
         xlsx_name: 出力する xlsx のファイル名。 既定 ``SOQL調査.xlsx``。
 
@@ -177,23 +174,12 @@ def run_tables(
     """
     del only_keys  # per-ID CSV は作らないので無視
     record_list = list(records)
-    pii_config = pii_config or pii.PIIConfig(
-        keywords=pii.DEFAULT_KEYWORDS,
-        person_objects=pii.DEFAULT_PERSON_OBJECTS,
-    )
 
     sorted_records = sorted(record_list, key=lambda r: r.key)
     ok_keys = [r.key for r in sorted_records]
 
-    # PII lookup を record 単位で組み立てる
-    pii_lookups: dict[str, dict[str, tuple[str, str]]] = {}
-    for record in sorted_records:
-        pii_lookups[record.key] = _build_pii_lookup_for_record(
-            report=record.report,
-            column_map=record.column_map,
-            objects=record.objects,
-            config=pii_config,
-        )
+    # 個人情報は取得時に列ごとに判定済み（ 判定し直さない ）
+    pii_lookups = {record.key: record.pii.by_column for record in sorted_records}
 
     # 似たレポート判定
     similar_groups = similar.find_similar_groups(
@@ -219,12 +205,10 @@ def run_tables(
 
     # 警告・要対応件数
     warning_rows = _build_warning_table_rows_from_records(sorted_records)
-    unresolved_rows = _build_unresolved_rows_from_records(sorted_records)
-    unresolved_counts: dict[str, int] = {}
-    for row in unresolved_rows:
-        for key in row["管理番号"].split("|"):
-            if key:
-                unresolved_counts[key] = unresolved_counts.get(key, 0) + 1
+    unresolved_counts = {
+        record.key: sum(mapping.column_status(col) != "OK" for col in record.column_map)
+        for record in sorted_records
+    }
 
     # 関係図
     diagrams = relation_diagram.build_main_object_diagrams(sorted_records)
@@ -316,11 +300,7 @@ def _survey_pii_display(record: ReportRecord) -> tuple[str, str]:
 
 def soql_status_for_record(record: ReportRecord) -> str:
     """``record.soql_draft.status`` をそのまま返す （ 無ければ空文字 ） 。"""
-    draft = record.soql_draft
-    if draft is None:
-        return ""
-    status = getattr(draft, "status", "")
-    return status if isinstance(status, str) else ""
+    return record.soql_draft.status if record.soql_draft is not None else ""
 
 
 def _build_survey_table_rows_from_records(
@@ -404,42 +384,12 @@ def _build_columns_sheet_rows_from_records(
         summary = record.summary
         column_map = record.column_map
         for col in column_map:
-            if not isinstance(col, dict):
-                continue
-            display_name = _coerce_str(col.get("表示名"))
-            column_key = _coerce_str(col.get("列キー"))
-            soql_name = _coerce_str(col.get("対応フィールドAPI名"))
-            note = _coerce_str(col.get("備考"))
-            # 人が直した値の判定。 備考に 「 直したSOQL列名 」 または
-            # 「 人が直した（要確認: たどれない） 」 が入っていれば、 人の値が
-            # column_map に上書きされている
-            user_fix_failed = "人が直した（要確認: たどれない）" in note
-            # 状態
-            if not soql_name or soql_name == "(不明)":
-                # 候補が複数あるか
-                if "複数候補あり" in note:
-                    status = "要確認"
-                else:
-                    status = "要対応"
-            elif user_fix_failed:
-                # 人の値は column_map に乗っているが、 項目定義でたどれなかった
-                status = "要確認"
-            else:
-                status = "OK"
-            # どこから
-            if user_fix_failed:
-                where = "人が直した（要確認: たどれない）"
-            elif "直したSOQL列名" in note:
-                where = "人が直した"
-            elif soql_name and soql_name != "(不明)":
-                # 自動が取れた。 備考は 「 列キーから 」 / 「 FK_ から 」 など
-                where = "自動"
-            else:
-                where = "取れず"
-            # 候補
-            candidates = ""
-            if "複数候補あり" in note:
-                candidates = note.replace("複数候補あり: ", "")
+            display_name = col["表示名"]
+            column_key = col["列キー"]
+            soql_name = col["対応フィールドAPI名"]
+            status = mapping.column_status(col)
+            where = mapping.column_source(col)
+            candidates = mapping.column_candidates(col)
             # 自動の値（ 人が直した値と、 人が直す前に自動が取っていた値が違うとき ） は
             # column_map の段階で 「 直したSOQL列名 」 で上書きされて元の自動の値を
             # 取れないので、 人が直した事実は 「 どこから 」 列で見せる。 ここでは空のまま
@@ -475,15 +425,12 @@ def _aggregate_resolved_fields(
         column_map = record.column_map
         pii_lookup = pii_lookups.get(key, {})
         for col in column_map:
-            if not isinstance(col, dict):
-                continue
-            field_api = _coerce_str(col.get("対応フィールドAPI名"))
+            field_api = col["対応フィールドAPI名"]
             if not field_api or field_api == "(不明)":
                 continue
             # 人が直した値で上書きされている場合、 備考に 「 直したSOQL列名 」 を含むが
             # CSV に出すのは実 SOQL 列名で良い
-            column_key = _coerce_str(col.get("列キー"))
-            pii_status, pii_basis = pii_lookup.get(column_key, ("", ""))
+            pii_status, pii_basis = pii_lookup.get(col["列キー"], ("", ""))
             dedup_key = (main_object_text, field_api)
             groups.setdefault(dedup_key, []).append((key, col, pii_status + "\t" + pii_basis))
 
@@ -493,7 +440,7 @@ def _aggregate_resolved_fields(
         label_count: dict[str, int] = {}
         label_min_key: dict[str, str] = {}
         for key, col, _ in contributions:
-            label = _coerce_str(col.get("表示名"))
+            label = col["表示名"]
             label_count[label] = label_count.get(label, 0) + 1
             if label not in label_min_key or key < label_min_key[label]:
                 label_min_key[label] = key
@@ -526,8 +473,8 @@ def _aggregate_resolved_fields(
                 main_object=main_object,
                 soql_name=soql_name,
                 display_name=best_label,
-                field_type=_coerce_str(first_col.get("型")),
-                reference_to=_coerce_str(first_col.get("参照先オブジェクト")),
+                field_type=first_col["型"],
+                reference_to=first_col["参照先オブジェクト"],
                 pii_status=pii_status,
                 pii_basis=pii_basis,
                 report_count=len(keys),
@@ -565,64 +512,13 @@ def _resolved_fields_to_csv_rows(
 def _build_warning_table_rows_from_records(
     records: Sequence[ReportRecord],
 ) -> list[dict[str, str]]:
-    """警告シートの行を作る。 describe 失敗 ( 取得できなかった項目シートが拾う ) は除く。"""
-    rows: list[dict[str, str]] = []
-    for record in records:
-        key = record.key
-        for warning in record.warnings:
-            warning_text = _coerce_str(warning)
-            if _parse_describe_failure_warning(warning_text) is not None:
-                continue
-            rows.append({"管理番号": key, "警告": warning_text})
-    return rows
-
-
-def _build_unresolved_rows_from_records(
-    records: Sequence[ReportRecord],
-) -> list[dict[str, str]]:
-    """要対応/要確認の件数を数えるため、 既存の集計ロジック （ 旧 「 取得できなかった
-    項目 」 シート相当 ） を動かす。 1 レポート 1 件として 件数 を出している
-    """
-    field_entries: dict[tuple[str, str, str], dict[str, str]] = {}
-    field_keys: dict[tuple[str, str, str], set[str]] = {}
-
-    for record in records:
-        key = record.key
-        main_object_text = record.main_object or "(不明)"
-        column_map = record.column_map
-
-        for col in column_map:
-            if not isinstance(col, dict):
-                continue
-            field_api = _coerce_str(col.get("対応フィールドAPI名"))
-            note_text = _coerce_str(col.get("備考"))
-            # 人が直した値がたどれなかった行も 「 要確認 」 として数える
-            user_fix_unresolved = "人が直した（要確認: たどれない）" in note_text
-            if field_api and field_api != "(不明)" and not user_fix_unresolved:
-                continue
-            column_key = _coerce_str(col.get("列キー"))
-            reason = note_text or "対応フィールドなし"
-            dedup_key = (main_object_text, column_key, reason)
-            if dedup_key not in field_entries:
-                field_entries[dedup_key] = {
-                    "種別": "項目",
-                    "主オブジェクト": main_object_text,
-                    "列キー": column_key,
-                    "表示名": _coerce_str(col.get("表示名")),
-                    "理由": reason,
-                }
-                field_keys[dedup_key] = set()
-            field_keys[dedup_key].add(key)
-
-    field_rows: list[dict[str, str]] = []
-    for dedup_key, base in field_entries.items():
-        keys = sorted(field_keys[dedup_key])
-        row = dict(base)
-        row["件数"] = str(len(keys))
-        row["管理番号"] = "|".join(keys)
-        field_rows.append(row)
-
-    return field_rows
+    """警告の行を作る。 describe 失敗（ 列の対応の 「 取れず 」 で分かる ）は除く。"""
+    return [
+        {"管理番号": record.key, "警告": warning}
+        for record in records
+        for warning in record.warnings
+        if _parse_describe_failure_warning(warning) is None
+    ]
 
 
 def _parse_describe_failure_warning(warning: str) -> tuple[str, str] | None:
@@ -638,103 +534,6 @@ def _parse_describe_failure_warning(warning: str) -> tuple[str, str] | None:
 
 
 # ── PII 関連 ──────────────────────────────────────────────────
-
-
-def _build_pii_lookup_for_record(
-    *,
-    report: dict[str, Any],
-    column_map: list[dict[str, str]],
-    objects: dict[str, dict[str, Any]],
-    config: pii.PIIConfig,
-) -> dict[str, tuple[str, str]]:
-    """1 record ぶんの ``列キー → (個人情報, 個人情報の根拠)`` を作る。"""
-    output_keys = set(_output_column_keys_from_slim(report))
-    refs = _column_refs_for_record(report=report, column_map=column_map)
-    lookup: dict[str, tuple[str, str]] = {}
-    for ref in refs:
-        if ref.column_key not in output_keys:
-            continue
-        result = pii.evaluate_column_pii(ref, config, objects)
-        if result.status in ("あり", "要確認"):
-            lookup[ref.column_key] = (result.status, result.basis)
-    return lookup
-
-
-def _column_refs_for_record(
-    *,
-    report: dict[str, Any],
-    column_map: list[dict[str, str]],
-) -> list[pii.ColumnRef]:
-    """レポートの出力列から ``pii.ColumnRef`` を作る。"""
-    output_keys = _output_column_keys_from_slim(report)
-    column_map_by_key: dict[str, dict[str, str]] = {}
-    for col in column_map:
-        if not isinstance(col, dict):
-            continue
-        key = col.get("列キー")
-        if isinstance(key, str) and key:
-            column_map_by_key[key] = col
-    refs: list[pii.ColumnRef] = []
-    seen: set[str] = set()
-    for column_key in output_keys:
-        if column_key in seen:
-            continue
-        seen.add(column_key)
-        col = column_map_by_key.get(column_key, {})
-        field_api = _coerce_str(col.get("対応フィールドAPI名"))
-        label = _coerce_str(col.get("表示名"))
-        field_type = _coerce_str(col.get("型"))
-        owner_object = _coerce_str(col.get("所属オブジェクト"))
-        field_name = _field_name_from_soql(field_api)
-        resolved = bool(field_api) and field_api != "(不明)"
-        refs.append(
-            pii.ColumnRef(
-                column_key=column_key,
-                label=label or column_key,
-                field_name=field_name,
-                field_type=field_type,
-                owner_object=owner_object,
-                resolved=resolved,
-            )
-        )
-    return refs
-
-
-def _output_column_keys_from_slim(slim_report: dict[str, Any]) -> list[str]:
-    """``slim_report`` の出力列キー （ 順序付き ） を集める。
-
-    ``slim_report`` は ``_slim_report`` の戻り値で ``reportMetadata`` が
-    dict なら dict で入っている前提 （ ``metadata`` 自体が dict じゃない
-    のは壊れた record の場合だけ ）
-    """
-    metadata = slim_report.get("reportMetadata")
-    if not isinstance(metadata, dict):
-        return []
-    keys: list[str] = []
-    for column in metadata.get("detailColumns") or []:
-        if isinstance(column, str) and column:
-            keys.append(column)
-    for grouping_key in ("groupingsDown", "groupingsAcross"):
-        for grouping in metadata.get(grouping_key) or []:
-            if isinstance(grouping, dict):
-                name = grouping.get("name")
-                if isinstance(name, str) and name:
-                    keys.append(name)
-    for aggregate in metadata.get("aggregates") or []:
-        if isinstance(aggregate, str) and "!" in aggregate:
-            column = aggregate.split("!", 1)[-1]
-            if column:
-                keys.append(column)
-    return keys
-
-
-def _field_name_from_soql(soql_name: str) -> str:
-    """``"Account.Owner.Name"`` から末端の ``"Name"`` を取り出す。"""
-    if not soql_name or soql_name == "(不明)":
-        return ""
-    if "." in soql_name:
-        return soql_name.rsplit(".", 1)[-1]
-    return soql_name
 
 
 # ── 関係図 ──────────────────────────────────────────────────

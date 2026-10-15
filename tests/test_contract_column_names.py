@@ -52,12 +52,15 @@ def _column_map_entry(
     owner_object: str = "",
     note: str = "",
 ) -> dict[str, str]:
-    """``column_map`` の 1 行を作る。"""
+    """``column_map`` の 1 行を作る（ ``mapping.build_column_map`` と同じキーをそろえる ）。"""
     return {
         "列キー": column_key,
         "表示名": display_name,
         "所属オブジェクト": owner_object,
         "対応フィールドAPI名": soql_name,
+        "型": "",
+        "参照先オブジェクト": "",
+        "リレーション名": "",
         "備考": note,
     }
 

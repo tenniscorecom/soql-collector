@@ -24,7 +24,6 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from src import pii
 from src.config_defaults import DEFAULT_SIMILAR_COLUMN_THRESHOLD
 from src.fetch import run_fetch
 from src.master import MasterEntry
@@ -109,10 +108,6 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
                 file_paths.output_dir,
                 records,
                 only_keys=ok_keys,
-                pii_config=pii.PIIConfig(
-                    keywords=pii.DEFAULT_KEYWORDS,
-                    person_objects=pii.DEFAULT_PERSON_OBJECTS,
-                ),
                 similar_threshold=DEFAULT_SIMILAR_COLUMN_THRESHOLD,
                 xlsx_name=file_paths.xlsx_name,
             )

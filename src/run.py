@@ -31,7 +31,7 @@ from comken.exceptions import ExcelError, SalesforceReportIDNotFoundError
 from comken.runtime import is_dry_run
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src import column_fix_xlsx, pii
+from src import column_fix_xlsx
 from src.config_defaults import AppConfig, ConfigValueError
 from src.fetch import run_fetch
 from src.master import MasterEntry, filter_enabled, read_master
@@ -209,16 +209,11 @@ def run(
     # 取れた record だけから CSV を組み立てる。 失敗した ID の CSV は作らず
     # 既存も消さない。
     records = [o.record for o in outcomes if o.record is not None]
-    pii_config = pii.PIIConfig(
-        keywords=app.pii.keywords,
-        person_objects=app.pii.person_objects,
-    )
     try:
         run_tables(
             file_paths.output_dir,
             records,
             only_keys=ok_keys,
-            pii_config=pii_config,
             similar_threshold=app.survey.similar_column_threshold,
             xlsx_name=file_paths.xlsx_name,
         )
