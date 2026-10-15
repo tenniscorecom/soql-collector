@@ -558,8 +558,24 @@ def _build_where_clause(
     """
     missing: list[str] = []
     checks: list[str] = []
+    filter_conditions = _collect_report_filter_conditions(metadata, column_lookup, missing, checks)
+    date_lines = _collect_standard_date_lines(metadata, column_lookup, missing, checks)
+    _collect_standard_filter_checks(metadata, checks)
+    _collect_cross_filter_missing(metadata, missing)
+    lines, ok = _combine_filter_conditions(metadata, filter_conditions, missing)
+    if not ok:
+        return [], missing, checks
+    lines.extend(date_lines)
+    return lines, missing, checks
 
-    # 1) reportFilters ( 1 始まり番号 → 条件式 )
+
+def _collect_report_filter_conditions(
+    metadata: dict[str, Any],
+    column_lookup: dict[str, dict[str, str]],
+    missing: list[str],
+    checks: list[str],
+) -> dict[int, str]:
+    """``reportFilters`` を ``{1 始まりの番号: 条件式}`` に組み立てる。"""
     filter_conditions: dict[int, str] = {}
     for index, entry in enumerate(metadata.get("reportFilters", []), start=1):
         column = entry.get("column", "")
@@ -570,22 +586,12 @@ def _build_where_clause(
         if not column_info or column_info["対応フィールドAPI名"] in ("", "(不明)"):
             missing.append(f"条件 {index}: {column} ( 省いたので件数が増える可能性 )")
             continue
+        values = _extract_filter_values(column_info, index, entry, missing)
+        if values is None:
+            continue
+        operator = entry.get("operator", "")
         field_api = column_info["対応フィールドAPI名"]
         field_type = column_info["型"]
-        operator = entry.get("operator", "")
-        raw_value = _coerce_str(entry.get("value"))
-        # 数値系のときは value を カンマで分割せず 1 つの値として扱う
-        # ( ``1,000`` のような桁区切りが IN で分割事故になる問題 ) 。
-        # カンマが含まれている時点で桁区切りと見なして missing に送る。
-        if field_type.strip().lower() in _NUMERIC_TYPES:
-            if raw_value and "," in raw_value:
-                missing.append(
-                    f"条件 {index}: 数値の値にカンマが含まれる可能性 {raw_value!r}: missing"
-                )
-                continue
-            values = [raw_value] if raw_value else []
-        else:
-            values = _split_values(raw_value)
         condition, extra_missing, extra_checks = _build_filter_condition(
             operator, values, field_api, field_type
         )
@@ -596,97 +602,165 @@ def _build_where_clause(
             checks.extend(extra_checks)
         if condition:
             filter_conditions[index] = condition
+    return filter_conditions
 
-    # 2) standardDateFilter ( 日付条件は別管理、 start と end を 1 行にまとめない方針 )
-    date_lines: list[str] = []
-    date_filter = metadata.get("standardDateFilter")
-    if date_filter is not None:
-        column = date_filter.get("column", "")
-        duration = date_filter.get("durationValue", "")
-        start = date_filter.get("startDate", "")
-        end = date_filter.get("endDate", "")
-        if not column:
-            missing.append("日付条件の列が指定されていない")
-        else:
-            column_info = column_lookup.get(column)
-            if not column_info or column_info["対応フィールドAPI名"] in ("", "(不明)"):
-                missing.append(f"日付条件の列 {column} に対応が無い ( 省いた )")
-            else:
-                field_api = column_info["対応フィールドAPI名"]
-                field_type = column_info["型"].strip().lower()
-                if duration == "CUSTOM":
-                    date_parts: list[str] = []
-                    if start:
-                        normalized_start, start_reason = _normalize_date_literal(start)
-                        if start_reason:
-                            missing.append(f"日付条件の startDate {start_reason}")
-                        elif field_type in _DATETIME_TYPES:
-                            date_parts.append(f"{field_api} >= {normalized_start}T00:00:00Z")
-                            checks.append(
-                                "日時の条件をタイムゾーン無しの UTC 0 時で置き換えた: "
-                                f"{field_api} >= {normalized_start}T00:00:00Z"
-                            )
-                        else:
-                            date_parts.append(f"{field_api} >= {normalized_start}")
-                    if end:
-                        normalized_end, end_reason = _normalize_date_literal(end)
-                        if end_reason:
-                            missing.append(f"日付条件の endDate {end_reason}")
-                        elif field_type in _DATETIME_TYPES:
-                            date_parts.append(f"{field_api} <= {normalized_end}T23:59:59Z")
-                            checks.append(
-                                "日時の条件をタイムゾーン無しの UTC 終端で置き換えた: "
-                                f"{field_api} <= {normalized_end}T23:59:59Z"
-                            )
-                        else:
-                            date_parts.append(f"{field_api} <= {normalized_end}")
-                    if date_parts:
-                        date_lines.append(" AND ".join(date_parts))
-                elif duration:
-                    # 相対日付リテラル
-                    if _RELATIVE_DATE_PATTERN.fullmatch(duration):
-                        date_lines.append(f"{field_api} = {duration}")
-                    else:
-                        missing.append(f"日付条件の durationValue {duration!r} を解釈できない")
-                else:
-                    # 全期間: 何もしない
-                    pass
 
-    # 3) standardFilters → checks に並べる ( 汎用には訳せない )
-    standard_filters = metadata.get("standardFilters")
-    if isinstance(standard_filters, list) and standard_filters:
-        for index, sf in enumerate(standard_filters, start=1):
-            checks.append(f"標準フィルタ {index}: {sf!r} ( そのままでは SOQL に翻訳できない )")
+def _extract_filter_values(
+    column_info: dict[str, str],
+    index: int,
+    entry: dict[str, Any],
+    missing: list[str],
+) -> list[str] | None:
+    """``reportFilters`` 1 件の ``value`` を、 型に合わせて ``values`` リストにする。
 
-    # 4) crossFilters → missing ( 副問い合わせに送ると次の段で扱う )
-    cross_filters = metadata.get("crossFilters")
-    if isinstance(cross_filters, list) and cross_filters:
-        for index, cf in enumerate(cross_filters, start=1):
-            missing.append(f"クロスフィルタ {index}: {cf!r} ( 副問い合わせが必要 )")
-
-    # 5) 組立式 ( 番号で ``( filter_conditions[number] )`` に置換、 行は 1 行にまとめる )
-    lines: list[str] = []
-    bool_filter = metadata.get("reportBooleanFilter", "")
-    if bool_filter:
-        try:
-            combined = _replace_boolean_filter_numbers(bool_filter, filter_conditions)
-            lines.append(combined)
-        except ValueError as exc:
-            missing.insert(0, f"組立式の解釈失敗: {exc}")
-            missing.insert(
-                0,
-                "組立式の条件を作れない ( 条件を省くと式が壊れるため WHERE 全体を出さない )",
+    数値系のときは ``1,000`` のような桁区切りを missing に送って ``None`` を返す
+    ( カンマで分割すると ``IN`` の要素が壊れるため ) 。 それ以外はカンマで分割する。
+    """
+    field_type = column_info["型"]
+    raw_value = _coerce_str(entry.get("value"))
+    if field_type.strip().lower() in _NUMERIC_TYPES:
+        if raw_value and "," in raw_value:
+            missing.append(
+                f"条件 {index}: 数値の値にカンマが含まれる可能性 {raw_value!r}: missing"
             )
-            return [], missing, checks
-    else:
-        # 組立式が無い: 作れた reportFilters を番号順に 1 行ずつ並べる
-        for index in sorted(filter_conditions):
-            lines.append(filter_conditions[index])
+            return None
+        return [raw_value] if raw_value else []
+    return _split_values(raw_value)
 
-    # 6) 日付条件を末尾に並べる ( 組立式がどれだけ複雑でも日付条件は AND で連結 )
-    lines.extend(date_lines)
 
-    return lines, missing, checks
+def _collect_standard_date_lines(
+    metadata: dict[str, Any],
+    column_lookup: dict[str, dict[str, str]],
+    missing: list[str],
+    checks: list[str],
+) -> list[str]:
+    """``standardDateFilter`` を SOQL の日付条件式 ( 1 行 ) にして返す。
+
+    ``CUSTOM`` なら start / end を ``>=`` / ``<=`` に展開、 相対日付リテラル
+    ならそのまま ``= durationValue`` にする。 全期間は空リスト。
+    """
+    date_filter = metadata.get("standardDateFilter")
+    if date_filter is None:
+        return []
+    column = date_filter.get("column", "")
+    duration = date_filter.get("durationValue", "")
+    start = date_filter.get("startDate", "")
+    end = date_filter.get("endDate", "")
+    if not column:
+        missing.append("日付条件の列が指定されていない")
+        return []
+    column_info = column_lookup.get(column)
+    if not column_info or column_info["対応フィールドAPI名"] in ("", "(不明)"):
+        missing.append(f"日付条件の列 {column} に対応が無い ( 省いた )")
+        return []
+    field_api = column_info["対応フィールドAPI名"]
+    field_type = column_info["型"].strip().lower()
+    if duration == "CUSTOM":
+        return _custom_date_range_lines(field_api, field_type, start, end, missing, checks)
+    if duration:
+        return _relative_date_line(field_api, duration, missing)
+    # 全期間: 何もしない
+    return []
+
+
+def _custom_date_range_lines(
+    field_api: str,
+    field_type: str,
+    start: str,
+    end: str,
+    missing: list[str],
+    checks: list[str],
+) -> list[str]:
+    """``CUSTOM`` の日付範囲を ``field >= start AND field <= end`` の 1 行にする。"""
+    date_parts: list[str] = []
+    if start:
+        normalized_start, start_reason = _normalize_date_literal(start)
+        if start_reason:
+            missing.append(f"日付条件の startDate {start_reason}")
+        elif field_type in _DATETIME_TYPES:
+            date_parts.append(f"{field_api} >= {normalized_start}T00:00:00Z")
+            checks.append(
+                "日時の条件をタイムゾーン無しの UTC 0 時で置き換えた: "
+                f"{field_api} >= {normalized_start}T00:00:00Z"
+            )
+        else:
+            date_parts.append(f"{field_api} >= {normalized_start}")
+    if end:
+        normalized_end, end_reason = _normalize_date_literal(end)
+        if end_reason:
+            missing.append(f"日付条件の endDate {end_reason}")
+        elif field_type in _DATETIME_TYPES:
+            date_parts.append(f"{field_api} <= {normalized_end}T23:59:59Z")
+            checks.append(
+                "日時の条件をタイムゾーン無しの UTC 終端で置き換えた: "
+                f"{field_api} <= {normalized_end}T23:59:59Z"
+            )
+        else:
+            date_parts.append(f"{field_api} <= {normalized_end}")
+    if not date_parts:
+        return []
+    return [" AND ".join(date_parts)]
+
+
+def _relative_date_line(
+    field_api: str,
+    duration: str,
+    missing: list[str],
+) -> list[str]:
+    """相対日付リテラルを ``field = duration`` の 1 行にする。 解釈できなければ missing。"""
+    if _RELATIVE_DATE_PATTERN.fullmatch(duration):
+        return [f"{field_api} = {duration}"]
+    missing.append(f"日付条件の durationValue {duration!r} を解釈できない")
+    return []
+
+
+def _collect_standard_filter_checks(
+    metadata: dict[str, Any],
+    checks: list[str],
+) -> None:
+    """``standardFilters`` を ``checks`` に並べる ( 汎用には訳せない ) 。"""
+    standard_filters = metadata.get("standardFilters")
+    if not (isinstance(standard_filters, list) and standard_filters):
+        return
+    for index, sf in enumerate(standard_filters, start=1):
+        checks.append(f"標準フィルタ {index}: {sf!r} ( そのままでは SOQL に翻訳できない )")
+
+
+def _collect_cross_filter_missing(
+    metadata: dict[str, Any],
+    missing: list[str],
+) -> None:
+    """``crossFilters`` を ``missing`` に並べる ( 副問い合わせが必要 ) 。"""
+    cross_filters = metadata.get("crossFilters")
+    if not (isinstance(cross_filters, list) and cross_filters):
+        return
+    for index, cf in enumerate(cross_filters, start=1):
+        missing.append(f"クロスフィルタ {index}: {cf!r} ( 副問い合わせが必要 )")
+
+
+def _combine_filter_conditions(
+    metadata: dict[str, Any],
+    filter_conditions: dict[int, str],
+    missing: list[str],
+) -> tuple[list[str], bool]:
+    """組立式 ``reportBooleanFilter`` があれば番号置換、 無ければ番号順で並べる。
+
+    戻り値の ``ok`` は組立式の解釈に成功したかどうか。 ``False`` のときは呼び出し側で
+    WHERE 全体を空にする (``missing`` には理由が既に入っている ) 。
+    """
+    bool_filter = metadata.get("reportBooleanFilter", "")
+    if not bool_filter:
+        return [filter_conditions[index] for index in sorted(filter_conditions)], True
+    try:
+        combined = _replace_boolean_filter_numbers(bool_filter, filter_conditions)
+    except ValueError as exc:
+        missing.insert(0, f"組立式の解釈失敗: {exc}")
+        missing.insert(
+            0,
+            "組立式の条件を作れない ( 条件を省くと式が壊れるため WHERE 全体を出さない )",
+        )
+        return [], False
+    return [combined], True
 
 
 def _replace_boolean_filter_numbers(
