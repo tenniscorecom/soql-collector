@@ -579,6 +579,62 @@ def test_run_partial_failure_continues_and_returns_1(
     assert existing_csv.read_text(encoding="utf-8") == "既存\nそのまま\n"
 
 
+def test_run_returns_1_when_run_tables_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``run_tables`` が例外を出しても、 全件成功に見えず 1 を返す。"""
+    from src import run as run_module
+    from src.fetch import FetchOutcome
+
+    master = tmp_path / "master.xlsx"
+    _build_master(
+        master,
+        [
+            {"ID": "1001", "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view", "有効": "○"},
+        ],
+    )
+    _write_ini(tmp_path, master)
+    file_paths = _make_file_paths(tmp_path, master)
+    _patch_read_file_paths(monkeypatch, file_paths, tmp_path)
+
+    def fake_run_fetch(
+        entries,
+        *,
+        related_depth=1,
+        related_max=40,
+        row_limit=True,
+        pii_keywords=(),
+        pii_person_objects=(),
+        describe_csv_path=None,
+        dry_run=False,
+        site_for=None,
+        describe_store=None,
+        refresh_set=None,
+        column_fix_overrides=None,
+    ):
+        rec = RecordStub(key=entries[0].key, summary="", report_id="00O", url=entries[0].url)
+        return [
+            FetchOutcome(
+                entry=entries[0],
+                status="ok",
+                record=rec,
+                warnings=(),
+                error=None,
+            )
+        ]
+
+    def fake_run_tables(*args, **kwargs):
+        raise RuntimeError("xlsx を書き込めません")
+
+    monkeypatch.setattr(run_module, "run_fetch", fake_run_fetch)
+    monkeypatch.setattr(run_module, "run_tables", fake_run_tables)
+
+    code = run_module.run([], site_for=lambda _u: (_ for _ in ()).throw(AssertionError()))
+
+    assert code == 1
+
+
 # ── dry-run ────────────────────────────────────────────────────────────
 
 

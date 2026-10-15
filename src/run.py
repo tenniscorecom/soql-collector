@@ -8,7 +8,7 @@ describe を取って ``ReportRecord`` に詰める。 その record の一覧�
 終了コード:
 
 - 0 … 全件成功
-- 1 … 1 件以上のレポートが失敗した
+- 1 … 1 件以上のレポートが失敗した / 出力の生成に失敗した
 - 2 … 引数が付いた / 管理表に「有効」が ○ の行が無い / config.ini に
   必須キーが無い （ comken の ``ConfigError`` がそのまま上がる）
 
@@ -101,7 +101,7 @@ def run(
 
     Returns:
         0 … 全件成功
-        1 … 失敗した ID が 1 件以上ある
+        1 … 失敗した ID が 1 件以上ある / 出力の生成に失敗した
         2 … 引数が付いた / 管理表に「有効」が ○ の行が無い / config.ini が不正
             （ comken の ``ConfigError`` を 2 にして返す ）
     """
@@ -216,6 +216,7 @@ def run(
     # 取れた record だけから CSV を組み立てる。 失敗した ID の CSV は作らず
     # 既存も消さない。
     records = [o.record for o in outcomes if o.record is not None]
+    output_failed = False
     try:
         run_tables(
             file_paths.output_dir,
@@ -225,8 +226,9 @@ def run(
             xlsx_name=file_paths.xlsx_name,
         )
     except Exception as exc:
-        # CSV の失敗は全体の失敗にはしない （ record は取れているので ）
-        logger.error("CSV の生成に失敗しました: %s", exc)
+        # xlsx / CSV のどちらも作れていないので、 終了コードは 1 にする
+        output_failed = True
+        logger.exception("CSV の生成に失敗しました: %s", exc)
 
     # ``列の直し.xlsx`` を最後に 1 回書く （ 人が入れた値を壊さない ）。
     # PermissionError 等は ``_merge_and_write_after_run`` 内で WARNING だけになり、 処理は続く
@@ -237,7 +239,7 @@ def run(
         today=column_fix_xlsx.today_local(),
     )
 
-    return 1 if failed_count else 0
+    return 1 if (failed_count or output_failed) else 0
 
 
 # ── ログ ────────────────────────────────────────────────────────────────
