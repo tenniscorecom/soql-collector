@@ -36,6 +36,7 @@ max-complexity = 14
 
 [tool.pytest.ini_options]
 # `src` パッケージは `python -m pytest` をルートで実行すれば自動的に sys.path に入る。
-# `F:/dev/comken` は comken（共有ライブラリ。その中に `comken/` パッケージがある）の
-# 置き場所として PYTHONPATH を代行するために書く
-pythonpath = ["F:/dev/comken"]
+# comken （ 共有ライブラリ。 その中に `comken/` パッケージがある ） の置き場所は
+# 環境変数 `PYTHON_LIBRARY` か、 隣接する `../comken` フォルダから自動で拾う。
+# 詳細は `tests/conftest.py` を参照。
+# 直書きの `pythonpath` は使わない （ 共有リポジトリ側の場所を持ち込まないため ）。
