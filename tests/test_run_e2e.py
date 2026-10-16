@@ -99,8 +99,7 @@ def _write_legacy_ini(proj: Path) -> None:
     """``[FILES]`` に 4 つのキーしか無い旧 config.ini を書く。
 
     新しいキー（ ``COLUMN_FIX_XLSX_PATH`` 等 ） が無いことで、 comken の
-    ``ConfigError`` が上がることを確認する経路 （ 2026-10-16 で既定値
-    補完を廃止したため ）
+    ``ConfigError`` が上がることを確認する経路。 既定値の補完はしない
     """
     (proj / "config.ini").write_text(
         "[FILES]\n"
@@ -332,8 +331,7 @@ def test_run_e2e_second_run_preserves_user_fix_and_uses_it(tmp_path: Path) -> No
 
 def test_run_e2e_legacy_config_without_required_keys_aborts(tmp_path: Path) -> None:
     """旧 ``config.ini`` （ ``COLUMN_FIX_XLSX_PATH`` などの新しいキーが無い ）
-    は comken の ``ConfigError`` で止まる。 既定値での補完はしない
-    （ 2026-10-16 ） 。
+    は comken の ``ConfigError`` で止まる。 既定値での補完はしない。
     """
     from comken.core.config import _reset_cached_config
     from comken.exceptions import ConfigError, ConfigKeyNotFoundError

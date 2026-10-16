@@ -216,7 +216,7 @@ def build_markdown(
         parts.append("```")
         parts.append("")
 
-    # SOQL の下書き （ 2026-10-15 復活 ）
+    # SOQL の下書き
     soql_section = _build_soql_section(record)
     if soql_section:
         parts.extend(soql_section)

@@ -3,8 +3,7 @@
 ``_coerce_str`` は **境界** （ API / openpyxl / CSV の生の値 ） でだけ使う。
 内側で自分の dataclass の ``str`` 属性を読むときに重ねがけしない。
 
-各モジュールに重複して定義していた ``_coerce_str`` をここに集約する
-（ 2026-10-15 の整理 ）。
+各モジュールに重複して定義していた ``_coerce_str`` をここに集約する。
 """
 
 from __future__ import annotations

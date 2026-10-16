@@ -28,7 +28,7 @@
 CSV を組み立てる。 許可リストでレポート describe から落としたキー名は
 ``_fetch_one`` の ``warnings`` に
 「 レポート定義の中で使わなかったキー: ... 」 の形でも 1 行入れる
-（ SOQL の組み立てはしない 2026-10-14 の方針。 落としたキー名は引き続き
+（ SOQL の組み立てはしない方針。 落としたキー名は引き続き
 可視化のための参考情報として残す ）。
 """
 
@@ -63,9 +63,8 @@ logger = logging.getLogger(__name__)
 # 打ち切り、 超えた名前は ``warnings`` に残す。 1 = 関連オブジェクトを取らない
 RELATED_MAX: int = 40
 
-# 関連オブジェクトを掘る最大の段数。 1 = 主オブジェクトの参照先 1 段だけ
-# （ 2026-10-14 以前の挙動 ）。 2 以上にすると ``Task.What.Account.Owner`` の
-# ように参照先をたどって掘る
+# 関連オブジェクトを掘る最大の段数。 1 = 主オブジェクトの参照先 1 段だけ。
+# 2 以上にすると ``Task.What.Account.Owner`` のように参照先をたどって掘る
 RELATED_DEPTH: int = 3
 
 # 1 レポートごとに 2000 行チェックを実行するか。 True = 実行する
@@ -91,9 +90,9 @@ ROW_CHECK_UNDER = "超えていない"
 ROW_CHECK_UNKNOWN = "判定不可"
 ROW_CHECK_DISABLED = "未実施"
 
-# 2026-10-14: ``reportType.type`` から主オブジェクトが取れなかったときの
-# 代替候補として、 列キーの先頭を最大何個試すか。 多すぎても 1 度目で
-# 見つかることが多いので、 この値で十分
+# ``reportType.type`` から主オブジェクトが取れなかったときの代替候補として、
+# 列キーの先頭を最大何個試すか。 多すぎても 1 度目で見つかることが多いので、
+# この値で十分
 _MAIN_OBJECT_PREFIX_LIMIT: int = 5
 
 # 接続先判定の既定実装（ comken の ``site_for`` ）。 テストでは差し替える。
@@ -1684,10 +1683,10 @@ def _choose_main(
 ) -> tuple[str | None, dict[str, Any] | None, str | None, set[tuple[str, str]]]:
     """``metadata`` から主オブジェクトを決める （ 2 段: レポートタイプ → 列キー先頭 ）。
 
-    2026-10-14 の方針: ``reportType.type`` から候補が取れなかったとき （ カ
-    スタムレポートタイプのレポートタイプ自体が主オブジェクトの API 名でな
-    いケース ） に備え、 **列キーの先頭** を代替の候補として試す。 次の順
-    で ``_fetch_object_cached()`` を呼んで、 最初に describe が取れた候補を
+    ``reportType.type`` から候補が取れなかったとき （ カスタムレポート
+    タイプのレポートタイプ自体が主オブジェクトの API 名でないケース ） に
+    備え、 **列キーの先頭** を代替の候補として試す。 次の順で
+    ``_fetch_object_cached()`` を呼んで、 最初に describe が取れた候補を
     採用する:
 
     (a) ``mapping.report_type_candidates(reportType.type)`` の候補
@@ -1766,7 +1765,7 @@ def _extract_column_key_prefix_candidates(
     同じ名前 1 つのキーや、 ``OPPORTUNITY_NAME`` のような値 ）。
 
     ``FK_`` で始まる列キーの先頭は主オブジェクトではなく主からの参照先を
-    指しているので、 候補からは外す （ 2026-10-14 ） 。
+    指しているので、 候補からは外す。
 
     ``_choose_main`` の (b) 段階で主オブジェクトの候補を組み立てるのに使う。
     """

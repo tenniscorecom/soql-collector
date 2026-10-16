@@ -1144,8 +1144,8 @@ def test_main_object_describe_failure_yields_null(tmp_path: Path) -> None:
     """主オブジェクトの describe_object が失敗（401/403 以外）→ ``主オブジェクト: null`` 、警告、
     関連は取らない。
 
-    2026-10-14: 列キー先頭のフォールバック （ ``Opp`` ） も試すように
-    なったので、 ``Opp`` も同じエラーにして 両方が全滅するシナリオを確かめる
+    列キー先頭のフォールバック （ ``Opp`` ） も試すようにしたので、
+    ``Opp`` も同じエラーにして 両方が全滅するシナリオを確かめる
     """
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
@@ -3037,7 +3037,7 @@ def test_run_fetch_path_too_long_warns(tmp_path: Path) -> None:
 
 
 def test_run_fetch_user_fix_overrides_auto_resolved(tmp_path: Path) -> None:
-    """「 直したSOQL列名 」 に値があれば自動の結果より常に優先する （ 2026-10-15 ） 。
+    """「 直したSOQL列名 」 に値があれば自動の結果より常に優先する。
 
     自動で取れた列でも、 人が ``列の直し.xlsx`` で値を入れていれば自動の値
     は上書きされる （ 人が入力した値を尊重する方針 ） 。
@@ -3088,7 +3088,7 @@ def test_run_fetch_user_fix_overrides_auto_resolved(tmp_path: Path) -> None:
 
 def test_run_fetch_no_fetcher_legacy_behavior(tmp_path: Path) -> None:
     """``column_fix_overrides`` が空のときは、 fetcher は使われず、 WARNING も
-    「 たどれません 」 は出ない （ 何も上書きしない ） 。 後方互換確認
+    「 たどれません 」 は出ない （ 何も上書きしない ） 。
     """
     metadata = {
         "reportMetadata": {
@@ -3123,7 +3123,7 @@ def test_run_fetch_no_fetcher_legacy_behavior(tmp_path: Path) -> None:
     assert row["対応フィールドAPI名"] in ("(不明)", "")
 
 
-# ── 列キーからの主オブジェクト・SOQL 列名の解決 （ 2026-10-14 ） ─────────────
+# ── 列キーからの主オブジェクト・SOQL 列名の解決 ───────────────────
 
 
 def _contact_describe() -> dict:

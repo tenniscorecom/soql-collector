@@ -1029,7 +1029,7 @@ def test_build_column_map_fk_falls_back_to_label_when_label_matches() -> None:
     assert "FK_ で" not in row["備考"]
 
 
-# --- C0: 末端 reference を nameField に置換する新仕様 (2026-10-14) ---
+# --- C0: 末端 reference を nameField に置換する仕様 ---
 
 
 def _custom_name_field_describe() -> dict:

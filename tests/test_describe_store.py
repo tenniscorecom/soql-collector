@@ -460,9 +460,9 @@ def test_different_orgs_keep_separate_state_across_runs(tmp_path: Path) -> None:
 def test_describe_failure_is_not_persisted(tmp_path: Path) -> None:
     """HTTP エラーは CSV に書かれず、 次回は API を呼び直す。
 
-    2026-10-14: 列キー先頭 （ ``Opp`` ） のフォールバックを試すように
-    なったので、 ``Opp`` 側も同じ HTTP エラーにして 主オブジェクトの
-    解決が両方全滅するようにしてある。
+    列キー先頭 （ ``Opp`` ） のフォールバックを試すようにしたので、
+    ``Opp`` 側も同じ HTTP エラーにして 主オブジェクトの解決が
+    両方全滅するようにしてある。
     """
     client = _FakeClient(
         describe=_make_metadata("Opportunity", ["Opp.Name"]),
@@ -744,7 +744,7 @@ def test_existing_csv_with_wrong_header_aborts(tmp_path: Path) -> None:
 def test_settings_missing_describe_csv_raises(tmp_path: Path) -> None:
     """config.ini に ``DESCRIBE_CSV_PATH`` が無いと comken の ``ConfigError``
     （ サブクラスの ``ConfigKeyNotFoundError`` ） が上がる。 既定値での
-    補完はしない （ 2026-10-16 ） 。
+    補完はしない。
     """
     from comken.core.config import _reset_cached_config
     from comken.exceptions import ConfigError, ConfigKeyNotFoundError

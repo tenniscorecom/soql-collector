@@ -334,7 +334,7 @@ def test_e2e_columns_sheet_項目_is_resolved(tmp_path: Path) -> None:
 
 def test_e2e_aggregate_table_sort_by_and_top_rows(tmp_path: Path) -> None:
     """``ACCOUNT.NAME`` → ``What.Name`` のように関連経由の解決は ``並び順`` ではなく
-    ``列の対応`` シート側で見る （ 2026-10-15 で 集計シートは廃止 ） 。"""
+    ``列の対応`` シート側で見る （ 集計シートは廃止済み ）。"""
     output_dir = _run_e2e(tmp_path)
     sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
     # 3 枚構成
@@ -388,7 +388,7 @@ def test_e2e_column_names_xlsx_resolved_correspondence(tmp_path: Path) -> None:
     assert "Owner.Name" in soql_names
 
 
-# ── 集計 / 条件 シートは 2026-10-15 で廃止 ───────────────────────────
+# ── 集計 / 条件 シートは廃止済み ───────────────────────────────
 # 集計 / 条件 / グループ・並び順は 「 列の対応 」 シートで SOQL として表現し、
 # SOQL資料/{管理番号}.md に集約した。 旧テストは削除。
 
