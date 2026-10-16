@@ -300,7 +300,7 @@ def _load_file_paths_for_test(tmp_path: Path):
     """``config.ini`` を ``tmp_path`` プロジェクトに見立てて ``FilePaths`` を読み込む。"""
     import sys
 
-    from comken.core.config import _reset_cached_config
+    from comken.core.config.base import _reset_cached_config
 
     from src.run import read_file_paths
 

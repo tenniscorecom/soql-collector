@@ -196,7 +196,7 @@ def _do_run(proj: Path, client: _FakeClient) -> int:
     """``run()`` を 1 回実行する。 ``comken`` の config を ``proj`` から読む
     ように ``sys.argv`` を切り替える
     """
-    from comken.core.config import _reset_cached_config
+    from comken.core.config.base import _reset_cached_config
 
     from src.run import read_file_paths, run
 
@@ -333,7 +333,7 @@ def test_run_e2e_legacy_config_without_required_keys_aborts(tmp_path: Path) -> N
     """旧 ``config.ini`` （``COLUMN_FIX_XLSX_PATH`` などの新しいキーが無い）
     は comken の ``ConfigError`` で止まる。 既定値での補完はしない。
     """
-    from comken.core.config import _reset_cached_config
+    from comken.core.config.base import _reset_cached_config
     from comken.exceptions import ConfigError, ConfigKeyNotFoundError
 
     from src.run import read_file_paths

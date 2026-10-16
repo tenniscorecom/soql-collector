@@ -127,7 +127,7 @@ def _patch_read_file_paths(
     """
     import sys
 
-    from comken.core.config import _reset_cached_config
+    from comken.core.config.base import _reset_cached_config
 
     import src.run as run_module
 

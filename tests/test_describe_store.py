@@ -746,7 +746,7 @@ def test_settings_missing_describe_csv_raises(tmp_path: Path) -> None:
     （サブクラスの ``ConfigKeyNotFoundError``） が上がる。 既定値での
     補完はしない。
     """
-    from comken.core.config import _reset_cached_config
+    from comken.core.config.base import _reset_cached_config
     from comken.exceptions import ConfigError, ConfigKeyNotFoundError
 
     from src.run import read_file_paths
