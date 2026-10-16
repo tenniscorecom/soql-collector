@@ -26,7 +26,6 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from comken.core.files import ensure_dir
 from comken.core.table import Table
 from comken.exceptions import CSVError
 from comken.toolbox.csv import CSV
@@ -661,7 +660,7 @@ def _merge_column_names_csv(
     並びは **主オブジェクト → SOQL列名** 。
     既存ファイルの見出しが ``COLUMN_NAMES_COLUMNS`` と違うときは ``CSVError`` を上げる。
     """
-    ensure_dir(path.parent)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     existing_rows: list[dict[str, str]] = []
     if path.exists():
@@ -880,6 +879,6 @@ def _today_local() -> date:
 
 def _write_csv(path: Path, columns: Sequence[str], rows: list[dict[str, str]]) -> None:
     """comken の ``CSV`` クラスで UTF-8 BOM + CRLF の CSV を書く。"""
-    ensure_dir(path.parent)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with CSV(path, columns=list(columns)) as csv:
         csv.replace(Table(list(columns), rows))
