@@ -12,11 +12,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from comken.services.salesforce_downloader.contract import COLUMN_NAMES_CSV_COLUMNS
 from openpyxl import load_workbook
 
 from src.fetch import RelationRecord, ReportRecord
 from src.tables import (
+    COLUMN_NAMES_COLUMNS,
     COLUMN_NAMES_CSV_NAME,
     COLUMNS_SHEET_COLUMNS,
     RELATION_DIAGRAM_COLUMNS,
@@ -593,7 +593,7 @@ def test_column_names_csv_new_schema(tmp_path: Path) -> None:
     run_tables(output, [record])
 
     columns, rows = _read_csv(output / COLUMN_NAMES_CSV_NAME)
-    assert columns == list(COLUMN_NAMES_CSV_COLUMNS)
+    assert columns == list(COLUMN_NAMES_COLUMNS)
     # (不明) は除く
     assert all(r["SOQL列名"] != "(不明)" for r in rows)
     soql_names = {r["SOQL列名"] for r in rows}

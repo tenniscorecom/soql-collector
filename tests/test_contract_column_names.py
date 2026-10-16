@@ -1,7 +1,6 @@
 """ダウンローダーとの契約テスト。
 
-契約の正は comken の ``comken.services.salesforce_downloader.contract`` にあり、
-``load_sample("列名の対応.contract.csv")`` がバイト単位の見本を返す。
+``tests/contract/列名の対応.contract.csv`` はバイト単位で見本であり、
 ``run_tables`` が ``列名の対応.csv`` を書いた結果が **バイト単位で一致** する
 ことを確かめる。 並び・BOM・CRLF・列順・表示名の多数決（ ``違う表示名の
 最小管理番号`` ）もまとめて検証される。
@@ -13,12 +12,14 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from comken.services.salesforce_downloader.contract import load_sample
 
 from src.fetch import ReportRecord
 from src.tables import run_tables
 
 # ── ヘルパー ─────────────────────────────────────────────────────────────
+
+
+CONTRACT_PATH = Path(__file__).parent / "contract" / "列名の対応.contract.csv"
 
 
 def _make_record(
@@ -68,7 +69,7 @@ def _column_map_entry(
 
 
 def _build_contract_records() -> list[ReportRecord]:
-    """``load_sample("列名の対応.contract.csv")`` とバイト一致する
+    """``tests/contract/列名の対応.contract.csv`` とバイト一致する
     ``run_tables`` の出力を生む record 群を作る。
 
     シナリオ:
@@ -148,8 +149,8 @@ def _build_contract_records() -> list[ReportRecord]:
 def test_run_tables_writes_byte_identical_contract_csv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``run_tables`` が書く ``列名の対応.csv`` は comken の見本
-    ``load_sample("列名の対応.contract.csv")`` と **バイト単位で完全に同じ** 。
+    """``run_tables`` が書く ``列名の対応.csv`` は
+    ``tests/contract/列名の対応.contract.csv`` と **バイト単位で完全に同じ** 。
 
     日付を 2026-10-14 に固定し、 出力の文字コード・改行・列順・並び順・表示名
     の多数決（``別の表示名あり: …``）をまとめて確かめる。
@@ -162,7 +163,7 @@ def test_run_tables_writes_byte_identical_contract_csv(
     run_tables(output_dir, _build_contract_records())
 
     actual = (output_dir / "列名の対応.csv").read_bytes()
-    expected = load_sample("列名の対応.contract.csv")
+    expected = CONTRACT_PATH.read_bytes()
 
     # バイト一致
     assert actual == expected, (

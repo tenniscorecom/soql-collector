@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING, Any
 
 from comken.core.table import Table
 from comken.exceptions import CSVError
-from comken.services.salesforce_downloader.contract import COLUMN_NAMES_CSV_COLUMNS
 from comken.toolbox.csv import CSV
 
 from src import ai_markdown, mapping, relation_diagram, similar, xlsx_style
@@ -119,9 +118,14 @@ RELATION_DIAGRAM_COLUMNS: tuple[str, ...] = (
     "参照項目API名",
 )
 
-# 列名の対応.csv の列名は comken.services.salesforce_downloader.contract が正
-# （``COLUMN_NAMES_CSV_COLUMNS`` として import 済み） 。 契約は comken 側、
-# ここでは再定義しない。
+# 列名の対応.csv の列名 （ダウンローダー固定）
+COLUMN_NAMES_COLUMNS: tuple[str, ...] = (
+    "主オブジェクト",
+    "SOQL列名",
+    "表示名",
+    "備考",
+    "更新日",
+)
 
 
 @dataclass(frozen=True)
@@ -653,7 +657,7 @@ def _merge_column_names_csv(
     """``列名の対応.csv`` を既存ファイルと ``new_rows`` でマージして書き直す。
 
     並びは **主オブジェクト → SOQL列名** 。
-    既存ファイルの見出しが ``COLUMN_NAMES_CSV_COLUMNS`` と違うときは ``CSVError`` を上げる。
+    既存ファイルの見出しが ``COLUMN_NAMES_COLUMNS`` と違うときは ``CSVError`` を上げる。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -667,10 +671,10 @@ def _merge_column_names_csv(
                 f"既存の {path.name} を読み込めません: {path}\n{exc}"
                 "\n対処: ファイルを別名に退避してから再実行してください。"
             ) from exc
-        if list(table.columns) != list(COLUMN_NAMES_CSV_COLUMNS):
+        if list(table.columns) != list(COLUMN_NAMES_COLUMNS):
             raise CSVError(
                 f"既存の {path.name} の見出しが想定と違います: {path}\n"
-                f"期待: {list(COLUMN_NAMES_CSV_COLUMNS)}\n"
+                f"期待: {list(COLUMN_NAMES_COLUMNS)}\n"
                 f"実際: {list(table.columns)}"
                 "\n対処: ファイルを別名に退避してから再実行してください。"
             )
@@ -693,7 +697,7 @@ def _merge_column_names_csv(
         merged = kept_old_rows + list(new_rows)
 
     merged.sort(key=lambda row: (row.get("主オブジェクト", ""), row.get("SOQL列名", "")))
-    _write_csv(path, COLUMN_NAMES_CSV_COLUMNS, merged)
+    _write_csv(path, COLUMN_NAMES_COLUMNS, merged)
 
 
 # ── Excel 書き出し ────────────────────────────────────────────
