@@ -1,33 +1,33 @@
-"""ID ごとに describe を取って、 結果を ``ReportRecord`` （ メモリ上の記録 ）
+"""ID ごとに describe を取って、 結果を ``ReportRecord`` （メモリ上の記録）
 として返す。
 
-流れ （ IDごと ） :
+流れ （IDごと） :
 
-1. 管理番号 → 管理表の行 （ 無ければ呼び出し側の ``cli`` でエラー ）
+1. 管理番号 → 管理表の行 （無ければ呼び出し側の ``cli`` でエラー）
 2. URL から ``site_for(url)`` で接続先を決め、 ``with site() as client:`` で開く
-3. ``metadata = client.report.describe(report_id)`` （ レポートの describe ）
+3. ``metadata = client.report.describe(report_id)`` （レポートの describe）
 4. 主オブジェクトの決定: ``reportType.type`` が空なら特定できず。 ``$`` / ``@``
    を含まなければその値、 含めば ``mapping.report_type_candidates()`` の候補を
    ``_fetch_object_cached()`` で順に ``describe_object`` して、 最初に成功した
-   ものを主オブジェクトにする。 HTTP エラー （ ``SalesforceRequestError`` ） や
+   ものを主オブジェクトにする。 HTTP エラー （``SalesforceRequestError``） や
    ``ValueError`` で主オブジェクトが特定できなかった／ describe が取れなかった
    ときは、 列対応表を全列 ``(不明)`` ＋理由の備考に縮退する。 401 / 403 は
    握りつぶさず、 その ID の失敗にする
-5. 関連オブジェクト （ 参照先を ``RELATED_DEPTH`` 段まで ） : 主オブジェクトの
+5. 関連オブジェクト （参照先を ``RELATED_DEPTH`` 段まで） : 主オブジェクトの
    describe の ``fields`` を起点に幅優先で参照を辿り、 ``relationshipName``
    が空でなく ``referenceTo`` が空でない項目を **1 段ずつ** 掘る。 同じ名前は
-   浅い段から先に登録される。 件数は ``RELATED_MAX`` （ 既定 40 ） で全段の
+   浅い段から先に登録される。 件数は ``RELATED_MAX`` （既定 40） で全段の
    合計を打ち切り、 超えた名前は ``warnings`` に残す
 6. ``mapping.build_column_map(metadata, main_describe, reason, ...)`` で列対応表
    を組み立てる。 主オブジェクトの describe は **ID ごとに 1 回** だけ取得する
    （ ``_fetch_object_cached`` のキャッシュを経由するため、 複数 ID が同じ
    主オブジェクトを参照しても HTTP は 1 回 ）
 
-**出力は CSV だけ**。 ``ReportRecord`` （ frozen dataclass ） に詰めて
+**出力は CSV だけ**。 ``ReportRecord`` （frozen dataclass） に詰めて
 ``FetchOutcome.record`` で返す。 ``run_tables`` がこの record を受け取って
 CSV を組み立てる。 許可リストでレポート describe から落としたキー名は
 ``_fetch_one`` の ``warnings`` に
-「 レポート定義の中で使わなかったキー: ... 」 の形でも 1 行入れる
+「レポート定義の中で使わなかったキー: ...」 の形でも 1 行入れる
 （ SOQL の組み立てはしない方針。 落としたキー名は引き続き
 可視化のための参考情報として残す ）。
 """
@@ -68,20 +68,20 @@ RELATED_MAX: int = 40
 RELATED_DEPTH: int = 3
 
 # 1 レポートごとに 2000 行チェックを実行するか。 True = 実行する
-# （ 一覧シートの 「 2000件超 」 列が埋まる ）。 False = 実行しない
-# （ 同列が 「 未実施 」 になる ）
+# （一覧シートの 「2000件超」 列が埋まる）。 False = 実行しない
+# （同列が 「未実施」 になる）
 ROW_LIMIT_ENABLED: bool = True
 
 # ``describe_object`` が 401 / 403 を返したとき、 その ID 全体を失敗させる
-# ステータスコード（ comken の ``ReportAPI.describe`` と同じく ）。
+# ステータスコード（comken の ``ReportAPI.describe`` と同じく）。
 FATAL_STATUS_CODES: frozenset[int] = frozenset({401, 403})
 
-# ``client.report.get()`` の戻り値 ``Table`` の最小インターフェース （ ``len()`` だけ ）。
+# ``client.report.get()`` の戻り値 ``Table`` の最小インターフェース （``len()`` だけ）。
 # テストで偽の ``Table`` を入れるために ``Any`` を扱う。
 _TableLike = Any
 
 
-# 理由欄に出す例外メッセージの最大長（ 行データや機微情報を漏らさない ）
+# 理由欄に出す例外メッセージの最大長（行データや機微情報を漏らさない）
 _ERROR_REASON_MAX_LENGTH = 200
 
 # レポート row check の状態定数
@@ -95,10 +95,10 @@ ROW_CHECK_DISABLED = "未実施"
 # この値で十分
 _MAIN_OBJECT_PREFIX_LIMIT: int = 5
 
-# 接続先判定の既定実装（ comken の ``site_for`` ）。 テストでは差し替える。
+# 接続先判定の既定実装（comken の ``site_for``）。 テストでは差し替える。
 SiteFor = Callable[[str], type]
 
-# ``_slim_report`` で残す ``reportMetadata`` のキー（ SOQL 組立に必要なものだけ ）。
+# ``_slim_report`` で残す ``reportMetadata`` のキー（SOQL 組立に必要なものだけ）。
 # SELECT・ WHERE・ 日付条件・ サブクエリ・ GROUP BY・ 集計・ ORDER BY・ 件数・
 # 独自グループ・ 独自計算式に必要な情報を網羅する。
 REPORT_METADATA_KEYS: tuple[str, ...] = (
@@ -159,9 +159,9 @@ class RelationRecord:
 
     parent: str  # 親オブジェクト名
     field: str  # 参照項目 API 名
-    relationship_name: str | None  # リレーション名（ ``fields[].relationshipName`` ）
+    relationship_name: str | None  # リレーション名（``fields[].relationshipName``）
     child: str  # 子オブジェクト名
-    depth: int  # 子の深さ（ 主 = 0 ）
+    depth: int  # 子の深さ（主 = 0）
 
 
 @dataclass(frozen=True)
@@ -170,12 +170,12 @@ class RowCheck:
 
     ``status`` は次のいずれか:
 
-    - ``超えている`` （ SalesforceReportTruncatedError ）
-    - ``超えていない`` （ 取得でき、 ``rows`` に行数 ）
-    - ``判定不可`` （ ``reason`` に理由 ）
-    - ``未実施`` （ ``ROW_LIMIT_ENABLED`` が ``False`` のとき ）
+    - ``超えている`` （SalesforceReportTruncatedError）
+    - ``超えていない`` （取得でき、 ``rows`` に行数）
+    - ``判定不可`` （``reason`` に理由）
+    - ``未実施`` （``ROW_LIMIT_ENABLED`` が ``False`` のとき）
 
-    行データ（ 値そのもの ） は **保持しない** 。 メモリ上でも行数だけ数え、
+    行データ（値そのもの） は **保持しない** 。 メモリ上でも行数だけ数え、
     CSV / ログ / 警告 / 例外メッセージに絶対に出さない。
     """
 
@@ -196,7 +196,7 @@ class ReportRecord:
     summary: str  # 概要
     report_id: str  # レポート ID
     url: str  # レポート URL
-    main_object: str | None  # 主オブジェクト名（ 取得失敗なら ``None`` ）
+    main_object: str | None  # 主オブジェクト名（取得失敗なら ``None``）
     #: レポート describe を ``_slim_report`` で絞った dict。 CSV 生成や
     #: 警告表 で読む。 落としたキー名はここに含めず ``_collect_dropped_keys``
     #: で別途取り出す。
@@ -215,7 +215,7 @@ class ReportRecord:
     )
     #: SOQL の下書き。 ``tables`` が組み立てて持たせ、 次段 （ AI に渡す
     #: Markdown / xlsx ） で読む。 ``None`` のときは下書き未組み立て
-    #: （ 主オブジェクト不明など、 組み立てそのものが走らなかったケース ）
+    #: （主オブジェクト不明など、 組み立てそのものが走らなかったケース）
     soql_draft: Any = dc_field(
         default=None,
     )
@@ -253,7 +253,7 @@ def run_fetch(
     そのまま ``run_tables`` に渡す。
 
     Args:
-        entries: 処理対象の管理表エントリ（ 既に ``--all`` 絞り込み済み ）。
+        entries: 処理対象の管理表エントリ（既に ``--all`` 絞り込み済み）。
         related_depth: 関連オブジェクトを掘る段数。 既定は ``RELATED_DEPTH``。
         related_max: 関連オブジェクトの合計件数上限。 既定は ``RELATED_MAX``。
         row_limit: True のとき 1 レポートごとに 2000 行チェックを実行する。
@@ -268,7 +268,7 @@ def run_fetch(
         describe_store: メモリ＋CSV の describe キャッシュ。 ``None`` のときは
             ``describe_csv_path`` から空ストアを作る。 同じ実行内で
             ``describe_object`` を 1 回にまとめるための入口。
-        refresh_set: 取り直し （ 一度 API で取り直して再試行 ） を実行済みの
+        refresh_set: 取り直し （一度 API で取り直して再試行） を実行済みの
             ``(org, object_lower)`` の集合。 ``None`` のときは内部で作る。
         column_fix_overrides: 人が ``列の直し.xlsx`` に入れた上書き。
             ``(主オブジェクト小文字, 列キー)`` → ``ColumnMapRow`` の dict。
@@ -296,7 +296,7 @@ def run_fetch(
     total = len(entries)
     for index, entry in enumerate(entries, start=1):
         if dry_run:
-            # dry-run のログは呼び出し側（ ``run.py`` / ``trial/`` ） が
+            # dry-run のログは呼び出し側（``run.py`` / ``trial/``） が
             # ``[dry-run]`` の形でまとめて出す。 ここでは何もしない
             outcomes.append(
                 FetchOutcome(
@@ -360,16 +360,16 @@ def run_fetch(
 
 # ── ログ ──────────────────────────────────────────────────────────────────
 # 1 レポート分の処理の各節目で INFO を 1 行ずつ出す。 INFO は節目と分岐の
-# 理由だけにとどめ、 値そのもの（ 個人情報の値など ） は絶対に出さない。
+# 理由だけにとどめ、 値そのもの（個人情報の値など） は絶対に出さない。
 # 失敗時の ERROR は ``run_fetch`` 側で出す。 フォールバック（ except で
 # 続行した箇所 ） の WARNING は ``_fetch_object_cached`` 側で出す。
-# ログメッセージは既存スタイル（ ``管理番号=%s 概要=%s 警告=%d 件`` ） に
+# ログメッセージは既存スタイル（``管理番号=%s 概要=%s 警告=%d 件``） に
 # そろえる。
 
 
 def _report_id_for_log(entry: MasterEntry) -> str:
     """``entry.url`` からログ用のレポート ID を取り出す。 URL が壊れていたら
-    ``"(URL不正)"`` を返す（ ``_fetch_one`` 側で個別失敗に縮退する前提）。"""
+    ``"(URL不正)"`` を返す（``_fetch_one`` 側で個別失敗に縮退する前提）。"""
     try:
         return report_id_from_url(entry.url)
     except SalesforceReportIDNotFoundError:
@@ -438,7 +438,7 @@ def _log_pii(pii_result: pii.ReportPIIResult) -> None:
 # ── slim 後のデータ型 ─────────────────────────────────────────────
 # SOQL 組立と ``tables`` / ``ai_markdown`` が読む範囲だけを型で示す。
 # SlimReport は ``reportMetadata`` / ``reportExtendedMetadata`` を持つ dict。
-# SlimObject は ``_slim_object`` の戻り値の構造（ TypedDict ） 。 フィールドは
+# SlimObject は ``_slim_object`` の戻り値の構造（TypedDict） 。 フィールドは
 # 全部 optional にして、 境界検証に失敗したときの欠落キーを表現する。
 SlimReport = dict[str, Any]
 
@@ -453,10 +453,10 @@ class SlimObject(TypedDict, total=False):
 
 
 def _slim_report(metadata: object) -> SlimReport:
-    """``client.report.describe()`` の戻り値を、 内側で検証せずに読める形に整える（ 境界 ）。
+    """``client.report.describe()`` の戻り値を、 内側で検証せずに読める形に整える（境界）。
 
     - 戻り値は **必ず** ``reportMetadata`` と ``reportExtendedMetadata`` の 2 つの
-      dict を持つ（ 入力が壊れていれば空の dict ）
+      dict を持つ（入力が壊れていれば空の dict）
     - ``reportMetadata``: ``REPORT_METADATA_KEYS`` にあるキーだけ残す。 リストとして
       読むキーは中身の型をそろえる（ ``detailColumns`` / ``aggregates`` は空でない
       str だけ、 ``reportFilters`` / ``groupingsDown`` / ``groupingsAcross`` /
@@ -464,7 +464,7 @@ def _slim_report(metadata: object) -> SlimReport:
       参照のまま
     - ``reportExtendedMetadata``: ``REPORT_EXTENDED_METADATA_KEYS`` の 3 キーだけを、
       ``{列キー: dict}`` の形で残す
-    - 落としたキー名は含めない（ ``_collect_dropped_keys()`` で取り出す ）
+    - 落としたキー名は含めない（``_collect_dropped_keys()`` で取り出す）
     - 入力の dict は書き換えない
     """
     source = metadata if isinstance(metadata, dict) else {}
@@ -483,7 +483,7 @@ def _slim_report(metadata: object) -> SlimReport:
         if key in slimmed_metadata:
             slimmed_metadata[key] = _text(slimmed_metadata[key])
     # 要素の中で文字列として読む値の型もそろえる。 絞り込みは dict でない要素も
-    # 空の dict にして位置を保つ（ 並び順が組立式の番号と対応しているため ）
+    # 空の dict にして位置を保つ（並び順が組立式の番号と対応しているため）
     for key, text_keys in _TEXT_KEYS_IN_LIST_ITEMS.items():
         if key not in slimmed_metadata:
             continue
@@ -508,9 +508,9 @@ def _slim_report(metadata: object) -> SlimReport:
             "rowLimit": _positive_int(top_rows.get("rowLimit")),
         }
 
-    # ``standardDateFilter`` が 「 実質指定なし 」 （ start / end が空で
+    # ``standardDateFilter`` が 「実質指定なし」 （ start / end が空で
     # durationValue が空か ``CUSTOM`` ） なら、 下流に空の日付フィルターが
-    # 流れないようにここでキーごと落とす。 内側では「 無い 」 ものとして
+    # 流れないようにここでキーごと落とす。 内側では「無い」 ものとして
     # 扱う前提で組まれているので、 個別ガードは足さない
     if _is_undated_filter(slimmed_metadata.get("standardDateFilter")):
         slimmed_metadata.pop("standardDateFilter", None)
@@ -528,13 +528,13 @@ def _slim_report(metadata: object) -> SlimReport:
 
 
 def _is_undated_filter(date_filter: object) -> bool:
-    """``standardDateFilter`` が 「 実質指定なし 」 なら True。
+    """``standardDateFilter`` が 「実質指定なし」 なら True。
 
     定義: ``startDate`` と ``endDate`` がどちらも空 （ ``None`` / 空文字 /
     空白のみ ） で、 かつ ``durationValue`` が空か ``CUSTOM`` （ 大文字小文字
-    無視 ） 。 相対期間 （ ``THIS_YEAR`` / ``LAST_N_DAYS:30`` 等 ） は
-    「 指定あり 」 なので False。 ``date_filter`` が dict で無いときも
-    True （ 「 無かった 」 ものとして扱う ）
+    無視 ） 。 相対期間 （``THIS_YEAR`` / ``LAST_N_DAYS:30`` 等） は
+    「指定あり」 なので False。 ``date_filter`` が dict で無いときも
+    True （「無かった」 ものとして扱う）
     """
     if not isinstance(date_filter, dict):
         return True
@@ -563,7 +563,7 @@ def _is_undated_filter(date_filter: object) -> bool:
 # 文字列としてそろえる単純な値のキー
 _TEXT_KEYS: tuple[str, ...] = ("id", "name", "reportFormat", "scope", "reportBooleanFilter")
 
-# リストの要素（ dict ）の中で、 文字列として読む値のキー
+# リストの要素（dict）の中で、 文字列として読む値のキー
 _TEXT_KEYS_IN_LIST_ITEMS: dict[str, tuple[str, ...]] = {
     "reportFilters": ("column", "operator"),
     "groupingsDown": ("name", "sortOrder", "dateGranularity"),
@@ -606,7 +606,7 @@ def _dict_list(value: object) -> list[dict[str, Any]]:
 
 
 def _positive_int(value: object) -> int | None:
-    """正の整数（ 数字だけの文字列も可 ）なら int、 それ以外（ bool を含む ）は None。"""
+    """正の整数（数字だけの文字列も可）なら int、 それ以外（bool を含む）は None。"""
     if isinstance(value, bool):
         return None
     if isinstance(value, str) and value.isdigit():
@@ -615,15 +615,15 @@ def _positive_int(value: object) -> int | None:
 
 
 def _text(value: object) -> str:
-    """str ならそのまま、 それ以外は空文字（ 境界の正規化用 ）。"""
+    """str ならそのまま、 それ以外は空文字（境界の正規化用）。"""
     return value if isinstance(value, str) else ""
 
 
 def _collect_dropped_keys(metadata: object) -> tuple[str, ...]:
     """``_slim_report`` と同じルールで、 落としたキー名を出現順で返す。
 
-    warnings に 「 レポート定義の中で使わなかったキー: ... 」 の 1 行を
-    出すために使う。 JSON 出力は一切しない （ CSV 化も不要、 ログは入力区 ）
+    warnings に 「レポート定義の中で使わなかったキー: ...」 の 1 行を
+    出すために使う。 JSON 出力は一切しない （CSV 化も不要、 ログは入力区）
     """
     buckets: list[str] = []
 
@@ -651,15 +651,15 @@ def _collect_dropped_keys(metadata: object) -> tuple[str, ...]:
 
 
 def _slim_object(describe: object) -> SlimObject:
-    """``describe_object()`` の戻り値を、 内側で検証せずに読める形に整える（ 境界 ）。
+    """``describe_object()`` の戻り値を、 内側で検証せずに読める形に整える（境界）。
 
     - 残す: ``name`` / ``label`` / ``custom`` / ``fields``（ ``childRelationships`` /
       ``recordTypeInfos`` などは落とす ）
     - ``fields`` の各項目は次の 9 キーに**必ず**この型でそろえる: ``name`` /
-      ``label`` / ``type`` / ``relationshipName``（ str。 無ければ空文字 ）、
-      ``custom`` / ``nameField``（ bool ）、 ``referenceTo``（ 空でない str の
-      リスト ）、 ``picklist``（ active な ``value`` を最大 30 件 ）、
-      ``picklistTotal``（ active な選択肢の総数 ）
+      ``label`` / ``type`` / ``relationshipName``（str。 無ければ空文字）、
+      ``custom`` / ``nameField``（bool）、 ``referenceTo``（ 空でない str の
+      リスト ）、 ``picklist``（active な ``value`` を最大 30 件）、
+      ``picklistTotal``（active な選択肢の総数）
     - 入力が壊れていれば空の値で返す。 入力の dict は書き換えない
     """
     source = describe if isinstance(describe, dict) else {}
@@ -714,9 +714,9 @@ def _check_row_count(client: Any, report_id: str) -> RowCheck:
     レポートも行を返すので、 describe の ``reportFormat`` に関わらず常に
     ``get`` を呼ぶ。
 
-    - ``SalesforceReportTruncatedError`` → ``超えている`` （ ``rows=None`` ）
-    - 正常終了 → ``超えていない`` （ ``rows=len(table)`` ）
-    - 形式エラー （ 結合レポート・明細の列が無いレポートなど ） → ``判定不可`` で
+    - ``SalesforceReportTruncatedError`` → ``超えている`` （``rows=None``）
+    - 正常終了 → ``超えていない`` （``rows=len(table)``）
+    - 形式エラー （結合レポート・明細の列が無いレポートなど） → ``判定不可`` で
       「この形式のレポートは取得できないため判定できません（結合レポート・明細の列が無いレポートなど）」
     - 401 / 403 由来の ``SalesforceError`` は呼び出し元に再送出（ レポート全体を
       失敗扱いにする ）
@@ -881,9 +881,9 @@ def _fetch_one(
 class _FetchState:
     """``_fetch_one`` の ``with site_class()`` 内で共有する作業用状態。
 
-    dataclass は「 入力が複雑 」 とは言えないが、 多くの変数を 1 つの関数に
+    dataclass は「入力が複雑」 とは言えないが、 多くの変数を 1 つの関数に
     持ち回さずに済むようにするためだけに使っている。 dataclass のフィールドは
-    ``_fetch_one`` 内 ( 関数引数として ) でのみ触る。
+    ``_fetch_one`` 内 (関数引数として) でのみ触る。
     """
 
     objects: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
@@ -995,7 +995,7 @@ def _run_within_site(
             csv_used_keys=state.csv_used_keys,
         )
 
-    # 列対応表を組み立てる ( 主が取れるときは関連オブジェクト収集もここで行う )
+    # 列対応表を組み立てる (主が取れるときは関連オブジェクト収集もここで行う)
     column_map = _build_initial_column_map(
         client=client,
         org=org,
@@ -1046,7 +1046,7 @@ def _build_initial_column_map(
     main_object_name = state.main_object_name
     main_describe = state.main_describe
     if not (main_object_name and main_describe is not None):
-        # 主オブジェクトが取れなかったときの列対応表（ 全列が理由つきの (不明) ）
+        # 主オブジェクトが取れなかったときの列対応表（全列が理由つきの (不明)）
         return mapping.build_column_map(
             state.slim_report,
             main_describe,
@@ -1056,7 +1056,7 @@ def _build_initial_column_map(
             main_object=main_object_name,
             fetch_object=fetcher,
         )
-    # 関連オブジェクトを参照先から幅優先で掘る（ ``RELATED_DEPTH`` 段まで ）
+    # 関連オブジェクトを参照先から幅優先で掘る（``RELATED_DEPTH`` 段まで）
     new_nodes, new_relations, skipped_names = _collect_related_objects(
         main_describe,
         fetcher=lambda name: _fetch_object_cached(
@@ -1080,7 +1080,7 @@ def _build_initial_column_map(
         if node.describe is not None:
             state.objects[node.name] = node.describe
             state.related_describes[node.name] = node.describe
-    # 列対応表を取り直す（ 関連オブジェクトが取れてから解く ）
+    # 列対応表を取り直す（関連オブジェクトが取れてから解く）
     return mapping.build_column_map(
         state.slim_report,
         main_describe,
@@ -1131,7 +1131,7 @@ def _refresh_unresolved_columns(
     )
     if refreshed_main is not None:
         state.main_describe = refreshed_main
-    # 列対応表を取り直す（ 取り直し後 ）
+    # 列対応表を取り直す（取り直し後）
     state.column_map = mapping.build_column_map(
         state.slim_report,
         state.main_describe,
@@ -1196,7 +1196,7 @@ def _build_fetch_outcome(
     pii_keywords: tuple[str, ...],
     pii_person_objects: tuple[str, ...],
 ) -> FetchOutcome:
-    """``_fetch_one`` の終端処理 ( PII / 警告 / SOQL / FetchOutcome 組み立て ) を行う。"""
+    """``_fetch_one`` の終端処理 (PII / 警告 / SOQL / FetchOutcome 組み立て) を行う。"""
     main_object_name = state.main_object_name
     objects = state.objects
     main_object = main_object_name if main_object_name and main_object_name in objects else None
@@ -1276,51 +1276,51 @@ def _collect_related_objects(
 ) -> tuple[list[RelatedNode], list[RelationRecord], list[str]]:
     """主オブジェクトから幅優先で関連オブジェクトを掘る。
 
-    BFS は **「 どのオブジェクトを取るか（ nodes と段 ） 」** だけを決め、
+    BFS は **「どのオブジェクトを取るか（nodes と段）」** だけを決め、
     ``visited`` に主オブジェクトを最初から入れる。 これで BFS 中に主
     オブジェクトが ``nodes`` に入らず、 describe の再取得も発生しない。
     ``RELATED_DEPTH`` 段まで掘り、 各段で frontier を全部消費して次の
     frontier を作る。 重複は **見つけた時点で** ``visited`` に入れ、
-    ``RELATED_MAX`` の制限も frontier を作る段で「 候補のまま 」 打ち切る。
+    ``RELATED_MAX`` の制限も frontier を作る段で「候補のまま」 打ち切る。
     打ち切られた候補は ``visited`` に既に入っているので同じ実行内では
-    再試行しない（ より浅い経路の 1 本だけが残る ）。
+    再試行しない（より浅い経路の 1 本だけが残る）。
 
     ``relations`` は BFS が **終わったあと** に別の処理で作る。 主オブジェクト
-    と ``nodes`` の ``fields`` を主→ ``nodes`` の順（ ``nodes`` は段順 ） に
-    たどり、 参照先が「 取れたオブジェクト（ 主を含む ）」 であれば全部
-    1 行にする。 行の ``段`` は **子の段** （ 主 = 0 ）。 並びは「 浅い親
-    （ 主→段順 ） → 同じ親内では項目の出現順 」。 ポリモーフィック参照は
+    と ``nodes`` の ``fields`` を主→ ``nodes`` の順（``nodes`` は段順） に
+    たどり、 参照先が「取れたオブジェクト（主を含む）」 であれば全部
+    1 行にする。 行の ``段`` は **子の段** （主 = 0）。 並びは「 浅い親
+    （主→段順） → 同じ親内では項目の出現順 」。 ポリモーフィック参照は
     ``referenceTo`` のエントリごとに 1 行。 同じ ``(親, 項目, 子)`` は 1 行。
-    取り損ねた子（ 上限で打ち切られた子・ describe に失敗した子 ） は
+    取り損ねた子（上限で打ち切られた子・ describe に失敗した子） は
     親にも子にも行に出ない。 主オブジェクトへの参照（ 例: Account.TaskId
-    → Task ） や自己参照（ 例: Account.ParentId → Account ） も **出る** 。
+    → Task ） や自己参照（例: Account.ParentId → Account） も **出る** 。
 
     戻り値の ``skipped`` は **重複を除いた** 出現順のリスト。 同じ名前が
-    複数候補として出ても 1 回しか数えない。 警告文の「 N 件」 もこの
+    複数候補として出ても 1 回しか数えない。 警告文の「N 件」 もこの
     重複を除いた数。
 
     Args:
-        main_describe: 主オブジェクトの describe（ slim 前 ）。
+        main_describe: 主オブジェクトの describe（slim 前）。
         fetcher: オブジェクト名を取り、 ``describe`` を返す関数。 取れなかった
-            ／ 失敗したときは ``None`` を返す （ 警告文は呼び出し側で積む ）。
+            ／ 失敗したときは ``None`` を返す （警告文は呼び出し側で積む）。
             同じ名前の 2 度目の呼び出しはキャッシュが効いて ``None`` か
-            ``describe`` がそのまま返る （ HTTP を 2 回打たない ） 前提。
-        related_depth: 何段目まで掘るか。 ``1`` なら今と同じ（ 1 段だけ ）。
+            ``describe`` がそのまま返る （HTTP を 2 回打たない） 前提。
+        related_depth: 何段目まで掘るか。 ``1`` なら今と同じ（1 段だけ）。
         related_max: 全体で取る関連オブジェクト数の上限。 全段の合計が
             ``related_max`` に達したら打ち切る。
 
     Returns:
         ``(nodes, relations, skipped)``
         ``nodes``: 深さごとに並んだ ``RelatedNode`` のリスト（ **主オブジェクト
-            自身は含まない** ）。 出現順は「 浅い親から先 」 。 ``describe``
+            自身は含まない** ）。 出現順は「浅い親から先」 。 ``describe``
             は ``fetcher`` で埋めた状態 （ ``fetcher`` が ``None`` を返した
             ものは ``nodes`` に含めない — 上限内に収まったが describe 取得
             に失敗した分 ）。
         ``relations``: **取れたオブジェクト同士** で張られた親→子の参照
-            リスト。 主＋関連オブジェクトが「 お互いに参照している 」 行を
-            全部含む（ 主オブジェクトへの参照、 自己参照も出る ）。 並びは
-            「 浅い親（ 主→段順 ） → 同じ親内では項目の出現順 」 。 行の
-            ``段`` は **子の段** （ 主 = 0 ）。 ポリモーフィック参照は
+            リスト。 主＋関連オブジェクトが「お互いに参照している」 行を
+            全部含む（主オブジェクトへの参照、 自己参照も出る）。 並びは
+            「浅い親（主→段順） → 同じ親内では項目の出現順」 。 行の
+            ``段`` は **子の段** （主 = 0）。 ポリモーフィック参照は
             ``referenceTo`` のエントリごとに 1 行。 同じ
             ``(親, 項目, 子)`` は 1 行。 取り損ねた子は親にも子にも行に
             出ない。
@@ -1339,7 +1339,7 @@ def _collect_related_objects(
     nodes, skipped = _bfs_related_objects(
         main_name, main_describe, fetcher, related_depth, related_max
     )
-    # skipped の重複を除く （ 出現順を保つ ）
+    # skipped の重複を除く （出現順を保つ）
     skipped = _dedup_preserve_order(skipped)
 
     relations = _collect_relations(main_name, main_describe, nodes)
@@ -1356,9 +1356,9 @@ def _bfs_related_objects(
     """主オブジェクトを起点に幅優先で関連オブジェクトを掘る。
 
     段ごとに frontier を全部消費して次の frontier を作り、 ``related_max``
-    を超えた分は打ち切る。 戻り値の ``skipped`` は重複を除く前 ( 出現順 ) 。
+    を超えた分は打ち切る。 戻り値の ``skipped`` は重複を除く前 (出現順) 。
     """
-    # 主オブジェクトは「 最初から取れた 」 ものとして ``visited`` に入れて
+    # 主オブジェクトは「最初から取れた」 ものとして ``visited`` に入れて
     # おく。 これで BFS 中に主オブジェクトが ``nodes`` に入らず、 describe
     # の再取得も発生しない。
     visited: set[str] = {main_name}
@@ -1392,10 +1392,10 @@ def _collect_candidates(
     """``frontier`` の各親から、 ``visited`` に無い参照先を集めて並べる。
 
     形式は ``(親, 項目, リレーション名, 子)`` 。 並び順は親順、 同一親内では
-    ``fields`` の出現順 ( ``_related_ref_pairs`` に従う ) 。
+    ``fields`` の出現順 (``_related_ref_pairs`` に従う) 。
 
     重複ルール: 過去段で ``visited`` 済みの子は再登録しない。 同じ
-    (親, 項目, 子) は 1 度だけ。 別親から同じ子を指している場合は別行 ( 複数行可 ) 。
+    (親, 項目, 子) は 1 度だけ。 別親から同じ子を指している場合は別行 (複数行可) 。
     """
     candidates: list[tuple[str, str, str, str]] = []
     seen_keys: set[tuple[str, str, str]] = set()
@@ -1419,7 +1419,7 @@ def _apply_related_max(
     """``related_max`` を超える分を ``skipped`` に移し、 candidates を切り詰める。
 
     既に ``len(nodes) >= related_max`` のときは残り全部を skipped にして
-    candidates を空にする ( この段は探索しない ) 。
+    candidates を空にする (この段は探索しない) 。
     """
     remaining = related_max - len(nodes)
     if remaining <= 0:
@@ -1440,7 +1440,7 @@ def _fetch_candidates(
 ) -> tuple[list[tuple[str, dict[str, Any]]], list[RelatedNode]]:
     """``candidates`` の子オブジェクトを ``fetcher`` で取り、 ``nodes`` と次の frontier を作る。
 
-    ``visited`` は取得成功／失敗に関わらず更新する ( 同じ名前は再試行しない ) 。
+    ``visited`` は取得成功／失敗に関わらず更新する (同じ名前は再試行しない) 。
     同じ子が複数の親候補から重複して ``nodes`` と ``next_frontier`` に追加
     されるのを防ぐ。
     """
@@ -1450,7 +1450,7 @@ def _fetch_candidates(
         describe = fetcher(ref_name)
         visited.add(ref_name)
         if describe is None:
-            # 取れなかった。 ``visited`` は入れておく ( 再試行しない ) 。
+            # 取れなかった。 ``visited`` は入れておく (再試行しない) 。
             # ただし ``nodes`` にも追加しないし、 ``relations`` にも行を
             # 出さない。
             continue
@@ -1468,8 +1468,8 @@ def _collect_relations(
 ) -> list[RelationRecord]:
     """主＋関連オブジェクト同士の参照 ``RelationRecord`` 一覧を作る。
 
-    主→ nodes の順 ( nodes は段順 ) で ``fields`` をたどり、 参照先が「 取れた
-    オブジェクト ( 主を含む ) 」 なら 1 行ずつ出す。 同じ ``(親, 項目, 子)``
+    主→ nodes の順 (nodes は段順) で ``fields`` をたどり、 参照先が「 取れた
+    オブジェクト (主を含む) 」 なら 1 行ずつ出す。 同じ ``(親, 項目, 子)``
     は 1 行。 取り損ねた子は親にも子にも行に出ない。
     """
     obtained: set[str] = {main_name} | {n.name for n in nodes}
@@ -1523,7 +1523,7 @@ def _related_ref_pairs(describe: dict[str, Any]) -> list[tuple[str, str, str]]:
     """``describe`` の ``fields`` から ``(項目名, リレーション名, 子名)`` の組を集める。
 
     ``relationshipName`` と ``referenceTo`` がある項目だけ。 ポリモーフィックなら
-    ``referenceTo`` のエントリごとに展開（ ``relationshipName`` は同じ ）。
+    ``referenceTo`` のエントリごとに展開（``relationshipName`` は同じ）。
     出現順を保ち、 重複は呼び出し側で ``visited`` により落とす。
     """
     return [
@@ -1545,14 +1545,14 @@ def _make_overrides_fetcher(
     """列キーのたどりと ``apply_overrides`` に渡す fetcher を作る。
 
     引数 ``name`` のオブジェクトを取りに行くが、 自前の WARNING は出さない
-    （ ``apply_overrides`` が 「 たどれません 」 文に整形して出す ）。 401
+    （``apply_overrides`` が 「たどれません」 文に整形して出す）。 401
     と 403 はそのまま上位へ送出 （ ``apply_overrides`` を経由して
     ``_fetch_one`` の ``except`` で拾われ、 レポート全体が失敗扱いになる ） 。
 
     取得順序は ``_fetch_object_cached`` と同じ:
 
-    1. ``objects`` に有ればそれを返す （ API を叩かない ）
-    2. ``DescribeStore`` （ メモリ → CSV ） を見る
+    1. ``objects`` に有ればそれを返す （API を叩かない）
+    2. ``DescribeStore`` （メモリ → CSV） を見る
     3. 無ければ API を呼ぶ。 成功時はメモリと CSV に保存
 
     取れた describe は ``_slim_object`` で整えて ``objects[name]`` に入れる。
@@ -1582,7 +1582,7 @@ def _make_overrides_fetcher(
                 # 401 / 403 は上位へ送出してレポート全体を失敗扱いにする
                 raise
             # その他: 失敗をメモリにだけ覚えて None を返す。 警告は
-            # ``apply_overrides`` 側で 「 たどれません 」 文に変換する
+            # ``apply_overrides`` 側で 「たどれません」 文に変換する
             store.record_api_failure(org, name, f"HTTP {exc.status_code}: {exc.detail}")
             return None
         except ValueError as exc:
@@ -1603,15 +1603,15 @@ def _fetch_object_cached(
     warnings: list[str],
     csv_used_keys: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    """オブジェクトの describe をストア（ メモリ → CSV ）か API から取り、 整えて返す。
+    """オブジェクトの describe をストア（メモリ → CSV）か API から取り、 整えて返す。
 
     戻り値:
         成功時は ``_slim_object`` で整えた describe。 失敗時（ HTTP エラー /
         ``ValueError`` ）は ``None``。 401 / 403 は ``SalesforceRequestError`` を
-        そのまま上位へ送出する（ 呼び出し側で ID 全体を失敗扱い ）。 ストアには
-        生の describe を書く（ 項目定義.csv の列のため ）。
+        そのまま上位へ送出する（呼び出し側で ID 全体を失敗扱い）。 ストアには
+        生の describe を書く（項目定義.csv の列のため）。
 
-    ``csv_used_keys`` を渡すと、 CSV から読んだ （ 今回 API で取ったものではない ）
+    ``csv_used_keys`` を渡すと、 CSV から読んだ （今回 API で取ったものではない）
     ``(org, object_lower)`` のキーをそこに追加する。 取り直しの判定に使う。
     """
     cached = store.lookup(org, name)
@@ -1650,7 +1650,7 @@ def _has_unresolved_columns(
     """``column_map`` に ``対応フィールドAPI名 == "(不明)"`` の行が **1 つでも**
     あるかを返す。
 
-    ``object_reason`` が ``None`` でないとき （ 主オブジェクト不明・ describe 失敗 ）
+    ``object_reason`` が ``None`` でないとき （主オブジェクト不明・ describe 失敗）
     は、そのレポートの主オブジェクトはそもそも API で取れていないので、
     取り直しの対象外とする。
     """
@@ -1667,7 +1667,7 @@ def _object_key(org: str, object_name: str) -> tuple[str, str]:
 
 def _api_name_from_store(store: DescribeStore, key: tuple[str, str]) -> str | None:
     """``(org, object_lower)`` に対応する describe がストアにあれば ``name`` を返す。
-    取り直しの API 呼び出しで正しい API 名 （ 大文字小文字そのまま ） を渡すために必要。
+    取り直しの API 呼び出しで正しい API 名 （大文字小文字そのまま） を渡すために必要。
     """
     entry = store.memory_cache.get(key) or {}
     describe = entry.get("describe") or store.csv_index.get(key) or {}
@@ -1681,7 +1681,7 @@ def _choose_main(
     store: DescribeStore,
     warnings: list[str],
 ) -> tuple[str | None, dict[str, Any] | None, str | None, set[tuple[str, str]]]:
-    """``metadata`` から主オブジェクトを決める （ 2 段: レポートタイプ → 列キー先頭 ）。
+    """``metadata`` から主オブジェクトを決める （2 段: レポートタイプ → 列キー先頭）。
 
     ``reportType.type`` から候補が取れなかったとき （ カスタムレポート
     タイプのレポートタイプ自体が主オブジェクトの API 名でないケース ） に
@@ -1703,7 +1703,7 @@ def _choose_main(
     側で ``try`` している前提）。
 
     (a) の ``describe_object`` が 404 / ValueError などで失敗したときの
-    WARNING は、 (b) が **成功する** なら出さない ( 正常な経路として扱う ) 。
+    WARNING は、 (b) が **成功する** なら出さない (正常な経路として扱う) 。
     (a) (b) ともに全滅したときは (a) の WARNING も積む。
 
     Returns:
@@ -1716,7 +1716,7 @@ def _choose_main(
         - ``reason``: ``main_describe`` が ``None`` のときの理由（ ``None``
           なら取得成功）
         - ``csv_used_keys``: このレポートで参照されたオブジェクトのうち、
-          **CSV から読んだもの** （ 今回 API で取ったものではない ） の
+          **CSV から読んだもの** （今回 API で取ったものではない） の
           ``(org, object_lower)`` の集合。 取り直し判定用
     """
     object_name = (slim_report["reportMetadata"].get("reportType") or {}).get("type", "")
@@ -1724,7 +1724,7 @@ def _choose_main(
     csv_used_keys: set[tuple[str, str]] = set()
 
     # (a) ``reportType.type`` から候補。 失敗 WARNING は一時バッファに
-    # 溜め、 (b) が成功したら捨てる ( 正常な経路扱い ) 。
+    # 溜め、 (b) が成功したら捨てる (正常な経路扱い) 。
     candidates_a = mapping.report_type_candidates(object_name)
     a_warnings: list[str] = []
     for candidate in candidates_a:
@@ -1732,7 +1732,7 @@ def _choose_main(
         if describe is not None:
             return candidate, describe, None, csv_used_keys
 
-    # (b) 列キーの先頭から候補。 こちらは「 正常な経路 」 なので WARNING を
+    # (b) 列キーの先頭から候補。 こちらは「正常な経路」 なので WARNING を
     # 直接 ``warnings`` に積む。 ただし (b) で出た WARNING は (a) が全滅
     # してもそのまま残す。
     candidates_b = _extract_column_key_prefix_candidates(slim_report)
@@ -1756,7 +1756,7 @@ def _extract_column_key_prefix_candidates(
     limit: int = _MAIN_OBJECT_PREFIX_LIMIT,
 ) -> list[str]:
     """``metadata`` の列キーのうち ``.`` を含むものについて最初の ``.`` よ
-    り前を集計し、 多い順（ 同数は最初に出た順 ） で ``limit`` 個返す。
+    り前を集計し、 多い順（同数は最初に出た順） で ``limit`` 個返す。
 
     列キーは ``mapping.collect_describable_columns`` が集める全ソース
     （ ``detailColumns`` / ``reportFilters`` / ``groupingsDown`` /
@@ -1800,9 +1800,9 @@ def _main_object_failure_reason(
     """``_choose_main`` の (a) / (b) が両方全滅したときの理由を組み立てる。
 
     既存 ``mapping.candidate_failure_reason`` のスタイルを保ちつつ、 両方
-    のリストを 「 ``(a)`` / ``(b)`` 」 と分かる形で添える。 ``(a)`` も
-    ``(b)`` も無い（ ``reportType.type`` が空で列キーにも ``.`` が無い）
-    ときは、 「 主オブジェクト候補を抽出できなかった 」 の旨を返す。
+    のリストを 「``(a)`` / ``(b)``」 と分かる形で添える。 ``(a)`` も
+    ``(b)`` も無い（``reportType.type`` が空で列キーにも ``.`` が無い）
+    ときは、 「主オブジェクト候補を抽出できなかった」 の旨を返す。
     """
     if candidates_a and candidates_b:
         a_text = ", ".join(repr(c) for c in candidates_a)

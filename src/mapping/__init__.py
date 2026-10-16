@@ -12,7 +12,7 @@ describe と relations を受け取り、 関連オブジェクトを跨ぐ列�
 主オブジェクトをたどって SOQL 列名を決める。 カスタムレポートタイプで
 人が主オブジェクトを知らなくても SOQL 組立に必要な列名を引ける。
 
-ファイルを ``src.mapping`` パッケージに分割 （ 手順ごとにサブモジュール ） 。
+ファイルを ``src.mapping`` パッケージに分割 （手順ごとにサブモジュール） 。
 公開 API は再エクスポートしているので、
 ``from src.mapping import X`` の既存の import 先は全てそのまま動く。
 """
@@ -20,7 +20,7 @@ describe と relations を受け取り、 関連オブジェクトを跨ぐ列�
 from __future__ import annotations
 
 # 公開 API を再エクスポートする。 既存の ``from src.mapping import X`` を
-# 壊さないことが最重要 （ ``test_mapping.py`` などで 直接 import される ）
+# 壊さないことが最重要 （``test_mapping.py`` などで 直接 import される）
 from src.mapping.chains import _ChainCandidate, build_relation_chains
 from src.mapping.column_key import (
     COLUMN_KEY_PATH_MAX_DEPTH,
@@ -67,6 +67,6 @@ __all__ = [
     "_resolve_column_key_to_soql",
 ]
 
-# 古い名前 （ テスト等で import されている可能性がある ） を `_` 接頭辞なしで
+# 古い名前 （テスト等で import されている可能性がある） を `_` 接頭辞なしで
 # 公開する互換用エイリアス。 既存挙動を変えないため、 リネームはしない。
 _resolve_column_key_to_soql = resolve_column_key_to_soql

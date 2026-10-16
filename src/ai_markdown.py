@@ -1,20 +1,20 @@
 r"""1 レポート 1 つの Markdown 資料を組み立て、 ``OUTPUT_DIR/SOQL資料/`` に書く。
 
 SOQL は人が AI に組ませる方針で、 AI に渡すのは Markdown の方が読みやすい。
-そこで既存の ``SOQL調査.xlsx`` （ 人が一覧で見る ） と ``列名の対応.csv``
-（ ダウンローダー用 ） に加え、 レポート 1 本につき 1 つの Markdown を
+そこで既存の ``SOQL調査.xlsx`` （人が一覧で見る） と ``列名の対応.csv``
+（ダウンローダー用） に加え、 レポート 1 本につき 1 つの Markdown を
 ``OUTPUT_DIR/SOQL資料/{管理番号}.md`` に書く。
 
-- 中身は ``build_markdown()`` （ 純粋関数: ``ReportRecord`` → 文字列 ）。
+- 中身は ``build_markdown()`` （純粋関数: ``ReportRecord`` → 文字列）。
   ``ReportRecord`` の中身だけを使い、 Salesforce には繋がない
-- 書き出しは ``write_ai_markdowns()`` （ record 群 → ファイル ） と
-  ``write_ai_markdown()`` （ 1 record ） 。 エンコードは UTF-8、 改行は LF、
+- 書き出しは ``write_ai_markdowns()`` （record 群 → ファイル） と
+  ``write_ai_markdown()`` （1 record） 。 エンコードは UTF-8、 改行は LF、
   BOM なし
-- 毎回「 今回取れたレポートの分だけ 」 書き直す。 失敗したレポートの古い
+- 毎回「今回取れたレポートの分だけ」 書き直す。 失敗したレポートの古い
   ファイルや、 今回取れなかった管理番号のファイルは消さない
 - 個人情報・レポート行データは、 列の定義・条件の値だけしか載せない
-  （ 絞り込みの値もレポート定義に書かれた文字列をそのまま出す ）
-- Markdown 表のセルは ``|`` と改行をエスケープ （ ``\|`` / 空白 ） する
+  （絞り込みの値もレポート定義に書かれた文字列をそのまま出す）
+- Markdown 表のセルは ``|`` と改行をエスケープ （``\|`` / 空白） する
 """
 
 from __future__ import annotations
@@ -39,10 +39,10 @@ MARKDOWN_SUBDIR = "SOQL資料"
 _ENCODING = "utf-8"
 _NEWLINE = "\n"
 
-# 絞り込み「 集計レポート 」 判定に使うレポート形式
+# 絞り込み「集計レポート」 判定に使うレポート形式
 _AGGREGATE_FORMATS: frozenset[str] = frozenset({"SUMMARY", "MATRIX"})
 
-# ``scope`` の 「 自分のレコード 」 判定に使う値
+# ``scope`` の 「自分のレコード」 判定に使う値
 _SCOPE_MY = "my"
 
 
@@ -56,11 +56,11 @@ def write_ai_markdowns(
     """``records`` の各 ``ReportRecord`` について
     ``output_dir/SOQL資料/{key}.md`` を書く。
 
-    ``diagrams`` は ``{主オブジェクト: Diagram}``（ 表を作るときに 1 回組んだもの ）。
+    ``diagrams`` は ``{主オブジェクト: Diagram}``（表を作るときに 1 回組んだもの）。
     渡せばレポートごとに関係図を組み直さない。
 
-    ``record`` が ``None`` のもの （ 失敗したもの ） は書かない。 既存の
-    ファイル （ 今回取れなかった管理番号のファイルや、 古い失敗ファイル ） は
+    ``record`` が ``None`` のもの （失敗したもの） は書かない。 既存の
+    ファイル （今回取れなかった管理番号のファイルや、 古い失敗ファイル） は
     そのまま残す。 書き出し先ディレクトリが無ければ作る
     """
     target_dir = output_dir / MARKDOWN_SUBDIR
@@ -72,7 +72,7 @@ def write_ai_markdowns(
         if path is not None:
             wrote.append(path)
     if wrote:
-        logger.info("Markdown を書き出し: %s（ %d 件 ）", target_dir, len(wrote))
+        logger.info("Markdown を書き出し: %s（%d 件）", target_dir, len(wrote))
     return tuple(wrote)
 
 
@@ -99,7 +99,7 @@ def build_markdown(
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
     diagram: relation_diagram.Diagram | None = None,
 ) -> str:
-    """1 record ぶんの Markdown 文字列を組み立てる （ 純粋関数 ） 。
+    """1 record ぶんの Markdown 文字列を組み立てる （純粋関数） 。
 
     ``record`` は ``ReportRecord`` 互換 （ ``key`` / ``summary`` /
     ``report_id`` / ``report`` / ``main_object`` / ``column_map`` /
@@ -110,7 +110,7 @@ def build_markdown(
 
     ``similar_lookup`` は ``{管理番号: (group_number, base_key, integration)}`` 。
     ``tables.run_tables`` が ``similar.find_similar_groups`` の結果から組み立てる。
-    ``None`` のときは 「 似たレポート 」 セクションは 「 なし 」 だけ出す
+    ``None`` のときは 「似たレポート」 セクションは 「なし」 だけ出す
     """
     metadata = _report_metadata(record)
     fmt = metadata.get("reportFormat", "")
@@ -128,7 +128,7 @@ def build_markdown(
     parts.append(_title(record))
     parts.append("")
 
-    # ヘッダー （ 5 行のメタ ）
+    # ヘッダー （5 行のメタ）
     parts.append(f"- レポートID: {record.report_id}")
     parts.append(f"- 主オブジェクト: {_format_main_object(record)}")
     parts.append(f"- レポート形式: {fmt}")
@@ -206,7 +206,7 @@ def build_markdown(
         else relation_diagram.render_inline_tree_for_record(record)
     )
     if diagram_tree:
-        parts.append("関係図 （ Mermaid ）: ")
+        parts.append("関係図 （Mermaid）: ")
         main_object = record.main_object or ""
         if main_object:
             parts.append(f"../関係図/{main_object}.md")
@@ -228,7 +228,7 @@ def build_markdown(
         parts.append("")
         parts.extend(notes)
 
-    # 末尾の "\n" を入れない（ 1 ファイル LF 1 個で終端 ）
+    # 末尾の "\n" を入れない（1 ファイル LF 1 個で終端）
     return "\n".join(parts)
 
 
@@ -255,9 +255,9 @@ def _format_main_object(record: ReportRecord) -> str:
     """主オブジェクトが取れなかったときは、 警告の先頭から理由を拾う。
 
     ``fetch._choose_main`` が ``candidate_failure_reason()`` で作った
-    「 レポートタイプ '...' から主オブジェクト候補 ... 」 の文が
+    「レポートタイプ '...' から主オブジェクト候補 ...」 の文が
     ``warnings`` に乗っているので、 その 1 行を丸ごと理由として添える。
-    該当が無ければ 「 不明 」 だけにする
+    該当が無ければ 「不明」 だけにする
     """
     main_object = record.main_object
     if main_object:
@@ -269,7 +269,7 @@ def _format_main_object(record: ReportRecord) -> str:
 
 
 def _format_row_check(record: ReportRecord) -> str:
-    """``row_check`` の判定を 「 超えていない（N 件 ） 」 の形に整える。
+    """``row_check`` の判定を 「超えていない（N 件）」 の形に整える。
 
     ``status`` だけだと行数が分からないので、 AI が WHERE を組み立てる
     手掛かりになるよう件数も添える
@@ -300,8 +300,8 @@ def _build_correspondence_rows(
 ) -> list[list[str]]:
     """``detailColumns`` の順に ``(表示名, 使う SOQL 列名, どこから, 候補)`` の行を作る。
 
-    使う SOQL 列名はそのまま SOQL に貼れる形 （ ``Owner.Name`` のようなドット記法 ）。
-    どこから・候補は xlsx の列の対応シートと同じ判定（ ``mapping.column_source`` ）。
+    使う SOQL 列名はそのまま SOQL に貼れる形 （``Owner.Name`` のようなドット記法）。
+    どこから・候補は xlsx の列の対応シートと同じ判定（``mapping.column_source``）。
     """
     rows: list[list[str]] = []
     for col_key in detail_columns:
@@ -330,8 +330,8 @@ def _format_similar(
 ) -> str:
     """``similar_lookup`` のこの record 分の情報を 1 行にまとめる。
 
-    ``tables.run_tables`` が出す形式に合わせて、 「 グループN: ... 」 の
-    文字列を返す。 ``key`` が無い/該当が無いときは 「 なし 」 にする
+    ``tables.run_tables`` が出す形式に合わせて、 「グループN: ...」 の
+    文字列を返す。 ``key`` が無い/該当が無いときは 「なし」 にする
     """
     if not key or similar_lookup is None:
         return "なし"
@@ -362,7 +362,7 @@ def _build_filter_section(
     """絞り込みセクションの本文を組み立てる。
 
     組立式 → 絞り込みテーブル → 日付 / 標準 / クロス / 上位N の箇条書き、 の順。
-    何も無いときは 「 なし 」 1 行だけにする
+    何も無いときは 「なし」 1 行だけにする
     """
     lines: list[str] = []
     bool_filter = metadata.get("reportBooleanFilter", "")
@@ -410,8 +410,8 @@ def _build_filter_rows(
 def _build_filter_extras(metadata: dict[str, Any]) -> list[str]:
     """絞り込みのうちテーブル外の日付・標準フィルタ・クロス・上位N を箇条書きで出す。
 
-    該当が無い項目は出さない （ 1 行も書かない ）。 呼び出し側で
-    「 何も無いときは 『 なし 』 」 を決める
+    該当が無い項目は出さない （1 行も書かない）。 呼び出し側で
+    「何も無いときは 『 なし 』」 を決める
     """
     lines: list[str] = []
 
@@ -479,7 +479,7 @@ def _build_sort_entries(sort_by: list[dict[str, Any]]) -> list[str]:
 def _build_grouping_aggregate_entries(metadata: dict[str, Any]) -> list[str]:
     """SUMMARY / MATRIX の行グループ・列グループ・集計・バケット・独自計算式を箇条書きにする。
 
-    0 件のときは空リストを返す （ 呼び出し側で 「 SOQL では ... 」 だけにする ）
+    0 件のときは空リストを返す （呼び出し側で 「SOQL では ...」 だけにする）
     """
     lines: list[str] = []
 
@@ -615,7 +615,7 @@ def _walk_chain(
 ) -> list[tuple[str, str]] | None:
     """``main_object`` から ``rel_names`` の順に hop した ``[(rel_name, child), ...]`` を返す。
 
-    1 段でもリレーションが見つからなければ ``None`` （ 経路は採用しない ）
+    1 段でもリレーションが見つからなければ ``None`` （経路は採用しない）
     """
     chain: list[tuple[str, str]] = []
     current = main_object
@@ -638,9 +638,9 @@ def _walk_chain(
 def _build_soql_section(record: ReportRecord) -> list[str]:
     """``record.soql_draft`` から ``## SOQL の下書き`` セクションを組み立てる。
 
-    AI が下書きを直しやすいように、 状態・SOQL本文（ 印付き ） ・作れなかった
+    AI が下書きを直しやすいように、 状態・SOQL本文（印付き） ・作れなかった
     部分・要確認をそのまま載せる。 ``soql_draft`` が無い record は空リスト
-    （ セクションを出さない ） 。 ``作れず`` は本文が無いので状態・行だけ。
+    （セクションを出さない） 。 ``作れず`` は本文が無いので状態・行だけ。
     """
     draft = record.soql_draft
     if draft is None:
@@ -659,7 +659,7 @@ def _build_soql_section(record: ReportRecord) -> list[str]:
             "作れなかった部分は資料から補ってください。"
         )
     else:
-        # ``作れず`` は本文が無いので、 「 なし」 の代わりに理由を残す
+        # ``作れず`` は本文が無いので、 「なし」 の代わりに理由を残す
         lines.append("SOQL: なし")
     lines.append("")
 
@@ -714,7 +714,7 @@ def _build_notes(record: ReportRecord, metadata: dict[str, Any]) -> list[str]:
 
 
 def _report_metadata(record: ReportRecord) -> dict[str, Any]:
-    """``record.report.reportMetadata``（ 入口で形をそろえてある ）を取り出す。"""
+    """``record.report.reportMetadata``（入口で形をそろえてある）を取り出す。"""
     return record.report["reportMetadata"]
 
 
@@ -732,7 +732,7 @@ def _escape_cell(value: str) -> str:
     """Markdown 表のセルで ``|`` と改行をエスケープする。
 
     ``|`` は ``\\|`` 、 改行は空白 1 個に置き換える。 ``\\`` の二重エスケープ
-    はしない （ 仕様の 「 ``|`` を ``\\|`` 」 をそのまま ） 。
+    はしない （仕様の 「``|`` を ``\\|``」 をそのまま） 。
     """
     escaped = value.replace("|", "\\|")
     escaped = escaped.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
@@ -742,7 +742,7 @@ def _escape_cell(value: str) -> str:
 def _inline_code(text: str) -> str:
     """インラインコードのバッククオート表記を返す。
 
-    値そのものにバッククオートが含まれるとき （ 壊れたデータを防御 ） は
+    値そのものにバッククオートが含まれるとき （壊れたデータを防御） は
     ダブルバッククオートで囲む
     """
     if "`" in text:
@@ -751,7 +751,7 @@ def _inline_code(text: str) -> str:
 
 
 def _format_top_rows(top_rows: dict[str, Any]) -> str:
-    """``reportMetadata.topRows``（ 入口でそろえてある ）を ``"10件 Asc"`` のように整形する。"""
+    """``reportMetadata.topRows``（入口でそろえてある）を ``"10件 Asc"`` のように整形する。"""
     parts: list[str] = []
     if top_rows.get("rowLimit"):
         parts.append(f"{top_rows['rowLimit']}件")

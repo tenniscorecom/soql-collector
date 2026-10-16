@@ -1,4 +1,4 @@
-"""通し（ e2e ） テスト: ``run_fetch`` → ``run_tables`` → ``SOQL調査.xlsx``
+"""通し（e2e） テスト: ``run_fetch`` → ``run_tables`` → ``SOQL調査.xlsx``
 と ``列名の対応.csv`` の検証。
 
 脳内スクラッチパッドの再現シナリオ （ Task / Account / User の偽 describe
@@ -334,7 +334,7 @@ def test_e2e_columns_sheet_項目_is_resolved(tmp_path: Path) -> None:
 
 def test_e2e_aggregate_table_sort_by_and_top_rows(tmp_path: Path) -> None:
     """``ACCOUNT.NAME`` → ``What.Name`` のように関連経由の解決は ``並び順`` ではなく
-    ``列の対応`` シート側で見る （ 集計シートは廃止済み ）。"""
+    ``列の対応`` シート側で見る （集計シートは廃止済み）。"""
     output_dir = _run_e2e(tmp_path)
     sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
     # 3 枚構成
@@ -356,17 +356,17 @@ def test_e2e_field_table_段_is_filled(tmp_path: Path) -> None:
 
 
 def test_e2e_related_table(tmp_path: Path) -> None:
-    """関係図シートの段は 「 子の段 」 で、 孫以降は深さ + 1。"""
+    """関係図シートの段は 「子の段」 で、 孫以降は深さ + 1。"""
     output_dir = _run_e2e(tmp_path)
     sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
     rows = sheets["関係図"]
-    # e2e は 1〜2 段までの関係を含む （ Account.Owner 経由で 段 2 が出る ）
+    # e2e は 1〜2 段までの関係を含む （Account.Owner 経由で 段 2 が出る）
     for row in rows:
         assert row["段"] in ("0", "1", "2")
 
 
 def test_e2e_column_names_csv(tmp_path: Path) -> None:
-    """``列名の対応.csv`` は解決できた列だけが出る ( 管理番号列を持たない)。"""
+    """``列名の対応.csv`` は解決できた列だけが出る (管理番号列を持たない)。"""
     output_dir = _run_e2e(tmp_path)
     columns, rows = _read_csv(output_dir / "列名の対応.csv")
     assert "管理番号" not in columns
@@ -389,7 +389,7 @@ def test_e2e_column_names_xlsx_resolved_correspondence(tmp_path: Path) -> None:
 
 
 # ── 集計 / 条件 シートは廃止済み ───────────────────────────────
-# 集計 / 条件 / グループ・並び順は 「 列の対応 」 シートで SOQL として表現し、
+# 集計 / 条件 / グループ・並び順は 「列の対応」 シートで SOQL として表現し、
 # SOQL資料/{管理番号}.md に集約した。 旧テストは削除。
 
 

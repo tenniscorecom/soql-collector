@@ -311,7 +311,7 @@ def test_ai_markdown_tabular_full_text() -> None:
         "## 警告\n"
         "なし\n"
         "\n"
-        "関係図 （ Mermaid ）: \n"
+        "関係図 （Mermaid）: \n"
         "../関係図/Task.md\n"
         "\n"
         "```\n"
@@ -332,7 +332,7 @@ def test_ai_markdown_tabular_full_text() -> None:
 
 
 def test_ai_markdown_summary_section_and_notes() -> None:
-    """SUMMARY の record はグループ・集計の節が出て、 「 集計レポート 」 の
+    """SUMMARY の record はグループ・集計の節が出て、 「集計レポート」 の
     注意も出る。
     """
     report_metadata_override = {
@@ -350,14 +350,14 @@ def test_ai_markdown_summary_section_and_notes() -> None:
     record = _make_record(report_metadata_override=report_metadata_override)
     markdown = build_markdown(record)
 
-    # グループ・集計: 「 SOQL では ... 」 のヒントと全グループ・集計が出る
+    # グループ・集計: 「SOQL では ...」 のヒントと全グループ・集計が出る
     assert "## グループ・集計" in markdown
     assert "SOQL では GROUP BY と集計関数で表すか、 明細を取って集計する" in markdown
     assert "- 行グループ: Opp.CloseDate (Asc, FISCAL_QUARTER)" in markdown
     assert "- 列グループ: Opp.StageName (Desc, DAY)" in markdown
     assert "- 集計: s!Opp.Amount" in markdown
     assert "- 集計: n!Opp.RollUp" in markdown
-    # 注意に 「 集計レポート 」 が出る
+    # 注意に 「集計レポート」 が出る
     assert "## SOQL を組むときの注意" in markdown
     assert "- 集計レポート" in markdown
 
@@ -441,7 +441,7 @@ def test_run_tables_writes_markdown_per_record(tmp_path: Path) -> None:
     output_dir.mkdir()
     md_dir = output_dir / MARKDOWN_SUBDIR
     md_dir.mkdir()
-    # 「 取れなかった 」 想定の古いファイルを 1 件置いておく
+    # 「取れなかった」 想定の古いファイルを 1 件置いておく
     stale = md_dir / "9999.md"
     stale.write_text("古いファイル", encoding="utf-8")
 
@@ -494,7 +494,7 @@ def test_markdown_has_soql_section_for_created_draft() -> None:
 def test_markdown_soql_section_keeps_incomplete_marker_for_partial() -> None:
     """``一部作れず`` のドラフトは SOQL の 1 行目に未完成の印をそのまま残す。
 
-    AI に渡す Markdown で 「 この SOQL はそのままでは実行できない 」 と一目で
+    AI に渡す Markdown で 「この SOQL はそのままでは実行できない」 と一目で
     分かるように、 印はそのまま載せる。 ``作れなかった部分`` のリストも出る。
     """
     record = _make_record(
@@ -516,7 +516,7 @@ def test_markdown_soql_section_keeps_incomplete_marker_for_partial() -> None:
 
 
 def test_markdown_soql_section_omits_body_for_none_status() -> None:
-    """``作れず`` は本文が無いので 「 SOQL: なし 」 と書く。"""
+    """``作れず`` は本文が無いので 「SOQL: なし」 と書く。"""
     record = _make_record(
         soql_draft=SoqlDraft(
             soql="",
@@ -538,7 +538,7 @@ def test_markdown_soql_section_omitted_without_draft() -> None:
 
 
 def test_markdown_soql_section_includes_checks_when_needs_check() -> None:
-    """``要確認`` には SOQL 本文は出るが 「 要確認: 」 のリストも添える。"""
+    """``要確認`` には SOQL 本文は出るが 「要確認:」 のリストも添える。"""
     record = _make_record(
         soql_draft=SoqlDraft(
             soql="SELECT Subject FROM Task",
@@ -558,7 +558,7 @@ def test_markdown_soql_section_includes_checks_when_needs_check() -> None:
 
 def test_ai_markdown_broken_implementation_fails_full_text() -> None:
     """出力する列の節を実装から抜くと、 全文比較のテストが落ちることを 1 度
-    確かめる （ 壊れたまま戻さない ） 。 ``build_markdown`` の戻り値から
+    確かめる （壊れたまま戻さない） 。 ``build_markdown`` の戻り値から
     ``## 出力する列`` の節を擬似的に抜くヘルパーを使う
     """
     from src.ai_markdown import build_markdown as original_build_markdown
@@ -570,7 +570,7 @@ def test_ai_markdown_broken_implementation_fails_full_text() -> None:
     _, _, rest = tail.partition("## 絞り込み")
     broken = head + "## 絞り込み" + rest
 
-    # 壊れた実装は 「 出力する列 」 が消えている
+    # 壊れた実装は 「出力する列」 が消えている
     assert "## 出力する列" not in broken
     # 期待値 （=本物の実装の戻り値） とは一致しない
     assert broken != rendered

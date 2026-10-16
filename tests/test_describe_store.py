@@ -1,16 +1,16 @@
 """``describe_store`` のテスト。
 
 「 1 回目の実行で API を呼んだオブジェクトが 2 回目の実行でも API を呼ばずに
-使われること 」 と 「 別組織では別物扱い 」「 取り直し 」「 見出し違いで
+使われること 」 と 「別組織では別物扱い」「取り直し」「 見出し違いで
 失敗 」 を、 ``tmp_path`` の CSV と既存のフェイククライアントで検証する。
 
-設計メモ （ このテストは実装の現状に合わせて書かれている ）:
+設計メモ （このテストは実装の現状に合わせて書かれている）:
 
 - メモリ辞書のキーは ``(org, object_lower)`` のタプル。 ``org`` は URL の
-  ホスト名 （ 小文字 ）。
-- 失敗 （ HTTP / ValueError ） は CSV に書かない。 1 回の実行のメモリにだけ
+  ホスト名 （小文字）。
+- 失敗 （HTTP / ValueError） は CSV に書かない。 1 回の実行のメモリにだけ
   残るので、 次回は API を呼び直す
-- 既存の ``describe_object`` 直呼びと「 CSV 経由で読んだあと ``_slim_object`` 」
+- 既存の ``describe_object`` 直呼びと「CSV 経由で読んだあと ``_slim_object``」
   は同じ slim 出力を返す
 """
 
@@ -107,7 +107,7 @@ def _settings(tmp_path: Path) -> dict:
     return {
         "related_max": 40,
         "related_depth": 1,
-        "row_limit": False,  # 2000 件チェックは行わない （ API を呼ばない ）
+        "row_limit": False,  # 2000 件チェックは行わない （API を呼ばない）
         "pii_keywords": ("name",),
         "pii_person_objects": ("Contact",),
         "describe_csv_path": tmp_path / "describe.csv",
@@ -116,7 +116,7 @@ def _settings(tmp_path: Path) -> dict:
     return {
         "related_max": 40,
         "related_depth": 1,
-        "row_limit": False,  # 2000 件チェックは行わない （ API を呼ばない ）
+        "row_limit": False,  # 2000 件チェックは行わない （API を呼ばない）
         "pii_keywords": ("name",),
         "pii_person_objects": ("Contact",),
         "describe_csv_path": tmp_path / "describe.csv",
@@ -204,7 +204,7 @@ def test_describe_csv_roundtrip_preserves_slim_output() -> None:
 
 
 def test_describe_csv_roundtrip_with_reference_field(tmp_path: Path) -> None:
-    """参照項目 （ referenceTo / relationshipName ） も往復で残る。"""
+    """参照項目 （referenceTo / relationshipName） も往復で残る。"""
     original = {
         "name": "Task",
         "label": "活動",
@@ -283,14 +283,14 @@ def test_run_persists_describe_to_csv(tmp_path: Path) -> None:
     assert path.exists()
     rows = _read_csv_rows(path)
     assert any(row["オブジェクト"] == "Opportunity" for row in rows)
-    # 同じオブジェクト名は 1 個にまとまっている （ 同じ取得日時で項目 2 件 ）
+    # 同じオブジェクト名は 1 個にまとまっている （同じ取得日時で項目 2 件）
     opp_rows = [r for r in rows if r["オブジェクト"] == "Opportunity"]
     assert len(opp_rows) == 2
     assert opp_rows[0]["取得日時"] == opp_rows[1]["取得日時"]
 
 
 def test_second_run_does_not_call_api_for_cached_object(tmp_path: Path) -> None:
-    """2 回目の実行 （ 別のメモリ辞書、 同じ CSV ） では API を呼ばない。
+    """2 回目の実行 （別のメモリ辞書、 同じ CSV） では API を呼ばない。
     列対応も 1 回目と同じ出力になる。
     """
     opportunity = _opportunity_describe()
@@ -333,7 +333,7 @@ def test_second_run_does_not_call_api_for_cached_object(tmp_path: Path) -> None:
     assert client1.describe_object_calls == ["Opportunity"]
     assert first_column_map is not None
 
-    # 2 回目: 別のメモリ辞書、 同じ CSV （ 別の ``DescribeStore.load`` ）
+    # 2 回目: 別のメモリ辞書、 同じ CSV （別の ``DescribeStore.load``）
     client2 = _FakeClient(
         describe=metadata,
         object_describes={"Opportunity": opportunity},
@@ -351,7 +351,7 @@ def test_second_run_does_not_call_api_for_cached_object(tmp_path: Path) -> None:
     assert store2.csv_hit_count == 1  # Opportunity は CSV から 1 度引かれた
     second_record = second_outcomes[0].record
     second_column_map = second_record.column_map if second_record else None
-    # 列対応が同じ （ 主要オブジェクト, SOQL列名, 表示名, 型, ... ）
+    # 列対応が同じ （主要オブジェクト, SOQL列名, 表示名, 型, ...）
     assert first_column_map == second_column_map
 
 
@@ -387,7 +387,7 @@ def test_different_orgs_are_separated_in_csv(tmp_path: Path) -> None:
     ]
     outcomes = run_fetch(entries, site_for=_site_for(client), **settings)
     assert all(o.status == "ok" for o in outcomes)
-    # 2 つの組織 （ netloc が違う ） なので Opportunity の API は 2 回呼ばれる
+    # 2 つの組織 （netloc が違う） なので Opportunity の API は 2 回呼ばれる
     assert client.describe_object_calls.count("Opportunity") == 2
 
     # CSV には 2 組織分の Opportunity の行が残る
@@ -460,7 +460,7 @@ def test_different_orgs_keep_separate_state_across_runs(tmp_path: Path) -> None:
 def test_describe_failure_is_not_persisted(tmp_path: Path) -> None:
     """HTTP エラーは CSV に書かれず、 次回は API を呼び直す。
 
-    列キー先頭 （ ``Opp`` ） のフォールバックを試すようにしたので、
+    列キー先頭 （``Opp``） のフォールバックを試すようにしたので、
     ``Opp`` 側も同じ HTTP エラーにして 主オブジェクトの解決が
     両方全滅するようにしてある。
     """
@@ -489,7 +489,7 @@ def test_describe_failure_is_not_persisted(tmp_path: Path) -> None:
     # CSV は作られない
     assert not settings["describe_csv_path"].exists()
 
-    # もう一度 （ 別のクライアント 、 同じ CSV パス ） では API が呼ばれる
+    # もう一度 （別のクライアント 、 同じ CSV パス） では API が呼ばれる
     client2 = _FakeClient(
         describe=_make_metadata("Opportunity", ["Opp.Name"]),
         object_describes={"Opportunity": _opportunity_describe()},
@@ -630,7 +630,7 @@ def test_stale_csv_triggers_refresh_once(tmp_path: Path) -> None:
         url=f"{DOMAIN_A}/00O5g00000AAAAA/view",
         enabled=True,
     )
-    # 1 回目: API を 1 回呼ばれる （ Amount が解決できず (不明) 、 取り直し ）
+    # 1 回目: API を 1 回呼ばれる （Amount が解決できず (不明) 、 取り直し）
     client = _FakeClient(
         describe=metadata,
         object_describes={"Opportunity": fresh_opportunity},
@@ -651,7 +651,7 @@ def test_stale_csv_triggers_refresh_once(tmp_path: Path) -> None:
     # 取り直しは 1 回だけ
     assert client.describe_object_calls.count("Opportunity") == 1
 
-    # 2 回目: 同じレポートをもう一度 （ 新しい describe は CSV に書かれている ）
+    # 2 回目: 同じレポートをもう一度 （新しい describe は CSV に書かれている）
     client2 = _FakeClient(
         describe=metadata,
         object_describes={"Opportunity": fresh_opportunity},
@@ -675,10 +675,10 @@ def test_stale_csv_triggers_refresh_once(tmp_path: Path) -> None:
 
 def test_refresh_does_not_repeat_if_api_returns_same_data(tmp_path: Path) -> None:
     """取り直しで API を呼んでも新しい項目が無い場合は、 もう一度 API を
-    呼ばない （ 同じ取得日時で CSV を入れ替えるだけ ）。
+    呼ばない （同じ取得日時で CSV を入れ替えるだけ）。
     """
     settings = _settings(tmp_path)
-    # 古い Opportunity （ 項目 1 つ ）
+    # 古い Opportunity （項目 1 つ）
     stale = {
         "name": "Opportunity",
         "label": "商談",
@@ -711,7 +711,7 @@ def test_refresh_does_not_repeat_if_api_returns_same_data(tmp_path: Path) -> Non
     # 列対応の Amount は (不明) のまま
     soql_names = {row["対応フィールドAPI名"] for row in record.column_map}
     assert "(不明)" in soql_names
-    # API は 1 回しか呼ばない （ 取り直しは 1 回限り ）
+    # API は 1 回しか呼ばない （取り直しは 1 回限り）
     assert client.describe_object_calls.count("Opportunity") == 1
 
 
@@ -743,7 +743,7 @@ def test_existing_csv_with_wrong_header_aborts(tmp_path: Path) -> None:
 
 def test_settings_missing_describe_csv_raises(tmp_path: Path) -> None:
     """config.ini に ``DESCRIBE_CSV_PATH`` が無いと comken の ``ConfigError``
-    （ サブクラスの ``ConfigKeyNotFoundError`` ） が上がる。 既定値での
+    （サブクラスの ``ConfigKeyNotFoundError``） が上がる。 既定値での
     補完はしない。
     """
     from comken.core.config import _reset_cached_config
@@ -783,7 +783,7 @@ def test_settings_missing_describe_csv_raises(tmp_path: Path) -> None:
 
 
 def test_run_logs_describe_counts(tmp_path: Path, caplog) -> None:
-    """実行の終わりに「 保存データから N 件 / Salesforce から N 件 / 取り直し N 件 」
+    """実行の終わりに「保存データから N 件 / Salesforce から N 件 / 取り直し N 件」
     が INFO で出る。
     """
     import logging
@@ -809,7 +809,7 @@ def test_run_logs_describe_counts(tmp_path: Path, caplog) -> None:
         enabled=True,
     )
     run_fetch([entry], site_for=_site_for(client), **settings)
-    # ``run_fetch`` は終了ログを出さない （ run.py 側 ） ので、 テストは
+    # ``run_fetch`` は終了ログを出さない （run.py 側） ので、 テストは
     # ``DescribeStore`` のカウントを直接見て確認する。 （ 終了ログは run.py の
     # 統合テストで別途確かめる ）
 
@@ -844,4 +844,4 @@ def test_describe_store_counts_track_sources(tmp_path: Path) -> None:
 # ── pytest import ──────────────────────────────────────────────────────
 
 
-import pytest  # noqa: E402  # ファイル末尾に置く （ 上のテストでも使う ）
+import pytest  # noqa: E402  # ファイル末尾に置く （上のテストでも使う）

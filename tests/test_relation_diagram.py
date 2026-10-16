@@ -61,7 +61,7 @@ def test_record_without_main_object_is_ignored() -> None:
 
 
 def test_self_reference_becomes_already_above() -> None:
-    """自己参照 （ ``Account.ParentId`` → ``Account`` ） は 「 （上に出ています）」
+    """自己参照 （``Account.ParentId`` → ``Account``） は 「（上に出ています）」
     で打ち切り、 木の先は展開しない。
     """
     record = _make_record(
@@ -85,12 +85,12 @@ def test_self_reference_becomes_already_above() -> None:
     joined = "\n".join(tree)
     assert "Parent → Account" in joined
     assert "（上に出ています）" in joined
-    # 自己参照の辺は 1 本だけ （ 主の行 + 「上に出ています」 注記の辺で 1 回 ）
+    # 自己参照の辺は 1 本だけ （主の行 + 「上に出ています」 注記の辺で 1 回）
     assert joined.count("Parent → Account") == 1
 
 
 def test_cycle_via_indirection_is_collapsed() -> None:
-    """間接的な循環 （ Task → Account → Task ） は 「（上に出ています）」 で止まる。"""
+    """間接的な循環 （Task → Account → Task） は 「（上に出ています）」 で止まる。"""
     record = _make_record(
         key="1",
         main_object="Task",
@@ -117,7 +117,7 @@ def test_cycle_via_indirection_is_collapsed() -> None:
 
 
 def test_polymorphic_each_reference_to_gets_one_line() -> None:
-    """ポリモーフィック参照 （ ``What → Account`` と ``What → Opportunity`` ） は
+    """ポリモーフィック参照 （``What → Account`` と ``What → Opportunity``） は
     ``referenceTo`` のエントリごとに 1 行ずつ出る（ 既存 ``RelationRecord`` と
     同じ ） 。"""
     record = _make_record(
@@ -216,9 +216,9 @@ def test_tree_lines_use_box_drawing_and_order() -> None:
     # ``├ `` と ``└ `` の罫線で深さを出す
     assert any("├ " in line for line in lines)
     assert any("└ " in line for line in lines)
-    # 直下の子は字下げ （ 全角スペース 4 個相当 ） される
+    # 直下の子は字下げ （全角スペース 4 個相当） される
     for line in lines[1:]:
-        # 先頭は罫線の幅 （ ``│`` ``├`` ``└`` の前 ） を持つ
+        # 先頭は罫線の幅 （``│`` ``├`` ``└`` の前） を持つ
         assert line.startswith(("├ ", "└ ", "    ├ ", "    └ ", "│   ├ ", "│   └ "))
 
 
@@ -326,7 +326,7 @@ def test_write_main_object_diagrams_empty_dict_writes_nothing(tmp_path: Path) ->
 
 
 def test_write_main_object_diagrams_keeps_existing_files(tmp_path: Path) -> None:
-    """既存ファイルはそのまま残る （ 今回渡されなかった主オブジェクト分 ）。"""
+    """既存ファイルはそのまま残る （今回渡されなかった主オブジェクト分）。"""
     diagrams_dir = tmp_path / "関係図"
     diagrams_dir.mkdir()
     existing = diagrams_dir / "Other.md"

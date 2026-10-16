@@ -10,7 +10,7 @@
 - 1 回目の ``run()`` で exit code 0、 出力一式
   （ ``SOQL調査.xlsx`` / ``SOQL資料/{key}.md`` / ``関係図`` / ``列名の対応.csv``
   / ``input/列の直し.xlsx`` ） ができる
-- 2 回目の実行前に ``input/列の直し.xlsx`` の 「 直したSOQL列名 」 と 「 メモ 」
+- 2 回目の実行前に ``input/列の直し.xlsx`` の 「直したSOQL列名」 と 「メモ」
   に値を入れ、 2 回目で
 
     ① その値が残っている
@@ -18,9 +18,9 @@
        ``列名の対応.csv`` 、 Markdown の SOQL 下書きに使われる
     ③ 要対応だった列が人の値で OK になる
 
-- 表示名 ``活動：作業会社名`` （ 全角コロン ） が Task の ``WorkCo__c``
-  （ ラベル 作業会社名 ） に、 ``取引先: 取引先名`` が関連経由で解決される
-- 旧 ``config.ini`` （ 新しいキー ``COLUMN_FIX_XLSX_PATH`` などが無い ） でも
+- 表示名 ``活動：作業会社名`` （全角コロン） が Task の ``WorkCo__c``
+  （ラベル 作業会社名） に、 ``取引先: 取引先名`` が関連経由で解決される
+- 旧 ``config.ini`` （新しいキー ``COLUMN_FIX_XLSX_PATH`` などが無い） でも
   動く
 """
 
@@ -98,7 +98,7 @@ def _write_full_ini(proj: Path) -> None:
 def _write_legacy_ini(proj: Path) -> None:
     """``[FILES]`` に 4 つのキーしか無い旧 config.ini を書く。
 
-    新しいキー（ ``COLUMN_FIX_XLSX_PATH`` 等 ） が無いことで、 comken の
+    新しいキー（``COLUMN_FIX_XLSX_PATH`` 等） が無いことで、 comken の
     ``ConfigError`` が上がることを確認する経路。 既定値の補完はしない
     """
     (proj / "config.ini").write_text(
@@ -114,8 +114,8 @@ def _write_legacy_ini(proj: Path) -> None:
 def _scenario_describe_and_objects():
     """再現シナリオのレポート describe と 偽オブジェクト describe を返す。
 
-    「 取引先: 取引先名 」 と 「 活動：作業会社名 」 の **表示名からオブジェクト
-    名の照合** と、 「 MYSTERY 」 （ 列キーが分からない列 ） を含む
+    「取引先: 取引先名」 と 「活動：作業会社名」 の **表示名からオブジェクト
+    名の照合** と、 「MYSTERY」 （列キーが分からない列） を含む
     """
     describe = _e2e_describe()
     meta = describe["reportMetadata"]
@@ -244,7 +244,7 @@ def test_run_e2e_first_run_creates_all_outputs(tmp_path: Path) -> None:
 
 
 def test_run_e2e_first_run_resolves_fullwidth_colon_and_related(tmp_path: Path) -> None:
-    """表示名 ``活動：作業会社名`` （ 全角コロン ） が ``WorkCo__c`` に、
+    """表示名 ``活動：作業会社名`` （全角コロン） が ``WorkCo__c`` に、
     ``取引先: 取引先名`` が関連経由で ``What.Name`` に解決される
     """
     describe, objs = _scenario_describe_and_objects()
@@ -259,7 +259,7 @@ def test_run_e2e_first_run_resolves_fullwidth_colon_and_related(tmp_path: Path) 
     # 全角コロン付きの表示名 → WorkCo__c
     assert by_key["FK_WORK_CO"]["表示名"] == "活動：作業会社名"
     assert by_key["FK_WORK_CO"]["使うSOQL列名"] == "WorkCo__c"
-    # 半角コロン付きの表示名 → What.Name （ 関連経由 ）
+    # 半角コロン付きの表示名 → What.Name （関連経由）
     assert by_key["ACCOUNT.NAME"]["表示名"] == "取引先: 取引先名"
     assert by_key["ACCOUNT.NAME"]["使うSOQL列名"] == "What.Name"
 
@@ -319,18 +319,18 @@ def test_run_e2e_second_run_preserves_user_fix_and_uses_it(tmp_path: Path) -> No
     assert "Task,Subject" in csv_text
 
     md_text = (proj / "output" / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
-    # 列の対応: SUBJECT は Owner.Name （ 人が直した ）
+    # 列の対応: SUBJECT は Owner.Name （人が直した）
     assert "| 件名 | Owner.Name | 人が直した |" in md_text
 
-    # ③ MYSTERY は人が書いた値 「 Description 」 が describe でたどれないので
-    # 「 要確認 」 扱いになる （ 値はそのまま採用 ）
+    # ③ MYSTERY は人が書いた値 「Description」 が describe でたどれないので
+    # 「要確認」 扱いになる （値はそのまま採用）
     assert by_key["MYSTERY"]["使うSOQL列名"] == "Description"
     assert by_key["MYSTERY"]["どこから"] == "人が直した（要確認: たどれない）"
     assert fix_rows[("Task", "MYSTERY")]["状態"] == "要確認"
 
 
 def test_run_e2e_legacy_config_without_required_keys_aborts(tmp_path: Path) -> None:
-    """旧 ``config.ini`` （ ``COLUMN_FIX_XLSX_PATH`` などの新しいキーが無い ）
+    """旧 ``config.ini`` （``COLUMN_FIX_XLSX_PATH`` などの新しいキーが無い）
     は comken の ``ConfigError`` で止まる。 既定値での補完はしない。
     """
     from comken.core.config import _reset_cached_config
@@ -360,7 +360,7 @@ def test_run_e2e_legacy_config_without_required_keys_aborts(tmp_path: Path) -> N
         _reset_cached_config()
 
 
-# ── 人が書いた値がたどれない （Issue 2 ） ─────────────────────────
+# ── 人が書いた値がたどれない （Issue 2） ─────────────────────────
 
 
 def test_run_e2e_unresolved_user_value_is_need_check_in_both_files(
@@ -368,7 +368,7 @@ def test_run_e2e_unresolved_user_value_is_need_check_in_both_files(
 ) -> None:
     """人が書いた SOQL 列名が describe でたどれなかったとき、
     ``列の直し.xlsx`` と ``列の対応`` シートで 状態=要確認 になり、
-    一覧の 「 要対応・要確認の列数 」 に数えられる
+    一覧の 「要対応・要確認の列数」 に数えられる
     """
     describe, objs = _scenario_describe_and_objects()
     client = _FakeClient(describe, objs)
@@ -376,7 +376,7 @@ def test_run_e2e_unresolved_user_value_is_need_check_in_both_files(
 
     assert _do_run(proj, client) == 0
 
-    # 人が直す: MYSTERY は 自動が "(不明)" で、 そこに 「 Description 」 を書く
+    # 人が直す: MYSTERY は 自動が "(不明)" で、 そこに 「Description」 を書く
     # Task に Description 項目は無いので たどれず、 要確認扱いになる
     fix_path = proj / "input" / "列の直し.xlsx"
     workbook = load_workbook(fix_path)
@@ -405,13 +405,13 @@ def test_run_e2e_unresolved_user_value_is_need_check_in_both_files(
     assert by_key["MYSTERY"]["使うSOQL列名"] == "Description"
     assert by_key["MYSTERY"]["どこから"] == "人が直した（要確認: たどれない）"
 
-    # 3. 一覧シートの 「 要対応・要確認の列数 」 に MYSTERY が 1 件として入る
+    # 3. 一覧シートの 「要対応・要確認の列数」 に MYSTERY が 1 件として入る
     overview = sheets["一覧"]
     by_overview_key = {r["管理番号"]: r for r in overview}
     assert by_overview_key["1001"]["要対応・要確認の列数"] == "1"
 
 
-# ── 列の直し.xlsx の見栄え （Issue 1 ） ──────────────────────────
+# ── 列の直し.xlsx の見栄え （Issue 1） ──────────────────────────
 
 
 def test_run_e2e_column_fix_xlsx_has_freeze_and_widths_and_colors(
@@ -433,13 +433,13 @@ def test_run_e2e_column_fix_xlsx_has_freeze_and_widths_and_colors(
     # 見出し固定
     assert sheet.freeze_panes == "A2"
 
-    # 列幅が入っている （ 全角=2 で計算 ）
+    # 列幅が入っている （全角=2 で計算）
     widths = {letter: dim.width for letter, dim in sheet.column_dimensions.items() if dim.width}
     assert len(widths) >= 8, f"列幅が入っていない: {widths}"
-    # 表示名が長い 「 取引先: 取引先名 」 を含む 「 表示名 」 列は広くなる
+    # 表示名が長い 「取引先: 取引先名」 を含む 「表示名」 列は広くなる
     assert widths.get("C", 0) >= 18
 
-    # 「 直したSOQL列名 」 と 「 メモ 」 の見出しセルが薄い緑で塗られる
+    # 「直したSOQL列名」 と 「メモ」 の見出しセルが薄い緑で塗られる
     headers = [c.value for c in sheet[1]]
     fixed_idx = headers.index("直したSOQL列名") + 1
     note_idx = headers.index("メモ") + 1
@@ -447,7 +447,7 @@ def test_run_e2e_column_fix_xlsx_has_freeze_and_widths_and_colors(
     note_cell = sheet.cell(row=1, column=note_idx)
     assert fixed_cell.fill and fixed_cell.fill.fill_type == "solid"
     assert note_cell.fill and note_cell.fill.fill_type == "solid"
-    # C6EFCE 系 （ 薄い緑 ） であればよい
+    # C6EFCE 系 （薄い緑） であればよい
     assert str(fixed_cell.fill.fgColor.rgb).endswith("C6EFCE")
     assert str(note_cell.fill.fgColor.rgb).endswith("C6EFCE")
 

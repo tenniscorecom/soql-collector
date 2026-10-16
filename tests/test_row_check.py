@@ -1,7 +1,7 @@
-"""行数チェック（ ``_check_row_count`` 経由 ） のテスト。
+"""行数チェック（``_check_row_count`` 経由） のテスト。
 
 偽物の Salesforce クライアントで 1 レポートずつ検証する。 実 Salesforce には
-繋がない。 レポートの行データ（ 個人情報を含みうる ） はメモリ上でも
+繋がない。 レポートの行データ（個人情報を含みうる） はメモリ上でも
 ``len(table)`` のカウントだけにして、 CSV / ログ / 例外メッセージに絶対出さない
 ことを確認する。
 """
@@ -200,7 +200,7 @@ def test_matrix_format_calls_get_and_marks_over_when_truncated() -> None:
 
 
 def test_format_error_from_get_marks_unknown() -> None:
-    """``get()`` が取れない形式（ 結合レポート・明細の列が無いレポートなど ） の
+    """``get()`` が取れない形式（結合レポート・明細の列が無いレポートなど） の
     エラーを上げたら 判定不可、 新しい文言が出る。
     """
     err = SalesforceReportFormatError("00O", "MULTI_BLOCK")
@@ -214,7 +214,7 @@ def test_format_error_from_get_marks_unknown() -> None:
 
 
 def test_format_error_for_no_detail_columns_marks_unknown() -> None:
-    """明細の列が無いサマリーレポートのエラーも 判定不可 （ 新しい文言 ）。"""
+    """明細の列が無いサマリーレポートのエラーも 判定不可 （新しい文言）。"""
     err = SalesforceReportFormatError("00O", "明細の列が無い")
     summary_metadata = _metadata("SUMMARY")
     client = _FakeClient(describe=summary_metadata, get_error=err)
@@ -293,7 +293,7 @@ def test_row_data_never_leaks_to_output(tmp_path: Path, caplog: pytest.LogCaptur
             ]
 
         def __len__(self) -> int:
-            # 機微な値（ 値そのもの ） を返さない
+            # 機微な値（値そのもの） を返さない
             return 2
 
     # _check_row_count 単体でログ / 例外に漏れない
@@ -337,7 +337,7 @@ def test_row_data_never_leaks_to_output(tmp_path: Path, caplog: pytest.LogCaptur
 
 
 def test_salesforce_request_error_marks_unknown() -> None:
-    """``SalesforceRequestError`` （ 401 / 403 以外 ） は 判定不可。"""
+    """``SalesforceRequestError`` （401 / 403 以外） は 判定不可。"""
     err = SalesforceRequestError("GET", "/analytics/reports/00O", 500, "Server Error")
     client = _FakeClient(describe=_metadata(), get_error=err)
     result = _check_row_count(client, "00O")

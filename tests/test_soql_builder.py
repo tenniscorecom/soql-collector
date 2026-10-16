@@ -1,7 +1,7 @@
 """``src.soql_builder`` の単体テスト。
 
 ``build_soql()`` の組み立て規則を 1 つずつ確認する。 ``record`` は
-``ReportRecord`` を直接組み立てて渡す ( API は使わない ) 。
+``ReportRecord`` を直接組み立てて渡す (API は使わない) 。
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def _make_record(
 
     ``detail_columns`` と ``column_map`` を渡して SELECT と列対応を組む。
     ``column_map`` を省略した場合 ``detail_columns`` のキーと同名の列が
-    ``"string"`` 型で解決できるよう自動生成する ( 簡易形 ) 。
+    ``"string"`` 型で解決できるよう自動生成する (簡易形) 。
     ``report_metadata`` を渡すと ``detailColumns`` 等を組み立てる前に
     ベース dict として使う ( 既存のキーを保ったまま、 渡された
     ``detail_columns`` 等の派生値もマージする ) 。
@@ -250,7 +250,7 @@ def test_select_uses_resolved_field_in_detail_columns_order() -> None:
 
 
 def test_select_excludes_unresolved_columns_and_reports_missing() -> None:
-    """対応が取れない列は SELECT から外れて missing に「列: 表示名 ( 列キー ) — 理由」。"""
+    """対応が取れない列は SELECT から外れて missing に「列: 表示名 (列キー) — 理由」。"""
     column_map = [
         {
             "列キー": "OK",
@@ -512,7 +512,7 @@ def test_where_within_is_unsupported() -> None:
     assert any("within" in m for m in draft.missing)
 
 
-# ── WHERE 句: 値の書き方 ( 型 ) ─────────────────────────────────────────
+# ── WHERE 句: 値の書き方 (型) ─────────────────────────────────────────
 
 
 def test_value_string_escapes_quotes_and_backslash() -> None:
@@ -652,7 +652,7 @@ def test_report_boolean_filter_replaces_numbers_correctly() -> None:
     )
     draft = build_soql(record)
     # ``1`` → 条件 1 (Acme)、 ``2`` → 条件 2 (StageName)、 ``10`` → 条件 10 は無い
-    # 番号 ``10`` は条件 3 (Amount) ではなく「範囲外」になる ( ここでの 10 は文字列の 10 )
+    # 番号 ``10`` は条件 3 (Amount) ではなく「範囲外」になる (ここでの 10 は文字列の 10)
     # …実際に条件は 3 件なので 10 は範囲外。 missing になる。
     # → 範囲外で ``組立式の条件を作れない`` が出て WHERE 全体は出ない
     assert draft.status == STATUS_PARTIAL
@@ -688,7 +688,7 @@ def test_report_boolean_filter_with_correct_numbers() -> None:
 
 
 def test_report_boolean_filter_distinguishes_1_and_10() -> None:
-    """組立式 ``1 AND 10`` が条件 1, 10 と対応する ( ``1`` と ``10`` を取り違えない ) 。
+    """組立式 ``1 AND 10`` が条件 1, 10 と対応する (``1`` と ``10`` を取り違えない) 。
 
     ``(1)0`` のように ``1`` と ``0`` に分解されると条件 1 が 2 回使われ、
     条件 10 (ここでの ``StageName``) が消える壊れた実装だと WHERE が壊れる。
@@ -715,7 +715,7 @@ def test_report_boolean_filter_distinguishes_1_and_10() -> None:
 
 
 def test_unresolved_filter_column_omitted_and_reported() -> None:
-    """対応が取れない条件は省き missing に「条件 n: ... ( 省いたので件数が増える可能性 )」。"""
+    """対応が取れない条件は省き missing に「条件 n: ... (省いたので件数が増える可能性)」。"""
     column_map = _column_map_with_types([("Name", "Name", "string")])
     # Unresolved は column_map に無い
     record = _make_record(
@@ -805,7 +805,7 @@ def test_standard_date_filter_relative_literal() -> None:
 
 
 def test_standard_date_filter_empty_duration_emits_nothing() -> None:
-    """``durationValue`` 空 ( 全期間 ) は何も付けない。"""
+    """``durationValue`` 空 (全期間) は何も付けない。"""
     column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
     record = _make_record(
         detail_columns=["CloseDate"],
@@ -964,7 +964,7 @@ def test_top_rows_without_sort_by_omits_limit() -> None:
 
 
 def test_buckets_go_to_missing() -> None:
-    """``buckets`` は missing に並ぶ ( 集計なので SOQL に入れない ) 。"""
+    """``buckets`` は missing に並ぶ (集計なので SOQL に入れない) 。"""
     column_map = _column_map_with_types([("Name", "Name", "string")])
     record = _make_record(
         detail_columns=["Name"],
@@ -1002,7 +1002,7 @@ def test_aggregates_non_rowcount_go_to_missing() -> None:
 
 
 def test_aggregates_rowcount_does_not_go_to_missing() -> None:
-    """``aggregates`` の ``RowCount`` は missing にも入らない ( 集計の行数だけ ) 。"""
+    """``aggregates`` の ``RowCount`` は missing にも入らない (集計の行数だけ) 。"""
     column_map = _column_map_with_types([("Name", "Name", "string")])
     record = _make_record(
         detail_columns=["Name"],
@@ -1181,7 +1181,7 @@ def test_missing_middle_condition_without_boolean_filter_keeps_rest() -> None:
 
 
 def test_string_value_with_AND_in_value_preserves_value() -> None:
-    """文字列値の中の `` AND `` が改行位置にならない ( 値が壊れない )。"""
+    """文字列値の中の `` AND `` が改行位置にならない (値が壊れない)。"""
     column_map = _column_map_with_types(
         [
             ("Name", "Name", "string"),
@@ -1221,7 +1221,7 @@ def test_date_value_with_slash_is_normalized_to_dash() -> None:
 
 
 def test_date_value_with_nonexistent_date_goes_to_missing() -> None:
-    """実在しない日付 ( 例: 2024-02-30 ) は missing。"""
+    """実在しない日付 (例: 2024-02-30) は missing。"""
     column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
     record = _make_record(
         detail_columns=["CloseDate"],
@@ -1271,10 +1271,10 @@ def test_standard_date_filter_value_with_slash_is_normalized() -> None:
 
 
 def test_build_soql_drops_undated_standard_date_filter() -> None:
-    """``_slim_report`` で 「 実質指定なし 」 と判定された ``standardDateFilter`` は
+    """``_slim_report`` で 「実質指定なし」 と判定された ``standardDateFilter`` は
     SOQL の WHERE に出ず、 ``STATUS_PARTIAL`` にもならない。
 
-    レポート describe と同じ形 （ ``startDate`` / ``endDate`` が ``None`` ） で
+    レポート describe と同じ形 （``startDate`` / ``endDate`` が ``None``） で
     ``_slim_report`` に通し、 その結果を ``ReportRecord`` に詰めて ``build_soql``
     を呼ぶ
     """
@@ -1310,7 +1310,7 @@ def test_build_soql_drops_undated_standard_date_filter() -> None:
         report_metadata=slim["reportMetadata"],
     )
     draft = build_soql(record)
-    # 未完成の印が付かない、 ステータスは 「 作成済み 」 か 「 要確認 」 （ ここでは何も警告が無いので 「 作成済み 」 ）
+    # 未完成の印が付かない、 ステータスは 「作成済み」 か 「要確認」 （ここでは何も警告が無いので 「作成済み」）
     assert INCOMPLETE_MARKER not in draft.soql
     assert draft.status == STATUS_CREATED
     # 日付条件が WHERE に出ていない。 detail_columns に CloseDate が
@@ -1335,7 +1335,7 @@ def test_numeric_value_with_text_goes_to_missing() -> None:
 
 
 def test_numeric_value_with_thousands_comma_goes_to_missing() -> None:
-    """数値型に桁区切りカンマ (``1,000``) は missing ( カンマで値が分割される問題 )。"""
+    """数値型に桁区切りカンマ (``1,000``) は missing (カンマで値が分割される問題)。"""
     column_map = _column_map_with_types([("Amount", "Amount", "currency")])
     record = _make_record(
         detail_columns=["Amount"],
@@ -1384,7 +1384,7 @@ def test_boolean_filter_repeats_same_number_substitutes_both() -> None:
     assert soql_normalized.count("( Name = 'Acme' )") == 2
     # ``2`` も置き換わる
     assert "( StageName = 'Closed Won' )" in soql_normalized
-    # 数字の ``1`` がそのまま残っていない ( `` AND 1 `` 等 )
+    # 数字の ``1`` がそのまま残っていない (`` AND 1 `` 等)
     assert " AND 1 " not in soql_normalized
     assert "( 1 " not in soql_normalized
 
@@ -1426,7 +1426,7 @@ def test_count_soql_for_three_columns_has_no_columns() -> None:
     assert select_part == "SELECT COUNT()"
     # 元の SOQL と同じ ``FROM`` / ``WHERE`` を持つ
     assert "FROM Task" in count
-    # WHERE 全文がそのまま残っている ( `` LIMIT `` を含む値で切れていない)
+    # WHERE 全文がそのまま残っている (`` LIMIT `` を含む値で切れていない)
     soql_normalized = count.replace("\n  AND\n  ", " AND ")
     assert "Subject LIKE '%A LIMIT B%'" in soql_normalized
     assert "What.Name = 'B'" in soql_normalized
@@ -1470,7 +1470,7 @@ def test_count_soql_where_not_cut_by_limit_or_order_by_in_value() -> None:
     # ``count.upper()`` でも大文字小文字を区別せずに出てこない)
     upper_count = count.upper()
     # 値の中の `` ORDER BY `` / `` LIMIT `` はカウントしても 1 個以上ある。
-    # 文字列 ``ORDER BY`` 句 ( 大文字+半角スペース+大文字 ) を探す: ``\\n ORDER BY`` 由来は無い。
+    # 文字列 ``ORDER BY`` 句 (大文字+半角スペース+大文字) を探す: ``\\n ORDER BY`` 由来は無い。
     # 確実に切り貼りしていない証として、 末尾の ``)`` の後に ``ORDER BY`` / ``LIMIT`` が出てこない。
     assert not upper_count.endswith(("ORDER BY", "LIMIT"))
 
@@ -1493,7 +1493,7 @@ def test_count_soql_with_top_rows_returns_limit_and_no_limit_clause() -> None:
 
 def test_build_count_soql_reads_from_soql_draft() -> None:
     """``build_count_soql(record)`` は ``record.soql_draft`` の ``count_soql`` /
-    ``limit`` をそのまま返す ( 文字列を切り貼りしない )。"""
+    ``limit`` をそのまま返す (文字列を切り貼りしない)。"""
     column_map = _column_map_with_types(
         [
             ("Subject", "Subject", "string"),
@@ -1548,7 +1548,7 @@ def test_build_count_soql_reads_from_soql_draft() -> None:
     soql_no_value_limit = soql_no_value_orderby.replace("'%A LIMIT B%'", "")
     assert "ORDER BY" not in soql_no_value_limit.upper()
     assert "LIMIT" not in soql_no_value_limit.upper()
-    # 値が壊れていない ( 元の SOQL の WHERE と一致 )
+    # 値が壊れていない (元の SOQL の WHERE と一致)
     assert "( Subject LIKE '%A LIMIT B%' )" in count_soql
     assert "( What.Name = 'ORDER BY B' )" in count_soql
 
@@ -1595,7 +1595,7 @@ def test_count_soql_for_three_columns_and_value_limit_does_not_break_wire() -> N
 # ── 安全策: 未完成 SOQL の印 ──────────────────────────────────────────
 # 仕様: ``STATUS_PARTIAL`` の SOQL は 1 行目に ``INCOMPLETE_MARKER`` を入れて、
 # ダウンローダーが実行前に止める。 ``STATUS_NEEDS_CHECK`` / ``STATUS_CREATED``
-# には印を付けない （ 要確認は人が補えば実行できるため ） 。 ``STATUS_NONE``
+# には印を付けない （要確認は人が補えば実行できるため） 。 ``STATUS_NONE``
 # はそもそも本文が無い。 組立式が解釈できないケース・ 履歴スナップショット
 # があるケースでも、 一部作れずに倒して印を付ける。
 
@@ -1641,7 +1641,7 @@ def test_incomplete_marker_when_boolean_filter_cannot_be_resolved() -> None:
 
 
 def test_incomplete_marker_when_historical_snapshot_dates_present() -> None:
-    """``historicalSnapshotDates`` があると missing に 「 SOQL にできない 」
+    """``historicalSnapshotDates`` があると missing に 「SOQL にできない」
     が入って ``一部作れず`` になり、 1 行目に印が付く。"""
     column_map = _column_map_with_types([("Name", "Name", "string")])
     record_metadata = {
@@ -1663,7 +1663,7 @@ def test_incomplete_marker_when_historical_snapshot_dates_present() -> None:
 
 
 def test_no_marker_when_status_is_needs_check() -> None:
-    """``要確認`` には印を付けない （ 人が補えば実行できるため ） 。"""
+    """``要確認`` には印を付けない （人が補えば実行できるため） 。"""
     column_map = _column_map_with_types([("Name", "Name", "string")])
     record = _make_record(
         detail_columns=["Name"],
@@ -1695,7 +1695,7 @@ def test_no_marker_when_status_is_created() -> None:
 
 
 def test_no_soql_body_when_status_is_none() -> None:
-    """``作れず`` は本文なし （ 印も付かない ） 。"""
+    """``作れず`` は本文なし （印も付かない） 。"""
     record = _make_record(main_object="")
     record = ReportRecord(
         key=record.key,
@@ -1730,12 +1730,12 @@ def test_partial_soql_first_line_starts_with_marker_from_contract() -> None:
     ``tests/contract/未完成のSOQL.contract.txt`` の 1 行目と同じ印で始まる。
 
     印の共通固定部分 (``【未完成】``) を見て止める契約のため、 印の文言が
-    多少違っていても 「 同じ印で始まる 」 ことをテストする
+    多少違っていても 「同じ印で始まる」 ことをテストする
     """
     contract_path = Path(__file__).parent / "contract" / "未完成のSOQL.contract.txt"
     expected_first_line = contract_path.read_text(encoding="utf-8").splitlines()[0]
     # 契約の 1 行目の印の共通部分を取り出す。 ``【未完成】`` までは固定
-    # （ 印の文言自体は変えてよい ） 。
+    # （印の文言自体は変えてよい） 。
     marker_prefix = "【未完成】"
     assert expected_first_line.startswith(marker_prefix)
 
@@ -1755,7 +1755,7 @@ def test_partial_soql_first_line_starts_with_marker_from_contract() -> None:
                 "備考": "",
             },
             {
-                # 取れない列 ( 表示名一致せず ) を 1 件混ぜて missing を作る
+                # 取れない列 (表示名一致せず) を 1 件混ぜて missing を作る
                 "列キー": "Opp.Mystery",
                 "表示名": "謎列",
                 "所属オブジェクト": "Opportunity",
@@ -1776,12 +1776,12 @@ def test_partial_soql_first_line_starts_with_marker_from_contract() -> None:
     first_line = draft.soql.split("\n", 1)[0]
     # 契約の見本 1 行目と同じ印 (``【未完成】`` プレフィックス) で始まる
     assert first_line.startswith(marker_prefix)
-    # 印として ``INCOMPLETE_MARKER`` と一致 （ soql-collector 側の固定値 ） 、
+    # 印として ``INCOMPLETE_MARKER`` と一致 （soql-collector 側の固定値） 、
     # かつ契約の見本の 1 行目も同じ印プレフィックスで始まる
     assert first_line.startswith(INCOMPLETE_MARKER.split("【未完成】", 1)[0])
 
 
-# ── 壊れた版での動作確認 ( 一時的に手で壊して実行→戻す ) ──────────────
-# 仕様: 「 壊したコードで一時的に走らせて元に戻す 」 。
+# ── 壊れた版での動作確認 (一時的に手で壊して実行→戻す) ──────────────
+# 仕様: 「壊したコードで一時的に走らせて元に戻す」 。
 # 既存のテストが落ちることを report 用に確認する。 テストファイルには
-# 残さない ( 下の 「 確認ログ 」 節で参照する ) 。
+# 残さない (下の 「確認ログ」 節で参照する) 。

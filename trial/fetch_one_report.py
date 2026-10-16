@@ -5,14 +5,14 @@
 ``output_dir`` だけ ``output/single/`` に差し替えて、 本体の ``output/`` や
 全体の ``列名の対応.csv`` を汚さないようにする。
 
-``trial/`` は **名前空間パッケージ** （ ``__init__.py`` を **置かない** ） として
+``trial/`` は **名前空間パッケージ** （``__init__.py`` を **置かない**） として
 配布し、 ``python -m trial.fetch_one_report`` でそのまま動かせる。
 
 使い方:
     python -m trial.fetch_one_report <レポートのURL> [管理番号]
 
 ``管理番号`` を省略すると ``sample``。 出力は ``output/single/`` 配下に
-``SOQL調査.xlsx`` と ``列名の対応.csv`` が書かれる （ 取れたとき ） 。
+``SOQL調査.xlsx`` と ``列名の対応.csv`` が書かれる （取れたとき） 。
 per-ID の CSV は作らない。
 """
 
@@ -32,7 +32,7 @@ from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
 
-# ``run_fetch`` の ``site_for`` と同じ型（ テスト用差し替え ）
+# ``run_fetch`` の ``site_for`` と同じ型（テスト用差し替え）
 SiteFor = Callable[[str], type]
 
 
@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
         "key",
         nargs="?",
         default="sample",
-        help="管理番号（ 既定: sample ）",
+        help="管理番号（既定: sample）",
     )
     args = parser.parse_args(argv)
 

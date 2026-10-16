@@ -9,13 +9,13 @@ Excel 用の字下げツリーと Mermaid の ``flowchart LR`` を出力する�
   の順 ） を優先する。 マージした ``fields`` の順は、 出現順を保つ
 - 同じオブジェクトに 2 度目に着いたときは、 その先を展開せず
   ``（上に出ています）`` と書く。 循環・重複で木が無限にならないように。
-  自己参照 （ ``Account.Parent`` → ``Account`` ） も同じ扱い
+  自己参照 （``Account.Parent`` → ``Account``） も同じ扱い
 - ポリモーフィック参照は ``referenceTo`` のエントリごとに 1 行 （ 既存
   の ``RelationRecord`` 表現と同じ ）
 - 段は ``RELATED_DEPTH=2`` で掘る。 経路上の describe は ``record.objects``
-  に既載のものしか使わない （ API を取り直さない ）。 これで木の組み立ては
+  に既載のものしか使わない （API を取り直さない）。 これで木の組み立ては
   ``records`` を渡せば決定的になる
-- Mermaid はノード ID とラベルを分ける。 ノード名に記号 （ ``/`` ``__`` 等 ）
+- Mermaid はノード ID とラベルを分ける。 ノード名に記号 （``/`` ``__`` 等）
   があってもエラーにならないように ``_sanitize_node_id`` で ID を整える
 
 公開するのは次の 2 つ:
@@ -27,7 +27,7 @@ Excel 用の字下げツリーと Mermaid の ``flowchart LR`` を出力する�
   Excel のセルに貼る字下げツリー （ 例: ``Task`` / ``├ What → Account`` /
   ``│ └ Owner → User`` / ``└ Owner → User`` ）
 - ``Diagram.render_mermaid_lines() -> list[str]``
-  Mermaid ``flowchart LR`` の本文 （ 先頭に ``flowchart LR`` 、 末尾に空行 ）
+  Mermaid ``flowchart LR`` の本文 （先頭に ``flowchart LR`` 、 末尾に空行）
 - ``write_main_object_diagrams(output_dir, records) -> tuple[Path, ...]``
   ``OUTPUT_DIR/関係図/{主オブジェクト}.md`` を書く。 既存はそのまま残し、
   今回取れた主オブジェクト分だけ上書きする
@@ -52,7 +52,7 @@ DIAGRAM_SUBDIR = "関係図"
 _ENCODING = "utf-8"
 _NEWLINE = "\n"
 
-# 字下げに使う罫線文字 （ ASCII ではなく罫線素片 ） 。 Excel で見ても揃うように
+# 字下げに使う罫線文字 （ASCII ではなく罫線素片） 。 Excel で見ても揃うように
 # 全角を使う。 ``│`` は縦線、 ``├`` は T 字、 ``└`` は L 字、 ``─`` は横線
 _TREE_VERTICAL = "│"
 _TREE_T_RIGHT = "├"
@@ -64,8 +64,8 @@ _TREE_HORIZONTAL = "─"
 class DiagramNode:
     """木の 1 ノード。 親への参照は ``parent`` で持ち、 ``children`` に子。
 
-    ``label`` は Excel の字下げで 1 行に出す文字列 （ 例: ``What → Account`` ） 。
-    ``note`` は 「 上に出ています」 の印など、 1 行に続いて表示する注記。
+    ``label`` は Excel の字下げで 1 行に出す文字列 （例: ``What → Account``） 。
+    ``note`` は 「上に出ています」 の印など、 1 行に続いて表示する注記。
     """
 
     label: str
@@ -80,7 +80,7 @@ class Diagram:
     """主オブジェクト 1 つ分の木と派生データ。"""
 
     main_object: str
-    root: DiagramNode  # 常に 1 ノード （ 主オブジェクト自身 ）
+    root: DiagramNode  # 常に 1 ノード （主オブジェクト自身）
     nodes_by_name: dict[str, DiagramNode] = field(default_factory=dict)
 
     def render_tree_lines(self) -> list[str]:
@@ -88,7 +88,7 @@ class Diagram:
 
         並びは深さ優先、 同じ親の中は ``children`` の順。 先頭は主オブジェクト
         1 行、 末尾の空行は含めない。 ``│`` ``├`` ``└`` ``─`` の罫線で
-        階層を表す。 ``│`` ``├`` ``└`` の前はインデント （ 全角スペース 4 個 ）
+        階層を表す。 ``│`` ``├`` ``└`` の前はインデント （全角スペース 4 個）
         を入れて Excel でセル内改行しても揃う形にする
         """
         lines: list[str] = [self.root.label]
@@ -99,11 +99,11 @@ class Diagram:
         """Mermaid ``flowchart LR`` の本文を返す。 先頭は ``flowchart LR`` 、 末尾
         に空行 1 個。 ノード ID は ``_sanitize_node_id`` で整え、 ラベルは
         ``["…"]`` で囲む。 矢印は ``A -->|"parent"| B`` のように、 リレーション
-        名をラベルにする （ ポリモーフィックや上に出ています もそのまま ）"""
+        名をラベルにする （ポリモーフィックや上に出ています もそのまま）"""
         lines: list[str] = ["flowchart LR"]
         visited_nodes: set[str] = set()
         visited_edges: set[tuple[str, str, str]] = set()
-        # 根 （ 主 ） を 1 行に
+        # 根 （主） を 1 行に
         root_id = _sanitize_node_id(self.root.label)
         lines.append(f'    {root_id}["{_escape_mermaid_label(self.root.label)}"]')
         visited_nodes.add(self.root.label)
@@ -129,12 +129,12 @@ def build_main_object_diagrams(
 
     同じ主オブジェクトの ``relations`` を ``(親, 項目, リレーション名, 子)`` で
     マージし、 同じ辺が複数回現れても 1 本にする。 ``max_depth`` で掘る深さを
-    制限する （ 既定 3 ＝ ``fetch.RELATED_DEPTH`` と同じ ） 。 ``main_object``
+    制限する （既定 3 ＝ ``fetch.RELATED_DEPTH`` と同じ） 。 ``main_object``
     が無い record は無視する
 
     Args:
         records: ``ReportRecord`` 互換の ``relations`` を持つ iterable。
-        max_depth: 何段目まで掘るか。 ``1`` なら 1 段だけ （ 主の参照先 ） 。
+        max_depth: 何段目まで掘るか。 ``1`` なら 1 段だけ （主の参照先） 。
             ``fetch.RELATED_DEPTH`` と同じ既定値だが、 木の組み立て側は API を
             取らないので、 値の検証は呼び出し側で行う
 
@@ -162,7 +162,7 @@ def build_main_object_diagrams(
                 continue
             edge_key = (parent, field_api, child)
             merged_edges.setdefault(main_object, set()).add(edge_key)
-            # 親ごとに項目の出現順を保持 （ リレーション名は表示用 ） 。
+            # 親ごとに項目の出現順を保持 （リレーション名は表示用） 。
             # 同じ辺が既に登録されていても順序は変えない
             item = (field_api, rel_name or "")
             seen = seen_field_order.setdefault(main_object, set())
@@ -211,7 +211,7 @@ def _build_node(
 ) -> DiagramNode:
     """再帰で ``DiagramNode`` を組み立てる。 ``visited`` は循環を防ぐための
     既に辿ったオブジェクト名の集合。 ``max_depth`` を超えると子を展開しない
-    （ ``label`` は 「 （上に出ています）」 に置換 ） 。"""
+    （ ``label`` は 「（上に出ています）」 に置換 ） 。"""
     if max_depth <= 1:
         # 1 段だけ掘る指定なら、 ここでは子を出さない
         return DiagramNode(
@@ -247,7 +247,7 @@ def _build_node(
                 )
             )
             continue
-        # 末端かどうか （ 子から先が出る辺があるか ） 。
+        # 末端かどうか （子から先が出る辺があるか） 。
         child_has_outgoing = any(parent == child for parent, _, _ in edges)
         if not child_has_outgoing:
             # 末端。 子は表示だけで、 先は展開しない
@@ -303,7 +303,7 @@ def _render_children(
         note = f" {child.note}" if child.note else ""
         lines.append(f"{prefix}{branch}{child.label}{note}")
         # 子の中にさらに子があれば、 字下げを 1 段深くする。
-        # 「最後」だった場合は縦線 （ 「 」 ） ではなくスペース 4 個で揃える
+        # 「最後」だった場合は縦線 （「」） ではなくスペース 4 個で揃える
         if child.children:
             next_prefix = f"{prefix}{'    ' if is_last else f'{_TREE_VERTICAL}   '}"
             _render_children(lines, child.children, prefix=next_prefix)
@@ -313,7 +313,7 @@ def _render_children(
 
 
 def _sanitize_node_id(name: str) -> str:
-    """Mermaid のノード ID に使える形 （ 英数字と ``_`` だけ ） に整える。"""
+    """Mermaid のノード ID に使える形 （英数字と ``_`` だけ） に整える。"""
     chars: list[str] = []
     for ch in name:
         if ch.isalnum() or ch == "_":
@@ -329,7 +329,7 @@ def _sanitize_node_id(name: str) -> str:
 
 
 def _escape_mermaid_label(label: str) -> str:
-    """Mermaid のラベル （ ``["…" ]`` の中身 ） で ``"`` を ``#quot;`` に換える。
+    """Mermaid のラベル （``["…" ]`` の中身） で ``"`` を ``#quot;`` に換える。
     それ以外の記号は Mermaid の構文上そのまま書ける。 改行は ``<br>`` に直す
     """
     escaped = label.replace('"', "#quot;").replace("\n", "<br>")
@@ -400,7 +400,7 @@ def write_main_object_diagrams(
 ) -> tuple[Any, ...]:
     """``diagrams`` の各 ``Diagram`` を ``output_dir/関係図/{主オブジェクト}.md``
     に書く。 既存はそのまま残し、 今回渡された主オブジェクト分だけ上書きする。
-    ``diagrams`` が空のときは何も書かない （ ディレクトリも作らない ）
+    ``diagrams`` が空のときは何も書かない （ディレクトリも作らない）
     """
     if not diagrams:
         return ()
@@ -413,7 +413,7 @@ def write_main_object_diagrams(
         wrote.append(path)
     if wrote:
         logger.info(
-            "関係図の Markdown を書き出し: %s（ %d 件 ）",
+            "関係図の Markdown を書き出し: %s（%d 件）",
             target_dir,
             len(wrote),
         )
@@ -429,9 +429,9 @@ def _render_markdown(diagram: Diagram) -> str:
     lines.append(f"# 関係図: {diagram.main_object}")
     lines.append("")
     lines.append(
-        "この図に無いオブジェクトは、 設定した段数 （ ``RELATED_DEPTH`` ） ・件数"
-        "（ ``RELATED_MAX`` ） の範囲では主オブジェクトから参照項目で辿れない。"
-        "子のリレーション （ サブクエリで取るもの ） は含まない"
+        "この図に無いオブジェクトは、 設定した段数 （``RELATED_DEPTH``） ・件数"
+        "（``RELATED_MAX``） の範囲では主オブジェクトから参照項目で辿れない。"
+        "子のリレーション （サブクエリで取るもの） は含まない"
     )
     lines.append("")
     lines.append("```mermaid")
@@ -451,7 +451,7 @@ def render_inline_tree_for_record(
     ``SOQL資料/{管理番号}.md`` に埋め込むためのタプルで返す。
 
     ``main_object`` が無い record や、 ``diagram`` が空のときは空タプル
-    （ 埋め込まない ） 。 他の主オブジェクト（同じ record 内）には影響しない
+    （埋め込まない） 。 他の主オブジェクト（同じ record 内）には影響しない
     ので、 ここでは ``record`` 単独で ``build_main_object_diagrams`` 相当を
     動かす
     """

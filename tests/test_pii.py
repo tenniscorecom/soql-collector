@@ -96,7 +96,7 @@ def test_keyword_match_on_contact_object_is_yes() -> None:
 def test_keyword_match_on_account_object_is_review() -> None:
     """``Account.Name`` は キーワード一致するが Account 個人系でないので 要確認。
 
-    ラベルが 「 氏名 」 のように 2 文字以上の日本語キーワードに **部分一致**
+    ラベルが 「氏名」 のように 2 文字以上の日本語キーワードに **部分一致**
     するケースを使う。 1 文字の ``名`` が ``商談名`` などに誤検知しないことを
     別テストで確かめている。
     """
@@ -282,16 +282,16 @@ def test_keyword_override_ignores_unrelated() -> None:
         config,
         {},
     )
-    # キーワード 「 電話 」 には一致しないので 型も無しで 空
+    # キーワード 「電話」 には一致しないので 型も無しで 空
     assert result.status == ""
 
 
-# ── キーワード一致ルール （ 1 文字日本語 / ASCII の区別 ） ──────────────
+# ── キーワード一致ルール （1 文字日本語 / ASCII の区別） ──────────────
 
 
 def test_opportunity_name_is_not_review_by_single_char_keyword() -> None:
-    """``Opportunity.Name`` で表示名が ``商談名``: キーワード ``名`` （ 1 文字 ）
-    に部分一致しないので、 商談レポートが全部 「 要確認 」 に倒れない。
+    """``Opportunity.Name`` で表示名が ``商談名``: キーワード ``名`` （1 文字）
+    に部分一致しないので、 商談レポートが全部 「要確認」 に倒れない。
     """
     result = pii.evaluate_column_pii(
         _ref(
@@ -326,7 +326,7 @@ def test_full_name_label_matches_japanese_two_char_keyword() -> None:
 
 def test_single_char_japanese_label_matches_exactly() -> None:
     """表示名が ``名`` や ``姓`` そのもののときは 1 文字キーワードに **完全一致**
-    するので ``あり`` （ Contact ） になる。 個人系オブジェクトでないときは
+    するので ``あり`` （Contact） になる。 個人系オブジェクトでないときは
     ``要確認`` 。
     """
     name_result = pii.evaluate_column_pii(
@@ -438,7 +438,7 @@ def test_ascii_keywords_match_on_token_boundary() -> None:
     assert city_custom.status == "要確認"
     assert "city" in city_custom.basis.lower()
 
-    # ``state`` キーワードは ``Mailing State`` （ 表示名 ） にトークン一致
+    # ``state`` キーワードは ``Mailing State`` （表示名） にトークン一致
     mailing_state = pii.evaluate_column_pii(
         _ref(
             column_key="Contact.MailingState",

@@ -47,7 +47,7 @@ _WIDE_RANGES: tuple[tuple[int, int], ...] = (
     (0xFFE0, 0xFFE6),  # Fullwidth Signs
 )
 
-# 全角扱いする単独コードポイント ( 句読点・ 踊り字 )
+# 全角扱いする単独コードポイント (句読点・ 踊り字)
 _WIDE_SINGLE_CODEPOINTS: frozenset[int] = frozenset({0x3000, 0x3001, 0x3002, 0x3003})
 
 
@@ -68,7 +68,7 @@ def adjust_column_widths(
     *,
     start_row: int,
 ) -> None:
-    """列幅を 「 全角は 2 ・ 半角は 1 としてカウント 」 した値の最大 + 余白 で決める。
+    """列幅を 「全角は 2 ・ 半角は 1 としてカウント」 した値の最大 + 余白 で決める。
 
     最小 ``MIN_COLUMN_WIDTH`` 、 最大 ``MAX_COLUMN_WIDTH`` 。 最大を超える
     列は折り返し表示にする

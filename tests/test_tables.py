@@ -1,7 +1,7 @@
 """``tables`` のテスト。 ``ReportRecord`` を直接作って、 ``SOQL調査.xlsx`` と
-``列名の対応.csv`` の中身を厳密に確かめる ( ネットワークには出ない ) 。
+``列名の対応.csv`` の中身を厳密に確かめる (ネットワークには出ない) 。
 
-シート構成: 3 枚 （ 一覧 / 列の対応 / 関係図 ） 、 すべて Excel のテーブル （ 構造化 ） 。
+シート構成: 3 枚 （一覧 / 列の対応 / 関係図） 、 すべて Excel のテーブル （構造化） 。
 """
 
 from __future__ import annotations
@@ -248,7 +248,7 @@ def test_sheet_names_in_order(tmp_path: Path) -> None:
 
 
 def test_each_sheet_has_excel_table(tmp_path: Path) -> None:
-    """3 枚それぞれに Excel のテーブル （ 構造化 ） がある。"""
+    """3 枚それぞれに Excel のテーブル （構造化） がある。"""
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001", main_object="Opportunity")
@@ -319,14 +319,14 @@ def test_survey_basic(tmp_path: Path) -> None:
 
 
 def test_survey_similar_group_text(tmp_path: Path) -> None:
-    """似たレポート判定で 1 グループになると 一覧シートの 「 似たレポート 」 列に
-    「 グループN: <基準の管理番号> が基準 」 の形で出る。"""
+    """似たレポート判定で 1 グループになると 一覧シートの 「似たレポート」 列に
+    「グループN: <基準の管理番号> が基準」 の形で出る。"""
 
     output = tmp_path / "output"
     output.mkdir()
     record_1001 = _make_record("1001", main_object="Opportunity")
     record_1002 = _make_record("1002", main_object="Opportunity")
-    # 同じ構造・同じ条件にすれば 「 同一 」 判定で 1 グループになる
+    # 同じ構造・同じ条件にすれば 「同一」 判定で 1 グループになる
     run_tables(output, [record_1001, record_1002])
 
     workbook = load_workbook(output / XLSX_NAME)
@@ -435,7 +435,7 @@ def test_columns_sheet_unresolved_status_is_needs_check_for_candidates(tmp_path:
 
 
 def test_columns_sheet_user_fixed_soql(tmp_path: Path) -> None:
-    """「 直したSOQL列名 」 由来の値が入ると 「 どこから=人が直した 」 になる。"""
+    """「直したSOQL列名」 由来の値が入ると 「どこから=人が直した」 になる。"""
     output = tmp_path / "output"
     output.mkdir()
     record = _make_record("1001", main_object="Opportunity")
@@ -457,7 +457,7 @@ def test_columns_sheet_user_fixed_soql(tmp_path: Path) -> None:
     assert unknown_rows[0]["状態"] == "OK"
     assert unknown_rows[0]["どこから"] == "人が直した"
     assert unknown_rows[0]["使うSOQL列名"] == "CustomField__c"
-    # 自動の値 列は 人が直して自動と違うときだけ埋める （ このケースは同じ ） ので空
+    # 自動の値 列は 人が直して自動と違うときだけ埋める （このケースは同じ） ので空
     assert (unknown_rows[0]["自動の値"] or "") == ""
 
 
@@ -542,9 +542,9 @@ def test_overview_sheet_freeze_panes_and_width(tmp_path: Path) -> None:
 
     workbook = load_workbook(output / XLSX_NAME)
     ws = workbook[SHEET_OVERVIEW]
-    # freeze_panes が A3 （ 3 行目からスクロール、 1 行目・ 2 行目が見出し ）
+    # freeze_panes が A3 （3 行目からスクロール、 1 行目・ 2 行目が見出し）
     assert ws.freeze_panes == "A3"
-    # 列幅が設定されている （ 何列かが 8 以上 ）
+    # 列幅が設定されている （何列かが 8 以上）
     widths = [
         ws.column_dimensions[col].width
         for col in ws.column_dimensions

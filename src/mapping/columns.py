@@ -10,14 +10,14 @@ from typing import Any
 
 
 def filter_only_columns(report_filters: list[dict[str, Any]]) -> list[str]:
-    """``reportFilters`` にだけ現れる列キーを返す （ SELECT には出ない列 ） 。"""
+    """``reportFilters`` にだけ現れる列キーを返す （SELECT には出ない列） 。"""
     return [
         report_filter["column"] for report_filter in report_filters if report_filter.get("column")
     ]
 
 
 def grouping_columns(report_metadata: dict[str, Any]) -> list[str]:
-    """``groupingsDown`` / ``groupingsAcross`` （ ``SUMMARY`` / ``MATRIX`` ）の列キー。"""
+    """``groupingsDown`` / ``groupingsAcross`` （``SUMMARY`` / ``MATRIX``）の列キー。"""
     return [
         grouping["name"]
         for grouping_key in ("groupingsDown", "groupingsAcross")
@@ -29,8 +29,8 @@ def grouping_columns(report_metadata: dict[str, Any]) -> list[str]:
 def aggregate_field_columns(aggregates: list[str]) -> list[str]:
     """``aggregates`` の集計対象列キーを返す。
 
-    集計キーは ``"s!Amount"`` のように 「 関数!列キー 」 の形。 ``"!"`` が無い
-    もの （ ``RowCount`` など ） は列キーとして扱えないため無視する。
+    集計キーは ``"s!Amount"`` のように 「関数!列キー」 の形。 ``"!"`` が無い
+    もの （``RowCount`` など） は列キーとして扱えないため無視する。
     """
     return [key.split("!", 1)[-1] for key in aggregates if "!" in key]
 
@@ -49,7 +49,7 @@ def sort_by_columns(report_metadata: dict[str, Any]) -> list[str]:
     """``sortBy`` の ``sortColumn`` を取り出して順番通りに返す。
 
     SELECT には出ないが ``ORDER BY`` で使う列も列対応表に含める
-    （ ``build_column_map()`` がラベルで解決するため ） 。
+    （``build_column_map()`` がラベルで解決するため） 。
     """
     return [
         entry["sortColumn"]
@@ -59,9 +59,9 @@ def sort_by_columns(report_metadata: dict[str, Any]) -> list[str]:
 
 
 def collect_describable_columns(report_metadata: dict[str, Any]) -> list[str]:
-    """``build_column_map()`` が解決を試みる列キーの一覧を組み立てる （ 重複除去済み ） 。
+    """``build_column_map()`` が解決を試みる列キーの一覧を組み立てる （重複除去済み） 。
 
-    出力に出る列 （ ``detailColumns`` ） に加え、 SELECT には出ないが
+    出力に出る列 （``detailColumns``） に加え、 SELECT には出ないが
     ``reportFilters`` だけで使う列、 グルーピング列 （ ``groupingsDown`` /
     ``groupingsAcross`` ） 、 集計対象列、 ``standardDateFilter`` の列、
     ``sortBy`` の列も含める。 順序と重複除去の規則は
@@ -82,14 +82,14 @@ def collect_describable_columns(report_metadata: dict[str, Any]) -> list[str]:
 
 
 def select_column_keys(report_metadata: dict[str, Any]) -> list[str]:
-    """SELECT に入れる列のキー （ ``detailColumns`` → グルーピング列 ） 。 重複は除かない。"""
+    """SELECT に入れる列のキー （``detailColumns`` → グルーピング列） 。 重複は除かない。"""
     return report_metadata.get("detailColumns", []) + grouping_columns(report_metadata)
 
 
 def output_column_keys(report_metadata: dict[str, Any]) -> list[str]:
-    """レポートの出力に出る列のキー （ SELECT の列 → 集計の対象列 ） 。 重複は除かない。
+    """レポートの出力に出る列のキー （SELECT の列 → 集計の対象列） 。 重複は除かない。
 
-    個人情報の判定など 「 出力に出る列 」 だけを見るときに使う。 絞り込みに
+    個人情報の判定など 「出力に出る列」 だけを見るときに使う。 絞り込みに
     だけ使う列は含まない。
     """
     return select_column_keys(report_metadata) + aggregate_field_columns(
@@ -102,7 +102,7 @@ def collect_column_info(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
     グルーピング列・集計列の表示名は ``detailColumnInfo`` ではなく
     ``groupingColumnInfo`` / ``aggregateColumnInfo`` 側に入っているため、
-    同じ列キー空間としてマージする （ キーの重複は無い前提 ） 。
+    同じ列キー空間としてマージする （キーの重複は無い前提） 。
     """
     extended_metadata: dict[str, dict[str, Any]] = metadata.get("reportExtendedMetadata", {})
     column_info: dict[str, dict[str, Any]] = {}

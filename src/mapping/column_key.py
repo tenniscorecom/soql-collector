@@ -1,4 +1,4 @@
-"""列キーから SOQL 列名を取りに行く手順 （ ``Contact.Account.Name`` など ） 。
+"""列キーから SOQL 列名を取りに行く手順 （``Contact.Account.Name`` など） 。
 
 ``main_object`` から 1 段ずつ ``fields`` を ``relationshipName`` → ``name`` の順で
 突き合わせ、 経路上の参照先を ``fetch_object`` で補完しながら SOQL 列名を
@@ -46,8 +46,8 @@ def prefix_matches(chain_candidate: _ChainCandidate, prefix: str) -> bool:
 
     一致条件: 大文字小文字・``_`` を無視して、 次のいずれかと等しい
 
-    - 鎖の最初のリレーション名 （ ``"A.Owner"`` → ``"A"`` ）
-    - 鎖の末端オブジェクト名 （ ``"What.Owner"`` → ``"User"`` ）
+    - 鎖の最初のリレーション名 （``"A.Owner"`` → ``"A"``）
+    - 鎖の末端オブジェクト名 （``"What.Owner"`` → ``"User"``）
 
     末端オブジェクト名は鎖の行き先そのものなので、 鎖が深くなっても
     ``prefix`` が末端オブジェクトを指している場合は一致する。
@@ -76,13 +76,13 @@ def _resolve_name_field_for_reference(
     表示値と合わない。 決め方:
 
     - ``referenceTo`` がちょうど 1 つのときだけ、 参照先の describe を
-      ``objects`` （ 既に ``_resolve_column_key_to_soql`` 内で集めたもの ）
+      ``objects`` （既に ``_resolve_column_key_to_soql`` 内で集めたもの）
       → ``fetch_object`` の順で探し、 ``nameField`` が True の項目を採る
-    - ``referenceTo`` が 2 つ以上 （ ポリモーフィック ） ・ describe が取れない
+    - ``referenceTo`` が 2 つ以上 （ポリモーフィック） ・ describe が取れない
       ・ ``nameField`` 項目が無い、 のいずれかは ``("Name", "string")`` に
       フォールバック
     - ``fetch_object`` が 401 / 403 を投げたら **ここでは握りつぶさず**
-      上位へ送出する （ 既存と同じ ）
+      上位へ送出する （既存と同じ）
 
     戻り値の ``type`` は ``"string"`` 固定にする （ 名前項目が ``text`` /
     ``string`` どちらの組織でもレポート表示は文字列なので、 ``text`` を
@@ -118,30 +118,30 @@ def resolve_column_key_to_soql(
     成功時 ``(soql_name, field_type, None, id_column)`` 。
     失敗時 ``(None, None, note, None)`` 。
     ``note`` は表示名の照合にフォールバックしたときに備考に足す一行分
-    （ 「 列キーで『 X 』が Y に見つかりません （ リレーション名の候補: … ） 」 ）。
+    （ 「列キーで『 X 』が Y に見つかりません （リレーション名の候補: …）」 ）。
     呼び出し側で表示名の照合が決まったときはこの note は **使わない**
-    （ 「 決まったほうを優先 」 のため ） 。
+    （「決まったほうを優先」 のため） 。
 
     ``id_column`` は **末端の項目が参照項目でレポート表示と同じ名前項目に
     置き換えたとき** の元の ID 列の SOQL 名。 置き換えなかったとき / 失敗
     したときは ``None`` 。 例:
 
-    - ``Task__c.Custom_Name__c`` （ 末端が参照 ） → soql_name
+    - ``Task__c.Custom_Name__c`` （末端が参照） → soql_name
       ``Custom_Name__r.Name``、 id_column ``Custom_Name__c``
-    - ``Contact.Account.Name`` （ 末端が ``Name`` ） → soql_name
-      ``Account.Name``、 id_column ``None`` （ 置換しない ）
+    - ``Contact.Account.Name`` （末端が ``Name``） → soql_name
+      ``Account.Name``、 id_column ``None`` （置換しない）
 
     各段の項目を探す順は ``_walk_soql_path()`` と同じ:
 
     1. ``relationshipName`` が一致する参照項目
     2. ``name`` が一致する項目
 
-    途中の段がマッチしたとき （ 最後の段以外 ） は、 **SOQL 上は** その項目
-    の ``relationshipName`` （ 例: ``AccountId`` 参照 → ``Account`` ） に
+    途中の段がマッチしたとき （最後の段以外） は、 **SOQL 上は** その項目
+    の ``relationshipName`` （例: ``AccountId`` 参照 → ``Account``） に
     置き換える。 最後の段は項目の ``name`` （ ``Account.Owner.Name`` の
     末端 ``Name`` ） が基本だが、 **末端が ``type == "reference"`` かつ
     ``relationshipName`` が空でない参照項目のときは、 参照先の名前項目に
-    置き換える** （ レポート表示が名前項目で、 ID 列では値が違うため ） 。
+    置き換える** （レポート表示が名前項目で、 ID 列では値が違うため） 。
 
     経路上のオブジェクトが ``main_describe`` 起点の ``objects`` に無い
     ときは ``fetch_object`` で取りに行く。 取得は ``fetch_object`` の内部で
@@ -167,7 +167,7 @@ def resolve_column_key_to_soql(
 def _split_column_key_segments(main_object: str, column_key: str) -> list[str]:
     """``column_key`` から ``main_object.`` 以降の経路セグメントを取り出す。
 
-    空の経路 （ ``Contact.`` など ） は空リストを返し、 呼び出し側で失敗扱い
+    空の経路 （``Contact.`` など） は空リストを返し、 呼び出し側で失敗扱い
     にしてもらう。 ``main_object`` の長さ + 1 は ``.`` の分を引いた残り。
     """
     suffix = column_key[len(main_object) + 1 :]
@@ -283,7 +283,7 @@ def _finalize_soql_segment(
         name_field_name, name_field_type = _resolve_name_field_for_reference(
             reference_to, objects, fetch_object
         )
-        # 元の ID 列の SOQL 名を保持 （ 備考で ID 列の代替手段を示す ）
+        # 元の ID 列の SOQL 名を保持 （備考で ID 列の代替手段を示す）
         id_column = ".".join([*soql_segments, field_name])
         soql_segments.append(relationship)
         soql_segments.append(name_field_name)

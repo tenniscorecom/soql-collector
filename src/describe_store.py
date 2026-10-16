@@ -2,22 +2,22 @@
 
 レポートの describe は毎回 Salesforce に聞くが、 オブジェクトの describe は
 **このツールで標準的に入力とする管理番号が変わるまで** 再利用できる。 同じ組織
-（ URL の netloc が同じ ） で過去に取り直した結果は **CSV 1 ファイル** に
+（URL の netloc が同じ） で過去に取り直した結果は **CSV 1 ファイル** に
 1 行 1 項目で溜まり、 次回の実行からは CSV を見て API を呼ばない。
 
-- 保存先: ``[FILES] DESCRIBE_CSV_PATH`` （ 既定 ``./data/項目定義.csv`` ）
-- メモリ辞書（ 1 回の実行内 ） のキーは ``(組織, オブジェクト)`` のタプル。
-  組織 = URL のホスト名 （ 小文字 ）。 これで本番と Sandbox のレポートが
+- 保存先: ``[FILES] DESCRIBE_CSV_PATH`` （既定 ``./data/項目定義.csv``）
+- メモリ辞書（1 回の実行内） のキーは ``(組織, オブジェクト)`` のタプル。
+  組織 = URL のホスト名 （小文字）。 これで本番と Sandbox のレポートが
   同じ実行に混ざっても別物として扱われる
-- 列 （ この順 ） : 組織 / オブジェクト / オブジェクト表示名 / カスタム
+- 列 （この順） : 組織 / オブジェクト / オブジェクト表示名 / カスタム
   オブジェクト / 項目 API 名 / 項目表示名 / 型 / 参照先 / リレーション名 /
   カスタム項目 / 絞り込み可 / 並べ替え可 / 選択肢 / 取得日時
 - 1 オブジェクトの行は同じ取得日時
 - 真偽値は ``○`` / 空文字、 参照先と選択肢は ``|`` 区切り
 - CSV から読んだ describe は **そのまま** ``_slim_object`` に渡せる形に
-  組み立て直して返す （ 既存の mapping / pii / 関連の掘り込みは変えない ）
-- 失敗 （ HTTP エラー / ``ValueError`` ） は CSV に書かない。 1 回の実行の
-  メモリだけに留める （ 401 / 403 はそのまま上位へ送出 ）
+  組み立て直して返す （既存の mapping / pii / 関連の掘り込みは変えない）
+- 失敗 （HTTP エラー / ``ValueError``） は CSV に書かない。 1 回の実行の
+  メモリだけに留める （401 / 403 はそのまま上位へ送出）
 - 見出しが違う既存 CSV は ``CSVError`` を上げ、 ファイルは変更しない
 """
 
@@ -81,7 +81,7 @@ def org_from_url(url: str) -> str:
 def _normalize_object(name: str) -> str:
     """オブジェクト名を大小文字無視で比較用に正規化する。
 
-    キー （ ``(org, object)`` のタプル ） と、 CSV から読むときの引きにこれを使う。
+    キー （``(org, object)`` のタプル） と、 CSV から読むときの引きにこれを使う。
     """
     return name.strip().lower()
 
@@ -92,7 +92,7 @@ def _key(org: str, object_name: str) -> tuple[str, str]:
 
 
 def _bool_mark(value: str) -> bool:
-    """CSV から読んだ真偽値 （ ``"○"`` ） を ``bool`` にする。"""
+    """CSV から読んだ真偽値 （``"○"``） を ``bool`` にする。"""
     return value.strip() == TRUE_MARK
 
 
@@ -110,9 +110,9 @@ def _split_pipe(text: str) -> list[str]:
 
 
 def active_picklist_values(picklist_values: object) -> list[str]:
-    """API の ``picklistValues`` から active な ``value`` だけを取り出す（ 境界 ）。
+    """API の ``picklistValues`` から active な ``value`` だけを取り出す（境界）。
 
-    ``fetch._slim_field``（ 最大 30 件に切る ）と、 項目定義.csv への書き出しの
+    ``fetch._slim_field``（最大 30 件に切る）と、 項目定義.csv への書き出しの
     両方がこれを使う。
     """
     if not isinstance(picklist_values, list):
@@ -135,7 +135,7 @@ def _describe_to_csv_rows(
     fields: list[dict[str, Any]],
     fetched_at: str,
 ) -> list[dict[str, str]]:
-    """describe dict から （ 1 オブジェクト ） の CSV 行 dict のリストを作る。
+    """describe dict から （1 オブジェクト） の CSV 行 dict のリストを作る。
 
     元の ``fields`` の **出現順** を保つ。 picklist は active な値だけ、
     参照先は ``referenceTo`` を ``|`` 区切りに潰す。
@@ -201,7 +201,7 @@ def csv_rows_to_describe(rows: list[dict[str, str]]) -> dict[str, Any]:
     各 field の ``name`` / ``label`` / ``type`` / ``custom`` / ``referenceTo`` /
     ``relationshipName`` / ``picklistValues`` ）を持たせる。 これで CSV から読んだ値を
     ``_slim_object`` に通しても API 直呼びと同じ出力が得られる。 ``rows`` は comken の
-    ``CSV`` で読んだ行（ 見出しを確かめてあり、 値はすべて str ）。
+    ``CSV`` で読んだ行（見出しを確かめてあり、 値はすべて str）。
     """
     if not rows:
         return {"name": "", "label": "", "custom": False, "fields": []}
@@ -231,9 +231,9 @@ def csv_rows_to_describe(rows: list[dict[str, str]]) -> dict[str, Any]:
 def load_describe_index(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
     """CSV を読み ``(org, object_lower) -> describe dict`` の dict を返す。
 
-    - ファイルが存在しないときは空 dict を返す （ 新規扱い ）
+    - ファイルが存在しないときは空 dict を返す （新規扱い）
     - 見出しが ``DESCRIBE_CSV_COLUMNS`` と違うときは ``CSVError`` を上げる
-    - 1 行でも列数が違うときも ``CSVError`` （ ``CSV.read`` が出す ）
+    - 1 行でも列数が違うときも ``CSVError`` （``CSV.read`` が出す）
     """
     if not path.exists():
         return {}
@@ -260,7 +260,7 @@ def load_describe_index(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
     result: dict[tuple[str, str], dict[str, Any]] = {}
     for key, rows in rows_by_object.items():
         # 同じ (org, object) の行は 1 つの describe に集約
-        # （ 通常は 1 グループだけだが、 古いログ混入時の保険 ）
+        # （通常は 1 グループだけだが、 古いログ混入時の保険）
         object_rows = sorted(rows, key=lambda r: r["取得日時"])
         result[key] = csv_rows_to_describe(object_rows)
     return result
@@ -280,7 +280,7 @@ def upsert_object_rows(
     """CSV の ``(org, object)`` の行を入れ替えて atomic に書き換える。
 
     既存 CSV が無いときは新規作成。 既存 CSV が見出し違いのときは
-    ``CSVError`` を上げる （ ``_merge_column_names_csv`` と同じやり方 ）。
+    ``CSVError`` を上げる （``_merge_column_names_csv`` と同じやり方）。
     """
     org_key = org.strip().lower()
     obj_key = _normalize_object(object_name)
@@ -315,10 +315,10 @@ def upsert_object_rows(
 
 
 def now_iso() -> str:
-    """ISO 形式の取得日時を返す （ 秒精度 ）。
+    """ISO 形式の取得日時を返す （秒精度）。
 
     CSV 上で人が読む時間表記と並べ替えのしやすさを両立するため ``T`` 区切り
-    の ISO 8601 にする （ ``YYYY-MM-DDTHH:MM:SS+00:00`` ） 。
+    の ISO 8601 にする （``YYYY-MM-DDTHH:MM:SS+00:00``） 。
     """
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -332,7 +332,7 @@ class DescribeStore:
 
     1 回の実行の中で ``_fetch_object_cached`` から何度も参照される。 メモリ
     にヒットすれば即返し、 無ければ CSV を見てヒットすればメモリに載せて返す。
-    どちらも無ければ API を呼ぶ （ 呼び元が行う ） 。
+    どちらも無ければ API を呼ぶ （呼び元が行う） 。
 
     属性:
         path: CSV のパス。 親フォルダが無ければ作る。
@@ -357,7 +357,7 @@ class DescribeStore:
 
     @classmethod
     def empty(cls, path: Path) -> DescribeStore:
-        """CSV を読まずに空のストアを作る （ テストやパス指定が無いとき ）"""
+        """CSV を読まずに空のストアを作る （テストやパス指定が無いとき）"""
         return cls(path=path)
 
     @classmethod
@@ -426,7 +426,7 @@ class DescribeStore:
         """``(org, object)`` を API から取り直し、 成功時に CSV の行を入れ替える。
 
         戻り値: 成功時は新しい describe dict、 失敗時は ``None``。 ``401`` /
-        ``403`` はそのまま上位へ送出する （ 他の fetch と同じ挙動 ） 。
+        ``403`` はそのまま上位へ送出する （他の fetch と同じ挙動） 。
         """
         from comken.exceptions import SalesforceRequestError
 

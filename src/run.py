@@ -10,13 +10,13 @@ describe を取って ``ReportRecord`` に詰める。 その record の一覧�
 - 0 … 全件成功
 - 1 … 1 件以上のレポートが失敗した / 出力の生成に失敗した
 - 2 … 引数が付いた / 管理表に「有効」が ○ の行が無い / config.ini に
-  必須キーが無い （ comken の ``ConfigError`` がそのまま上がる）
+  必須キーが無い （comken の ``ConfigError`` がそのまま上がる）
 
 `main.py` はこの ``run()`` の戻り値を ``SystemExit`` に流す。
 
 ログ方針: 実行の開始と終了、 dry-run の一覧はここで 1 回ずつ出す。 1
-レポート分の経過ログ（ 取得開始・節目・取得完了/失敗 ） は ``run_fetch`` 側
-（ ``src/fetch.py`` ） が持つ。 同じ事実を重ねて出さない。
+レポート分の経過ログ（取得開始・節目・取得完了/失敗） は ``run_fetch`` 側
+（``src/fetch.py``） が持つ。 同じ事実を重ねて出さない。
 
 設定は comken の ``Config`` から直接読む（ ``from comken import config``
 で ``config.FILES.MASTER_XLSX_PATH`` のように ）。 comken が自動で
@@ -26,7 +26,7 @@ describe を取って ``ReportRecord`` に詰める。 その record の一覧�
 - ``[PII] KEYWORDS`` / ``PERSON_OBJECTS`` が ``[ ]`` なしの素のカンマ区切りで
   書かれているので ``split(",")`` で tuple にする
 
-範囲チェック・既定値の補完はここには持たせない（ 設定の規約にも反するため ）。
+範囲チェック・既定値の補完はここには持たせない（設定の規約にも反するため）。
 キーが無いときは comken の ``ConfigError`` をそのまま使う側へ流す。
 """
 
@@ -54,7 +54,7 @@ from src.tables import run_tables
 logger = logging.getLogger(__name__)
 
 
-# ``run_fetch`` の ``site_for`` と同じ型（ テストで差し替えるため ）
+# ``run_fetch`` の ``site_for`` と同じ型（テストで差し替えるため）
 SiteFor = Callable[[str], type]
 
 
@@ -175,7 +175,7 @@ def _write_output(
         output_failed = True
         logger.exception("CSV の生成に失敗しました: %s", exc)
 
-    # ``列の直し.xlsx`` を最後に 1 回書く （ 人が入れた値を壊さない ）。
+    # ``列の直し.xlsx`` を最後に 1 回書く （人が入れた値を壊さない）。
     # PermissionError 等は ``merge_and_write_after_run`` 内で WARNING だけになり、 処理は続く
     column_fix_xlsx.merge_and_write_after_run(
         path=file_paths.column_fix_xlsx_path,
@@ -197,7 +197,7 @@ def run(
 
     Args:
         argv: コマンドライン引数。 ``None`` なら ``sys.argv[1:]`` を使う。
-            1 件でも指定されたら何もしないでエラー終了（ 終了コード 2 ）。
+            1 件でも指定されたら何もしないでエラー終了（終了コード 2）。
         site_for: URL → Salesforce サイトクラスの関数。 テスト用差し替え。
         file_paths: ``config.ini [FILES]`` の値。 省略時は ``read_file_paths()`` で
             読む。 テストで差し替えるために引数で受ける。
@@ -206,7 +206,7 @@ def run(
         0 … 全件成功
         1 … 失敗した ID が 1 件以上ある / 出力の生成に失敗した
         2 … 引数が付いた / 管理表に「有効」が ○ の行が無い / config.ini が不正
-            （ comken の ``ConfigError`` を 2 にして返す ）
+            （comken の ``ConfigError`` を 2 にして返す）
     """
     if argv is None:
         argv = sys.argv[1:]
@@ -214,7 +214,7 @@ def run(
         logger.error("引数は使いません。取るレポートは管理表の『有効』列が ○ の行で決まります")
         return 2
 
-    # config.ini のキー欠落 （ ``ConfigError`` ） は全て return 2 にまとめる
+    # config.ini のキー欠落 （``ConfigError``） は全て return 2 にまとめる
     try:
         if file_paths is None:
             file_paths = read_file_paths()
@@ -247,7 +247,7 @@ def run(
             logger.error("管理表に『有効』が ○ の行がありません")
             return 2
 
-        # 列の直しを読む（ 見出し違いなら ExcelError で止める ）
+        # 列の直しを読む（見出し違いなら ExcelError で止める）
         try:
             column_fix_overrides = _load_column_fix_overrides(file_paths)
         except ExcelError as exc:
@@ -287,7 +287,7 @@ def run(
 
 
 def _log_dry_run(file_paths: FilePaths, entries: list[MasterEntry]) -> None:
-    """dry-run のログを出す（ 接続も書き込みもしない ）。"""
+    """dry-run のログを出す（接続も書き込みもしない）。"""
     for entry in entries:
         try:
             report_id = report_id_from_url(entry.url)

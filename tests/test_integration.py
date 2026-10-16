@@ -1,9 +1,9 @@
-"""新機能の通し（ 統合 ） テスト。
+"""新機能の通し（統合） テスト。
 ``run_fetch`` → ``run_tables`` まで通して、 ``SOQL調査.xlsx`` と
 ``列名の対応.csv`` を検証する。 偽物の Salesforce クライアントで実 API には
 繋がない。
 
-シート構成は 3 枚 （ 一覧 / 列の対応 / 関係図 ） 。 テストの参照シート名も合わせる。
+シート構成は 3 枚 （一覧 / 列の対応 / 関係図） 。 テストの参照シート名も合わせる。
 """
 
 from __future__ import annotations
@@ -201,8 +201,8 @@ class _Row:
 def test_e2e_run_tables_writes_overview_and_columns_sheet(tmp_path: Path) -> None:
     """``run_fetch`` → ``run_tables`` で 一覧シートに 2000件超 と 個人情報 が出る。
 
-    似たレポート判定は 1 グループになるが、 その出力先は一覧シートの 「 似たレポート 」
-    列にまとめられた（ 別シートは無くなった ）。
+    似たレポート判定は 1 グループになるが、 その出力先は一覧シートの 「似たレポート」
+    列にまとめられた（別シートは無くなった）。
     """
     from src import pii
     from src.fetch import RELATED_DEPTH, RELATED_MAX, ROW_LIMIT_ENABLED, run_fetch
@@ -293,9 +293,9 @@ def test_e2e_run_tables_writes_overview_and_columns_sheet(tmp_path: Path) -> Non
     # Contact.Email が 出力列にあるので 個人情報 は あり
     assert by_key["1001"]["個人情報"] == "あり"
     assert by_key["1002"]["個人情報"] == "あり"
-    # 該当列に 「 メール 」 が出る
+    # 該当列に 「メール」 が出る
     assert "メール" in by_key["1001"]["個人情報の該当列"]
-    # 似たレポートの列に 「 グループN: ... が基準 」 の形で出る
+    # 似たレポートの列に 「グループN: ... が基準」 の形で出る
     assert "基準" in by_key["1001"]["似たレポート"]
     assert "基準" in by_key["1002"]["似たレポート"]
 
@@ -352,7 +352,7 @@ def test_e2e_single_record_no_similar_text(tmp_path: Path) -> None:
 
 
 def test_e2e_columns_sheet_resolves_related_email(tmp_path: Path) -> None:
-    """``列の対応`` シートで、 関連経由（ Contact__r.Email ） の列も解決済みで出る。"""
+    """``列の対応`` シートで、 関連経由（Contact__r.Email） の列も解決済みで出る。"""
     from src import pii
     from src.fetch import RELATED_DEPTH, RELATED_MAX, ROW_LIMIT_ENABLED, run_fetch
     from src.master import MasterEntry

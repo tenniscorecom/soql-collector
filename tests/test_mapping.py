@@ -244,7 +244,7 @@ def test_build_column_map_reason_takes_precedence_over_describe() -> None:
 
     assert rows[0]["備考"] == "上書き理由"
 
-    # reason が優先されるとき、 API 名は埋めない（ 縮退ルートのまま ）
+    # reason が優先されるとき、 API 名は埋めない（縮退ルートのまま）
 
     assert rows[0]["対応フィールドAPI名"] == "(不明)"
 
@@ -437,11 +437,11 @@ def _fake_relation(
 def test_build_column_map_resolves_via_related_object_single_candidate() -> None:
     """主オブジェクトでラベル一致しない列が、 関連オブジェクトで 1 件だけ
 
-    ラベル一致するなら、 鎖つき SOQL 名で採用 （ 備考: 「関連オブジェクト経由」 ）。
+    ラベル一致するなら、 鎖つき SOQL 名で採用 （備考: 「関連オブジェクト経由」）。
 
 
 
-    例: Task の列「Account Name」 → Account.Name （ 鎖 ``What`` ） 。
+    例: Task の列「Account Name」 → Account.Name （鎖 ``What``） 。
 
     """
 
@@ -488,7 +488,7 @@ def test_build_column_map_resolves_via_related_object_with_prefix_filter() -> No
 
     Account と User が両方とも ``"項目名"`` というラベルを持つ列で、
 
-    Task→Account （ rel="What" ） / Task→User （ rel="Owner" ） の 2 経路。
+    Task→Account （rel="What"） / Task→User （rel="Owner"） の 2 経路。
 
     列キー ``OWNER.NAME`` は接頭辞 ``Owner`` が鎖 ``Owner`` の最初の
 
@@ -529,7 +529,7 @@ def test_build_column_map_resolves_via_related_object_with_prefix_filter() -> No
 
     row = next(r for r in rows if r["列キー"] == "OWNER.NAME")
 
-    # 接頭辞 ``Owner`` が鎖 ``Owner`` （ Task→User 直 ） の最初のリレーション名と一致
+    # 接頭辞 ``Owner`` が鎖 ``Owner`` （Task→User 直） の最初のリレーション名と一致
 
     assert row["対応フィールドAPI名"] == "Owner.Name"
 
@@ -541,13 +541,13 @@ def test_build_column_map_resolves_via_related_object_with_prefix_filter() -> No
 def test_build_column_map_multiple_candidates_unresolved() -> None:
     """候補が複数あり、 接頭辞でも絞れないときは ``"(不明)"`` のまま、
 
-    備考に「 複数候補あり: ... 」 を入れる。
+    備考に「複数候補あり: ...」 を入れる。
 
 
 
     Account と User が両方とも ``"項目名"`` というラベルを持つ列で、
 
-    列キー接頭辞 ``WHAT`` も ``OWNER`` も含まない列キー （ 例: ``NAME`` ） 。
+    列キー接頭辞 ``WHAT`` も ``OWNER`` も含まない列キー （例: ``NAME``） 。
 
     """
 
@@ -588,7 +588,7 @@ def test_build_column_map_multiple_candidates_unresolved() -> None:
 
     assert row["備考"].startswith("複数候補あり: ")
 
-    # 候補が両方候補テキストに含まれる （ 最大 5 件 ）
+    # 候補が両方候補テキストに含まれる （最大 5 件）
 
     assert "What.Name" in row["備考"]
 
@@ -640,7 +640,7 @@ def test_build_column_map_related_resolution_detects_main_only_regression(
 
     解こうとする壊れた実装に差し替えると、 C のテスト
 
-    （ ``Account Name`` → ``What.Name`` ） が落ち、 本物の実装では通る
+    （``Account Name`` → ``What.Name``） が落ち、 本物の実装では通る
 
     ことを直接確かめる。
 
@@ -648,7 +648,7 @@ def test_build_column_map_related_resolution_detects_main_only_regression(
 
     検出方法: ``build_column_map`` を ``main_describe`` だけ参照する形に
 
-    パッチして、 C のテスト条件 （ Task 主で Account.Name を関連経由解決 ）
+    パッチして、 C のテスト条件 （Task 主で Account.Name を関連経由解決）
 
     で動かす。
 
@@ -678,7 +678,7 @@ def test_build_column_map_related_resolution_detects_main_only_regression(
 
     monkeypatch.setattr(mapping_module, "build_column_map", main_only_build_column_map)
 
-    # C のテスト条件: Task 主、 Account.Name を 「 Account Name 」 で解決
+    # C のテスト条件: Task 主、 Account.Name を 「Account Name」 で解決
 
     metadata = _make_metadata(
         detail_columns=["ACCOUNT.NAME"],
@@ -705,7 +705,7 @@ def test_build_column_map_related_resolution_detects_main_only_regression(
         main_object="Task",
     )
 
-    # main_only 実装だと、 Task に 「 Account Name 」 が無いため 「 対応フィールドなし 」 。
+    # main_only 実装だと、 Task に 「Account Name」 が無いため 「対応フィールドなし」 。
 
     row = next(r for r in rows if r["列キー"] == "ACCOUNT.NAME")
 
@@ -744,7 +744,7 @@ def _contact_with_email() -> dict:
 def test_build_column_map_resolves_fk_single_reference() -> None:
     """``FK_Contact.Email__c`` のような列キーは、 主の ``Contact__c`` 参照を
 
-    通って ``Contact__r.Email__c`` として解決する （ 備考: 「FK_ から」 ） 。
+    通って ``Contact__r.Email__c`` として解決する （備考: 「FK_ から」） 。
 
     """
 
@@ -812,7 +812,7 @@ def test_build_column_map_resolves_fk_with_dollar_prefix() -> None:
 def test_build_column_map_resolves_fk_multiple_references() -> None:
     """主オブジェクトに同じ対象への参照項目が 2 つあるときは、 ``(不明)``
 
-    のまま備考に「 複数候補あり: ... 」 を入れる。 表示名照合には進まない。
+    のまま備考に「複数候補あり: ...」 を入れる。 表示名照合には進まない。
 
     """
 
@@ -905,7 +905,7 @@ def test_build_column_map_falls_back_when_fk_has_no_reference() -> None:
 def test_build_column_map_skips_fk_without_dot() -> None:
     """``FK_NAME`` のような ``.`` を含まない列キーは FK_ 扱いせず、 表示名
 
-    照合に任せる。 既存挙動を変えずに「 対応フィールドあり 」 のまま。
+    照合に任せる。 既存挙動を変えずに「対応フィールドあり」 のまま。
 
     """
 
@@ -995,7 +995,7 @@ def test_build_column_map_resolves_fk_multi_hop() -> None:
 def test_build_column_map_fk_falls_back_to_label_when_label_matches() -> None:
     """FK_ の対象への参照が無いが、 表示名が主オブジェクトの別項目と
 
-    一致するときは、 そちらが優先される （ 失敗理由は備考に残らない ） 。
+    一致するときは、 そちらが優先される （失敗理由は備考に残らない） 。
 
     """
 
@@ -1488,11 +1488,11 @@ def test_build_column_map_resolves_polymorphic_reference_in_column_key() -> None
     assert row["備考"] == "列キーから（参照先の名前。ID なら OwnerId）"
 
 
-# ── 「 オブジェクト: 項目名 」 形式の照合 ─────────────────────
+# ── 「オブジェクト: 項目名」 形式の照合 ─────────────────────
 
 
 def test_build_column_map_resolves_object_colon_label_main() -> None:
-    """「 タスク: 作業会社名 」 形式の表示名 → 主オブジェクト Task の項目から拾う。"""
+    """「タスク: 作業会社名」 形式の表示名 → 主オブジェクト Task の項目から拾う。"""
     main_describe = {
         "name": "Task",
         "label": "タスク",
@@ -1511,7 +1511,7 @@ def test_build_column_map_resolves_object_colon_label_main() -> None:
 
 
 def test_build_column_map_resolves_object_colon_label_related() -> None:
-    """「 取引先: 取引先名 」 形式 → 関連 Account の項目から拾う。"""
+    """「取引先: 取引先名」 形式 → 関連 Account の項目から拾う。"""
     main_describe = {
         "name": "Opportunity",
         "label": "商談",
@@ -1549,7 +1549,7 @@ def test_build_column_map_resolves_object_colon_label_related() -> None:
 
 
 def test_build_column_map_resolves_object_colon_label_zenkaku_colon() -> None:
-    """全角コロン 「 ： 」 も同じように扱われる。"""
+    """全角コロン 「：」 も同じように扱われる。"""
     main_describe = {
         "name": "Task",
         "label": "タスク",
@@ -1587,7 +1587,7 @@ def test_build_column_map_object_colon_label_falls_back_when_object_unknown() ->
 
 
 def test_build_column_map_resolves_object_colon_label_multiple_candidates() -> None:
-    """「 取引先: 件名 」 形式で、 取引先に同名項目が複数あれば、 候補として残る。"""
+    """「取引先: 件名」 形式で、 取引先に同名項目が複数あれば、 候補として残る。"""
     main_describe = {
         "name": "Opportunity",
         "label": "商談",
@@ -1622,5 +1622,5 @@ def test_build_column_map_resolves_object_colon_label_multiple_candidates() -> N
         main_object="Opportunity",
     )
     row = next(r for r in rows if r["列キー"] == "OPP.ACCOUNT.SUBJECT__C")
-    # 候補が複数あるときは 「 複数候補あり 」 備考
+    # 候補が複数あるときは 「複数候補あり」 備考
     assert "複数候補あり" in row["備考"]

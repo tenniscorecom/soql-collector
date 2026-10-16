@@ -26,7 +26,7 @@ def _make_record(
     summary: str = "",
     report_id: str | None = None,
 ) -> ReportRecord:
-    """テスト用の ``ReportRecord`` を作る（ slim 済み ``report`` を持つ ）。"""
+    """テスト用の ``ReportRecord`` を作る（slim 済み ``report`` を持つ）。"""
     report_id_value = report_id or f"00O{key:0>12}"
     report_metadata: dict = {
         "reportType": {"type": report_type},
@@ -76,7 +76,7 @@ def _make_record(
 
 
 def test_identical_records_become_one_group() -> None:
-    """構造と条件が同じ 2 件のレポートは 「 同一 」 で 1 つのグループ。"""
+    """構造と条件が同じ 2 件のレポートは 「同一」 で 1 つのグループ。"""
     rec_a = _make_record(
         "1001",
         detail_columns=("Opp.Name", "Opp.Amount"),
@@ -144,7 +144,7 @@ def test_different_column_key_yields_review() -> None:
 
 
 def test_column_only_diff_includes_subset_note() -> None:
-    """片方がもう片方を含むときは 「 含む 」 の注記。"""
+    """片方がもう片方を含むときは 「含む」 の注記。"""
     rec_a = _make_record(
         "1001",
         detail_columns=("Opp.Name", "Opp.Amount"),
@@ -167,7 +167,7 @@ def test_column_only_diff_includes_subset_note() -> None:
 
 
 def test_jaccard_above_threshold_marks_similar() -> None:
-    """出力列の Jaccard が閾値以上なら 「 近い 」。 条件を少しズラして
+    """出力列の Jaccard が閾値以上なら 「近い」。 条件を少しズラして
     列のみ違い にしないこと。"""
     rec_a = _make_record(
         "1001",
@@ -183,7 +183,7 @@ def test_jaccard_above_threshold_marks_similar() -> None:
     # Jaccard = 3/5 = 0.6 < 0.8 → 該当なし
     groups_none = similar.find_similar_groups([rec_a, rec_b], column_similarity_threshold=0.8)
     assert groups_none == []
-    # 0.5 まで下げれば 「 近い 」
+    # 0.5 まで下げれば 「近い」
     groups_yes = similar.find_similar_groups([rec_a, rec_b], column_similarity_threshold=0.5)
     assert len(groups_yes) == 1
     pair = groups_yes[0].pairs[0]

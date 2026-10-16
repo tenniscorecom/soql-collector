@@ -26,7 +26,7 @@ def main() -> None:
     """
     # 設定の読み取りも処理も src/run.py に書く。ここは呼ぶだけにしておく
     code = run()
-    # ``run()`` の終了コードを捨てない（ ``実行.bat`` / RPA が受け取れるようにする）
+    # ``run()`` の終了コードを捨てない（``実行.bat`` / RPA が受け取れるようにする）
     if code:
         raise SystemExit(code)
 

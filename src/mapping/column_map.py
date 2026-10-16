@@ -2,9 +2,9 @@
 
 ビルドの手順:
 
-- 0. 列キー （ ``主オブジェクト.`` 始まり ） からたどる
+- 0. 列キー （``主オブジェクト.`` 始まり） からたどる
 - 0b. ``FK_`` からたどる
-- 1/2. 表示名 （ 主 → 関連、 浅い順 ） で照合
+- 1/2. 表示名 （主 → 関連、 浅い順） で照合
 
 各手順を独立したプライベート関数として持ち、 ``_resolve_one_column()`` が
 順に試して結果を ``ResolverResult`` に詰めて返す。 dict への書き出しは
@@ -49,20 +49,20 @@ def build_column_map(
     main_object: str | None = None,
     fetch_object: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> list[dict[str, str]]:
-    """渡された主オブジェクトの describe から列対応表を作る （ 純粋関数 ） 。
+    """渡された主オブジェクトの describe から列対応表を作る （純粋関数） 。
 
-    関連オブジェクトの describe （ 名前 → describe dict ） と relations を
+    関連オブジェクトの describe （名前 → describe dict） と relations を
     渡すと、 関連を跨ぐ表示名も解決する。 ``main_describe`` が ``None`` の
     とき、 もしくは ``reason`` が ``None`` でないときは、 全列を ``"(不明)"``
     にして備考に ``reason`` を入れる。 一致するフィールドが無い列は
     ``"対応フィールドなし"``、 候補が 2 件以上の列は誤った候補を押し付けず
-    「 複数候補あり 」 にする。
+    「複数候補あり」 にする。
 
-    解決アルゴリズム （ 列キーごとに ） は以下を順に試す:
+    解決アルゴリズム （列キーごとに） は以下を順に試す:
 
-    1. 列キーからたどる （ ``_try_resolve_by_column_key`` ）
-    2. ``FK_`` からたどる （ ``_try_resolve_by_fk`` ）
-    3. 表示名で照合 （ ``_try_resolve_by_label`` ）
+    1. 列キーからたどる （``_try_resolve_by_column_key``）
+    2. ``FK_`` からたどる （``_try_resolve_by_fk``）
+    3. 表示名で照合 （``_try_resolve_by_label``）
 
     列キーの実際の形は本物の組織で未確認。 この実装は推測の範囲で作る。
     結果は **必ず備考を確認** すること。
@@ -77,7 +77,7 @@ def build_column_map(
             渡された関連だけが解決対象になる。
         relations: ``RelationRecord`` のリスト。 鎖の計算に使う。
         main_object: 主オブジェクト名。 ``relations`` から鎖を引くために使う。
-        fetch_object: 経路の補完 （ 列キーからのたどり ） で経路上の
+        fetch_object: 経路の補完 （列キーからのたどり） で経路上の
             オブジェクトを取りに行く関数。 ``None`` のときは ``main_describe``
             だけから既知の経路で解決を試み、 無いものはたどれなくなる。
 
@@ -99,7 +99,7 @@ def build_column_map(
     field_index = _build_main_field_index(main_describe)
     ordered_chains = _build_ordered_chains(relations, main_object)
 
-    # ``main_describe`` が無い / ``reason`` が有るときは 「 不明 」 化で早期 return
+    # ``main_describe`` が無い / ``reason`` が有るときは 「不明」 化で早期 return
     if main_describe is None or field_index is None or reason is not None:
         return [
             _unknown_row(column_key, column_info, main_object, reason) for column_key in columns
@@ -132,7 +132,7 @@ class ResolveContext:
 
     ``related_indices`` は関連オブジェクトのフィールドインデックスを
     メモ化するための辞書。 列ごとに再構築しないために ``_build_one_row()``
-    内 （ 実際にはその内部関数 ） で追加される。
+    内 （実際にはその内部関数） で追加される。
     """
 
     main_object: str
@@ -162,7 +162,7 @@ def _build_object_label_to_api(
 ) -> dict[str, str]:
     """オブジェクトの表示名 → API 名のマップを作る。
 
-    「 タスク: 作業会社名 」 形式の照合に使う。 主オブジェクト自身と
+    「タスク: 作業会社名」 形式の照合に使う。 主オブジェクト自身と
     ``related_describes`` の各オブジェクトの表示名を、 ともに小文字化して登録。
     """
     if main_describe is None:
@@ -183,7 +183,7 @@ def _build_main_field_index(
 
     同じ表示名を持つフィールドが複数ある場合は最初に見つかった 1 件だけを
     選ばず **リストのまま** 残す。 呼び出し側で件数を判定し、 1 件なら
-    採用、 2 件以上なら 「 複数候補あり 」 として注記する。 名前か表示名が
+    採用、 2 件以上なら 「複数候補あり」 として注記する。 名前か表示名が
     空の項目は照合に使えないので入れない。
     """
     if main_describe is None:
@@ -267,7 +267,7 @@ class ResolvedMatch:
         id_column: 末端の参照項目を参照先の名前項目に置き換えたときの
             元の ID 列 SOQL 名。 ``None`` のときは置換していない。
         note_suffix_id_column: 備考に置く ID 列 SOQL 名で、 ``id_column``
-            とは別 （ FK_ のときは鎖付きにする ） 。 ``None`` のときは
+            とは別 （FK_ のときは鎖付きにする） 。 ``None`` のときは
             ``id_column`` をそのまま使う。
     """
 
@@ -286,7 +286,7 @@ class ResolverResult:
     """1 列を解決した結果を 1 か所に集約する中間型。
 
     ``match`` が非 None のとき成功、 ``multi_note`` が非空のとき
-    「 複数候補あり 」 の特殊成功、 どちらも無いときは ``failure_note``
+    「複数候補あり」 の特殊成功、 どちらも無いときは ``failure_note``
     に失敗理由を入れた通常失敗。
     """
 
@@ -296,7 +296,7 @@ class ResolverResult:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 行 dict 生成 （ 出力 dict の組み立てはここに集約 ）
+# 行 dict 生成 （出力 dict の組み立てはここに集約）
 # ═════════════════════════════════════════════════════════════════════
 
 
@@ -306,7 +306,7 @@ def _unknown_row(
     main_object: str,
     reason: str | None,
 ) -> dict[str, str]:
-    """主 describe が無い / 失敗理由で全列を 「 不明 」 にする 1 行を作る。"""
+    """主 describe が無い / 失敗理由で全列を 「不明」 にする 1 行を作る。"""
     label = column_info.get(column_key, {}).get("label", column_key)
     return _row_dict_with(column_key, label, main_object, note=reason or "")
 
@@ -363,7 +363,7 @@ def _apply_match(
     末端項目の参照先 / リレーション名を ``_fill_reference()`` で埋める。
     """
     row = _row_dict_with(column_key, label, main_object, note="")
-    # 「 主オブジェクト由来 」 は表示名照合で主の同名項目にヒットしたときだけ。
+    # 「主オブジェクト由来」 は表示名照合で主の同名項目にヒットしたときだけ。
     # 列キー経路・ FK_ 経路では ``match.note`` が必ず具体的な文言を持つので、
     # ``is_from_main`` で空欄にするのは表示名経路の主由来ケースに限られる。
     is_from_main = match.note == ""
@@ -388,7 +388,7 @@ def _apply_match(
 
 
 def _fill_reference(row: dict[str, str], field_obj: dict[str, Any]) -> None:
-    """``row`` に項目の参照先 （ ``|`` 区切り ） とリレーション名を書く。"""
+    """``row`` に項目の参照先 （``|`` 区切り） とリレーション名を書く。"""
     row["参照先オブジェクト"] = "|".join(field_obj.get("referenceTo") or [])
     row["リレーション名"] = field_obj.get("relationshipName") or ""
 
@@ -400,7 +400,7 @@ def _find_last_field(
     """``main_describe`` の ``fields`` から ``name == last_field_name`` の項目を返す。
 
     列キー経路の最後の項目は多くの場合 **主オブジェクトの** フィールド
-    （ ``Contact.Name`` / ``Contact.Account.Name`` など ） 。 主オブジェクト
+    （``Contact.Name`` / ``Contact.Account.Name`` など） 。 主オブジェクト
     に同名の項目があればそれを、 無ければ ``None`` を返す （ 参照先 /
     リレーション名は主オブジェクト上の項目に対してだけ埋める ） 。
     """
@@ -557,7 +557,7 @@ def _try_resolve_by_fk(ctx: ResolveContext, column_key: str) -> ResolverResult:
     """``FK_<Target>.<remainder>`` を主オブジェクトの参照項目経由で解く。
 
     戻り値の解釈は ``_resolve_one_column()`` がする。 解ければ
-    ``ResolvedMatch`` （ 1 件確定 ） 、 経路が解けた候補が複数あれば
+    ``ResolvedMatch`` （1 件確定） 、 経路が解けた候補が複数あれば
     ``multi_note``、 どれも無ければ ``failure_note`` に失敗理由を返す。
     """
     fk_body = column_key[3:]
@@ -678,7 +678,7 @@ def _multi_from_fk(
     fk_matches: list[dict[str, Any]],
     fk_sub_soql: str,
 ) -> ResolverResult:
-    """FK_ 経路で経路が解けた候補が複数のときの 「 複数候補あり 」 を組み立てる。"""
+    """FK_ 経路で経路が解けた候補が複数のときの 「複数候補あり」 を組み立てる。"""
     resolved = [
         (fk_field.get("relationshipName") or "", fk_field.get("name") or "")
         for fk_field in fk_matches
@@ -701,11 +701,11 @@ def _try_resolve_by_label(
     target_object_hint: str | None,
     path_failure_note: str | None,
 ) -> ResolverResult:
-    """主 → 関連 （ 浅い順 ） の順で表示名突き合わせをして 1 列を解決する。
+    """主 → 関連 （浅い順） の順で表示名突き合わせをして 1 列を解決する。
 
     候補が 1 件なら採用、 2 件以上なら接頭辞で 1 件に絞れるかを試し、
-    それでも絞れなければ 「 複数候補あり 」 で確定させる。 候補が 0 件の
-    ときは ``path_failure_note`` か 「 対応フィールドなし 」 を失敗理由に
+    それでも絞れなければ 「複数候補あり」 で確定させる。 候補が 0 件の
+    ときは ``path_failure_note`` か 「対応フィールドなし」 を失敗理由に
     する。 関連オブジェクトのフィールドインデックスは ``ResolveContext.related_indices``
     でメモ化して使い回す。
     """
@@ -752,10 +752,10 @@ def _collect_label_candidates(
     normalized_label: str,
     target_object_hint: str | None,
 ) -> list[tuple[str, str, dict[str, Any], dict[str, Any]]]:
-    """表示名が一致する候補を主 → 関連 （ 浅い順 ） で集める。
+    """表示名が一致する候補を主 → 関連 （浅い順） で集める。
 
     戻り値の組は ``(所属オブジェクト名, 鎖文字列, field_dict, terminal_describe)`` 。
-    鎖文字列が空のときは主オブジェクト由来。 「 オブジェクト: 項目名 」 形式で
+    鎖文字列が空のときは主オブジェクト由来。 「オブジェクト: 項目名」 形式で
     コロン前が見つかったときは ``target_object_hint`` で対象オブジェクトに
     絞り込む。
     """
@@ -829,8 +829,8 @@ def _prefix_matches(
 
     一致条件: 大文字小文字・``_`` を無視して、 次のいずれかと等しい
 
-    - 鎖の最初のリレーション名 （ ``"A.Owner"`` → ``"A"`` ）
-    - 鎖の末端オブジェクト名 （ ``"What.Owner"`` → ``"User"`` ）
+    - 鎖の最初のリレーション名 （``"A.Owner"`` → ``"A"``）
+    - 鎖の末端オブジェクト名 （``"What.Owner"`` → ``"User"``）
 
     末端オブジェクト名は鎖の行き先そのものなので、 鎖が深くなっても
     ``prefix`` が末端オブジェクトを指している場合は一致する。
@@ -850,7 +850,7 @@ def _prefix_matches(
 def _render_multiple_candidates(
     pool: list[tuple[str, str, dict[str, Any], dict[str, Any]]],
 ) -> str:
-    """候補プールを 「 複数候補あり: ... 」 の文字列に整形する。"""
+    """候補プールを 「複数候補あり: ...」 の文字列に整形する。"""
     sorted_pool = sorted(pool, key=lambda t: (0 if t[1] == "" else 1, t[0], t[1]))[:5]
     rendered = " / ".join(
         _format_one_candidate(owner, soql_chain, field)

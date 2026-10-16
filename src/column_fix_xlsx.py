@@ -1,20 +1,20 @@
 """人が Excel で開いて直す ``列の直し.xlsx`` の読み・書き・上書き適用。
 
 ``src/mapping.build_column_map`` が自動で取った列名より **人が Excel で書いた
-「 直したSOQL列名 」 を常に優先する**。 ファイルが無いときは 「 直したSOQL列名 」
+「直したSOQL列名」 を常に優先する**。 ファイルが無いときは 「直したSOQL列名」
 は空とみなして、 自動の結果をそのまま採用する。
 
 ファイル形式:
 
-- 1 シート、 1 つの Excel テーブル （ 構造化 ） 。 名前は ``ColumnFix``
-- 列 （ この順 ） : 状態 / 主オブジェクト / 表示名 / 列キー / 自動のSOQL列名 /
+- 1 シート、 1 つの Excel テーブル （構造化） 。 名前は ``ColumnFix``
+- 列 （この順） : 状態 / 主オブジェクト / 表示名 / 列キー / 自動のSOQL列名 /
   候補 / 直したSOQL列名 / メモ / 使っているレポート / 更新日
-- 並び: 状態 （ 要対応 → 要確認 → OK ） → 主オブジェクト → 列キー
-- 状態: ``OK`` （ 自動が取った・人が直した ） / ``要対応`` （ 自動も人も取れず ）
-  / ``要確認`` （ 候補が複数、 人の値がたどれない ）
+- 並び: 状態 （要対応 → 要確認 → OK） → 主オブジェクト → 列キー
+- 状態: ``OK`` （自動が取った・人が直した） / ``要対応`` （自動も人も取れず）
+  / ``要確認`` （候補が複数、 人の値がたどれない）
 
-見栄え: 見出し行は 1 行目で固定、 列幅は全角=2・半角=1 で整え （ 最小 8・最大 60 ） 、
-人が書く 「 直したSOQL列名 」 と 「 メモ 」 の見出しセルは薄い緑、 状態=要対応の
+見栄え: 見出し行は 1 行目で固定、 列幅は全角=2・半角=1 で整え （最小 8・最大 60） 、
+人が書く 「直したSOQL列名」 と 「メモ」 の見出しセルは薄い緑、 状態=要対応の
 行は薄い赤、 状態=要確認の行は薄い黄で塗る
 
 実行のたびに:
@@ -22,9 +22,9 @@
 - 新しい列キー: 行を足す
 - 既存の列キー: 「 状態 / 表示名 / 自動のSOQL列名 / 候補 / 使っているレポート /
   更新日 」 を今回の値で書き換える
-- 「 直したSOQL列名 」 と 「 メモ 」 は **絶対に書き換えない・消さない**
-  （ 人の入力を尊重する ）
-- ファイルが ``PermissionError`` で書けない （ Excel で開いている等 ） ときは
+- 「直したSOQL列名」 と 「メモ」 は **絶対に書き換えない・消さない**
+  （人の入力を尊重する）
+- ファイルが ``PermissionError`` で書けない （Excel で開いている等） ときは
   警告だけ出して他の出力は作る。 読み込めない・見出しが違うときは例外で止める
 """
 
@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 SHEET_NAME = "列の直し"
 
-# xlsx テーブルの表示名 （ 構造化参照に使われる名前 ）
+# xlsx テーブルの表示名 （構造化参照に使われる名前）
 TABLE_NAME = "ColumnFix"
 
 # xlsx の列順
@@ -88,7 +88,7 @@ STATUS_ORDER: dict[str, int] = {
 
 @dataclass(frozen=True)
 class ColumnFixRow:
-    """``列の直し.xlsx`` の 1 行分。 人が編集するセル （ 直したSOQL列名 / メモ ） は
+    """``列の直し.xlsx`` の 1 行分。 人が編集するセル （直したSOQL列名 / メモ） は
     そのまま保持する。 自動が毎回更新するセル （ 状態 / 表示名 / 自動のSOQL列名 /
     候補 / 使っているレポート / 更新日 ） は ``to_observed`` で取り出す。
     """
@@ -106,7 +106,7 @@ class ColumnFixRow:
 
     @property
     def has_user_fix(self) -> bool:
-        """「 直したSOQL列名 」 に人が値を入れていれば True 。"""
+        """「直したSOQL列名」 に人が値を入れていれば True 。"""
         return bool(self.fixed_soql_name)
 
     def to_dict(self) -> dict[str, str]:
@@ -147,7 +147,7 @@ def load_column_fix(
 ) -> dict[tuple[str, str], ColumnFixRow]:
     """``path`` の ``列の直し.xlsx`` を読み ``(主オブジェクト小文字, 列キー) → 行`` を返す。
 
-    - ファイルが存在しないときは空 dict を返す （ 新規扱い ）
+    - ファイルが存在しないときは空 dict を返す （新規扱い）
     - シート名が見出しと違う / 見出しが違うときは ``ExcelError`` を上げる。
       ファイルは変更しない
     - 主オブジェクトか列キーが空の行は読み飛ばす
@@ -202,8 +202,8 @@ class ObservedAutoRow:
     column_key: str
     display_name: str
     soql_name: str  # 自動で取れた値。 空のこともある
-    candidates: str  # 「 複数候補あり: ... 」 の文字列。 無いときは空
-    note: str  # 「 列キーから 」 / 「 対応フィールドなし 」 など
+    candidates: str  # 「複数候補あり: ...」 の文字列。 無いときは空
+    note: str  # 「列キーから」 / 「対応フィールドなし」 など
     owner_object: str = ""
 
 
@@ -223,20 +223,20 @@ def merge_and_write(
     ルール:
 
     - ``observed`` に無いキー → 触らない
-    - ``observed`` に有るキーで 「 直したSOQL列名 」 が既に値 → **自動の値は
-      「 自動のSOQL列名 」 列に書き、 人の値はそのまま残す。 状態は OK。**
-    - ``observed`` に有るキーで 「 直したSOQL列名 」 が空かつ ``observed.soql_name``
-      が空でない → 自動の値で 「 自動のSOQL列名 」 を埋め、 状態を OK
-    - ``observed`` に有るキーで ``observed.soql_name`` が空 ( 取れず ) かつ
+    - ``observed`` に有るキーで 「直したSOQL列名」 が既に値 → **自動の値は
+      「自動のSOQL列名」 列に書き、 人の値はそのまま残す。 状態は OK。**
+    - ``observed`` に有るキーで 「直したSOQL列名」 が空かつ ``observed.soql_name``
+      が空でない → 自動の値で 「自動のSOQL列名」 を埋め、 状態を OK
+    - ``observed`` に有るキーで ``observed.soql_name`` が空 (取れず) かつ
       人の値も無い → 状態を要対応、 候補・備考をそのまま
-    - 候補が複数 （ ``observed.candidates`` に 「 複数候補あり 」 を含む ） ときは
+    - 候補が複数 （``observed.candidates`` に 「複数候補あり」 を含む） ときは
       状態を要確認
     - 表示名は毎回 ``observed.display_name`` で書き換える
-    - 「 自動のSOQL列名 」 「 候補 」 「 状態 」 「 使っているレポート 」 「 更新日 」 は
+    - 「自動のSOQL列名」 「候補」 「状態」 「使っているレポート」 「更新日」 は
       今回用いた行で毎回書き換える
-    - 「 直したSOQL列名 」 と 「 メモ 」 は **絶対に書き換えない・消さない**
+    - 「直したSOQL列名」 と 「メモ」 は **絶対に書き換えない・消さない**
     - 並び: 状態 → 主オブジェクト → 列キー
-    - 「 使っているレポート 」 は ``used_in_reports`` （ キー → ``|`` 区切りの管理番号 ）
+    - 「使っているレポート」 は ``used_in_reports`` （キー → ``|`` 区切りの管理番号）
       にあればその値、 無ければ既存の値のまま
     """
     used_in_reports = used_in_reports or {}
@@ -257,7 +257,7 @@ def merge_and_write(
         # 人の値があるか
         had_user_fix = bool(existing_row and existing_row.fixed_soql_name)
         # 人の値がたどれたかは、 apply_overrides が column_map の備考に書いた
-        # 「 人が直した（要確認: たどれない） 」 印で判定する
+        # 「人が直した（要確認: たどれない）」 印で判定する
         user_fix_unresolved = "人が直した（要確認: たどれない）" in obs.note
         # 状態: 人の値があり、たどれれば OK。 人の値があるがたどれなかった、 または
         # 候補が複数なら要確認。 自動が取ってれば OK。 人の値も自動の値も無いと要対応
@@ -271,7 +271,7 @@ def merge_and_write(
             status = STATUS_OK
         else:
             status = STATUS_NEEDS_FIX
-        # 「 直したSOQL列名 」 と 「 メモ 」 は人の値があればそのまま残す
+        # 「直したSOQL列名」 と 「メモ」 は人の値があればそのまま残す
         if existing_row:
             fixed_soql_name = existing_row.fixed_soql_name
             note = existing_row.note
@@ -314,10 +314,10 @@ def _write_xlsx(
     見栄え:
 
     - 見出し行を 1 行目で固定
-    - 列幅を全角=2・半角=1 で計算 （ 最小 8・最大 60・超は折り返し ）
-    - 「 直したSOQL列名 」 と 「 メモ 」 の見出しセルを薄い緑で塗り、
+    - 列幅を全角=2・半角=1 で計算 （最小 8・最大 60・超は折り返し）
+    - 「直したSOQL列名」 と 「メモ」 の見出しセルを薄い緑で塗り、
       人が書く列だと目で分かるようにする
-    - 状態列が 要対応/要確認 の行は薄い赤/薄い黄で塗る （ ``SOQL調査.xlsx`` と同じ色 ）
+    - 状態列が 要対応/要確認 の行は薄い赤/薄い黄で塗る （``SOQL調査.xlsx`` と同じ色）
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     # openpyxl で 1 シート・ 1 テーブル構造の xlsx を作る
@@ -370,7 +370,7 @@ def _write_xlsx(
         row_dicts,
         start_row=1,
     )
-    # 「 直したSOQL列名 」 と 「 メモ 」 の見出しセルを薄い緑で塗る
+    # 「直したSOQL列名」 と 「メモ」 の見出しセルを薄い緑で塗る
     user_header_fill = PatternFill(
         start_color=xlsx_style.FILL_USER_INPUT,
         end_color=xlsx_style.FILL_USER_INPUT,
@@ -394,7 +394,7 @@ def _apply_status_fills_to_fix_sheet(
 ) -> None:
     """``列の直し.xlsx`` のデータ行を、 状態で塗り分ける。
 
-    ``tables._apply_status_fills`` と同じ配色 （ 要対応=薄い赤、 要確認=薄い黄 ）
+    ``tables._apply_status_fills`` と同じ配色 （要対応=薄い赤、 要確認=薄い黄）
     に揃え、 ``列の対応`` シートと色を一致させる
     """
     from openpyxl.styles import PatternFill
@@ -432,7 +432,7 @@ def _get_column_letter(idx: int) -> str:
 # ── 古い CSV からの移行 ─────────────────────────────────────────────
 
 
-# 旧 ``data/列の対応.csv`` 形式の行を 「 直したSOQL列名 」 にコピーするときの
+# 旧 ``data/列の対応.csv`` 形式の行を 「直したSOQL列名」 にコピーするときの
 # 必要な列名。 新形式との対応は次のとおり。
 _OLD_CSV_COLUMNS: tuple[str, ...] = (
     "主オブジェクト",
@@ -448,7 +448,7 @@ _OLD_CSV_COLUMNS: tuple[str, ...] = (
 def migrate_legacy_csv(
     legacy_path: Path,
 ) -> dict[tuple[str, str], ColumnFixRow]:
-    """旧 ``data/列の対応.csv`` から 「 メモ=手入力 かつ SOQL列名あり 」 の行だけを
+    """旧 ``data/列の対応.csv`` から 「メモ=手入力 かつ SOQL列名あり」 の行だけを
     ``ColumnFixRow`` に変換して返す。 該当が無いときは空 dict 。
     """
     if not legacy_path.exists():
@@ -508,17 +508,17 @@ def apply_overrides(
 
     ルール:
 
-    - **「 直したSOQL列名 」 に値があれば自動の結果より常に優先** （ 自動が
+    - **「直したSOQL列名」 に値があれば自動の結果より常に優先** （ 自動が
       取れた列でも、 人の値で上書きされる ）
     - 値が無いとき、 自動が既に取れていればそのまま
     - 自動も取れず、 人の値も無ければそのまま
     - 人の値で上書きしたときは、 ``型`` を ``objects`` から ``Account.Name`` のような
-      ドット記法でたどって引く。 引けなければ 「 打ち間違い？ 」 として状態=要確認の
-      ヒントを ``warnings`` に足す （ 値はそのまま使う ）
-    - たどれなかったときは備考に 「 人が直した（要確認: たどれない） 」 と付け、
+      ドット記法でたどって引く。 引けなければ 「打ち間違い？」 として状態=要確認の
+      ヒントを ``warnings`` に足す （値はそのまま使う）
+    - たどれなかったときは備考に 「人が直した（要確認: たどれない）」 と付け、
       ``tables`` 側で要確認として数えられるようにする
-    - 鍵は **``main_object``** （ 主オブジェクト ） 。 同じ ``Opp.Account.Name``
-      でも 「 所属オブジェクト 」 は ``Account`` と ``Opportunity`` で変わる一方、
+    - 鍵は **``main_object``** （主オブジェクト） 。 同じ ``Opp.Account.Name``
+      でも 「所属オブジェクト」 は ``Account`` と ``Opportunity`` で変わる一方、
       SOQL の起点は主オブジェクトなので
     """
     new_rows: list[dict[str, str]] = []
@@ -531,8 +531,8 @@ def apply_overrides(
         if override is None or not override.fixed_soql_name:
             new_rows.append(dict(row))
             continue
-        # 人の値で上書きする。 自動が取っていた値は 「 自動の値 」 に残す
-        # （ 列の直し.xlsx の 「 自動のSOQL列名 」 と列の対応シートで見せるため ）
+        # 人の値で上書きする。 自動が取っていた値は 「自動の値」 に残す
+        # （列の直し.xlsx の 「自動のSOQL列名」 と列の対応シートで見せるため）
         new_row = dict(row)
         new_row["自動の値"] = row["対応フィールドAPI名"]
         new_row["対応フィールドAPI名"] = override.fixed_soql_name
@@ -547,8 +547,8 @@ def apply_overrides(
         )
         if resolved_type:
             new_row["型"] = resolved_type
-            # 自動が取っていても人の値に置き換わるので、 「 自動が取ってくれた 」
-            # 印は外し、 「 人が直した 」 ことを notes に残す
+            # 自動が取っていても人の値に置き換わるので、 「自動が取ってくれた」
+            # 印は外し、 「人が直した」 ことを notes に残す
             new_row["備考"] = "直したSOQL列名（人が直した）"
         else:
             # たどれなかった。 値はそのまま採用するが、 要確認であることを備考で示す
@@ -572,12 +572,12 @@ def _walk_soql_path(
     column_key: str,
     warnings: list[str],
 ) -> str:
-    """``soql_name`` （ ``Account.Owner.Name`` のようなドット記法 ） を
+    """``soql_name`` （``Account.Owner.Name`` のようなドット記法） を
     ``main_object`` から 1 段ずつたどり、 最後の項目の ``型`` を返す。
 
-    段数は 5 段まで。 6 段以上なら 「 経路が長すぎます 」 WARNING を出す。
-    たどれなかったときの WARNING は 「 どこで切れたか 」 が分かる文にする。
-    自動が取れた列を上書きする経路なので、 引けなかったときは 「 打ち間違い？ 」 の
+    段数は 5 段まで。 6 段以上なら 「経路が長すぎます」 WARNING を出す。
+    たどれなかったときの WARNING は 「どこで切れたか」 が分かる文にする。
+    自動が取れた列を上書きする経路なので、 引けなかったときは 「打ち間違い？」 の
     ヒントだけ出し、 値はそのまま使う
 
     ``soql_name`` の先頭セグメントが ``main_object`` と同じならスキップする
@@ -626,8 +626,8 @@ def _split_path_parts(
     """``soql_name`` を ``.`` で分割し、 ``main_object`` と同名の先頭セグメントを落とす。
 
     戻り値: 辿るべきセグメントのリスト。 ``None`` のときは ``warnings`` に
-    経路が長すぎる旨を入れて探索を打ち切る。 空リストは 「 辿る必要が無い 」
-    ( 先頭が ``main_object`` だけだった等 ) ことを示す。
+    経路が長すぎる旨を入れて探索を打ち切る。 空リストは 「辿る必要が無い」
+    (先頭が ``main_object`` だけだった等) ことを示す。
     """
     if not soql_name or not main_object:
         return []
@@ -679,7 +679,7 @@ def _candidate_next_refs(
     matched_field: dict[str, Any],
     objects: dict[str, dict[str, Any]],
 ) -> list[str]:
-    """次段候補の参照オブジェクト名 ( 重複なし ) を並べる。"""
+    """次段候補の参照オブジェクト名 (重複なし) を並べる。"""
     reference_to: list[str] = matched_field.get("referenceTo") or []
     relationship = matched_field.get("relationshipName")
     is_polymorphic = len(reference_to) > 1
@@ -770,7 +770,7 @@ def merge_and_write_after_run(
     """``run`` の最後に ``列の直し.xlsx`` をマージして書く薄いラッパー。
 
     ``records`` の ``column_map`` を ``ObservedAutoRow`` に直し、 どのレポートで
-    使っているか（ 管理番号 ）と一緒に ``merge_and_write`` に渡す。
+    使っているか（管理番号）と一緒に ``merge_and_write`` に渡す。
     """
     observed: list[ObservedAutoRow] = []
     report_keys: dict[tuple[str, str], set[str]] = {}
@@ -803,11 +803,11 @@ def merge_and_write_after_run(
         )
     except PermissionError as exc:
         logger.warning(
-            "列の直し.xlsx を書けませんでした（ Excel などで開いていないか確認 ）: %s",
+            "列の直し.xlsx を書けませんでした（Excel などで開いていないか確認）: %s",
             exc,
         )
 
 
 def today_local() -> date:
-    """「 今日の日付 」 をこの PC のローカル時間で返す。"""
+    """「今日の日付」 をこの PC のローカル時間で返す。"""
     return datetime.now(tz=UTC).astimezone().date()

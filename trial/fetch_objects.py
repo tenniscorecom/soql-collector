@@ -1,15 +1,15 @@
 """trial/fetch_objects.py — オブジェクトの項目定義を取り直す単品サンプル。
 
-人が 「 対応が取れなかった 」 と思ったときに、 そのオブジェクトの API 名を
+人が 「対応が取れなかった」 と思ったときに、 そのオブジェクトの API 名を
 リストで書いて実行するだけで ``data/項目定義.csv`` のキャッシュに項目定義を
 入れ、 ``output/single/オブジェクトの項目.csv`` にも展開する。
 
-``trial/`` は **名前空間パッケージ** （ ``__init__.py`` を **持たない** ）。
+``trial/`` は **名前空間パッケージ** （``__init__.py`` を **持たない**）。
 ``python -m trial.fetch_objects`` でそのまま動く。
 
 ファイル先頭の ``OBJECT_NAMES`` / ``ORG_URL`` を書き換えて実行する
-（ コマンドライン引数は使わない ）。 1 回の接続でリストの各オブジェクトを
-**Salesforce から取り直す** （ キャッシュは読まない ）。 結果は既存の
+（コマンドライン引数は使わない）。 1 回の接続でリストの各オブジェクトを
+**Salesforce から取り直す** （キャッシュは読まない）。 結果は既存の
 ``DescribeStore`` のキャッシュ ``[FILES] DESCRIBE_CSV_PATH`` （ 既定
 ``./data/項目定義.csv`` ） に upsert し、 次の通常の実行がそこから使える
 ようにする。
@@ -40,15 +40,15 @@ from src.text_utils import coerce_str as _coerce_str
 
 logger = logging.getLogger(__name__)
 
-# ``run_fetch`` の ``site_for`` と同じ型（ テスト用差し替え ）
+# ``run_fetch`` の ``site_for`` と同じ型（テスト用差し替え）
 SiteFor = Callable[[str], type]
 
 # 取りたいオブジェクトの API 名。 ここを書き換えて実行する
 OBJECT_NAMES: list[str] = ["Account", "User"]
-# 組織の URL。 空なら管理表の URL から自動で決める（ 組織が 1 つのとき ）
+# 組織の URL。 空なら管理表の URL から自動で決める（組織が 1 つのとき）
 ORG_URL: str = ""
 
-# 出力 CSV の列名 （ この順 ）
+# 出力 CSV の列名 （この順）
 OUTPUT_COLUMNS: tuple[str, ...] = (
     "オブジェクト",
     "オブジェクト表示名",
@@ -107,7 +107,7 @@ def main(
         # 0 組織・複数組織で既にメッセージを出して終了
         return 2
 
-    # 出力先 （ 本体の output/ を汚さず single/ に隔離 ）
+    # 出力先 （本体の output/ を汚さず single/ に隔離）
     output_dir = file_paths.output_dir / "single"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -201,7 +201,7 @@ def _fetch_one_object(
     """1 オブジェクトを API から取り、 キャッシュに書いて返す。
 
     Returns:
-        ``(obj_name, describe)`` のタプル。 取得できなかった（ HTTP / ValueError ）
+        ``(obj_name, describe)`` のタプル。 取得できなかった（HTTP / ValueError）
         ときは ``None``。
     """
     try:
@@ -219,7 +219,7 @@ def _fetch_one_object(
     if not isinstance(describe, dict):
         describe = {}
 
-    # キャッシュの upsert （ 既存値があれば上書き ）
+    # キャッシュの upsert （既存値があれば上書き）
     describe_store.record_api_success(org, obj_name, describe)
     return obj_name, describe
 

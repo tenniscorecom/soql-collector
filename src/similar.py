@@ -1,15 +1,15 @@
-"""似たレポートの判定ロジック（ 純粋関数 ）。
+"""似たレポートの判定ロジック（純粋関数）。
 
-``ReportRecord`` のリストを受けて、 同じ（ レポートタイプ, 形式 ） のレポート
+``ReportRecord`` のリストを受けて、 同じ（レポートタイプ, 形式） のレポート
 同士を総当たりで比較し、 区分を振る。 区分は次のとおり:
 
-- ``同一``: 構造も条件も同じ（ ID が違うだけ ）
+- ``同一``: 構造も条件も同じ（ID が違うだけ）
 - ``条件のみ違い``: 構造が同じで条件が違う
-- ``列のみ違い``: 条件が同じで出力列の集合が違う（ 片方がもう片方を含む場合は 「 含む 」 と書く ）
+- ``列のみ違い``: 条件が同じで出力列の集合が違う（片方がもう片方を含む場合は 「含む」 と書く）
 - ``近い``: 上のどれでもないが出力列の集合の Jaccard が閾値以上
 - どれにも該当しないペアは出さない
 
-区分のあるペアでつながるレポートを 「 類似グループ 」 にまとめ、 最小の管理番号
+区分のあるペアでつながるレポートを 「類似グループ」 にまとめ、 最小の管理番号
 を基準にする。 レポート単位の 統合の見込み:
 
 - ``同一`` → ``1本にまとめられる``
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class _Structure:
-    """レポートの 「 構造 」 （ 出力に出る列の形 ） 。"""
+    """レポートの 「構造」 （出力に出る列の形） 。"""
 
     report_type: str
     format: str
@@ -47,7 +47,7 @@ class _Structure:
 
 @dataclass(frozen=True)
 class _Condition:
-    """レポートの 「 条件 」 （ 絞り込みなど ）。"""
+    """レポートの 「条件」 （絞り込みなど）。"""
 
     filters: tuple[tuple[str, str, str], ...]  # (column, operator, value) をソート
     boolean_filter: str
@@ -60,7 +60,7 @@ class _Condition:
 
 @dataclass(frozen=True)
 class _ReportKey:
-    """レポートの （ レポートタイプ, 形式 ） 。 比較対象を決めるキー。"""
+    """レポートの （レポートタイプ, 形式） 。 比較対象を決めるキー。"""
 
     report_type: str
     format: str
@@ -73,7 +73,7 @@ class _PairResult:
     key_a: str
     key_b: str
     category: str  # 区分
-    diff_text: str  # 基準との違い（ 人向け ）
+    diff_text: str  # 基準との違い（人向け）
     integration: str  # 統合の見込み
 
 
@@ -84,7 +84,7 @@ class SimilarGroup:
     group_number: int
     base_key: str
     pairs: tuple[_PairResult, ...]
-    members: tuple[str, ...]  # 管理番号のリスト（ 基準先頭 ）
+    members: tuple[str, ...]  # 管理番号のリスト（基準先頭）
 
 
 # ── 公開 API ────────────────────────────────────────────────────────────
@@ -95,18 +95,18 @@ def find_similar_groups(
     *,
     column_similarity_threshold: float,
 ) -> list[SimilarGroup]:
-    """``records`` から類似グループを抽出する（ 純粋関数 ）。
+    """``records`` から類似グループを抽出する（純粋関数）。
 
     戻り値の各 ``SimilarGroup`` は:
 
-    - 1 件の 基準 レポート（ 最小の管理番号 ） と 1 件以上の 比較対象 を含む
+    - 1 件の 基準 レポート（最小の管理番号） と 1 件以上の 比較対象 を含む
     - 基準と各比較対象の ``_PairResult`` が ``pairs`` に入る
     - グループは 1 から連番、 基準の管理番号の昇順で採番
     """
     items = [(r.key, r) for r in records]
     items.sort(key=lambda t: t[0])
 
-    # （ レポートタイプ, 形式 ） でバケットに分ける
+    # （レポートタイプ, 形式） でバケットに分ける
     by_bucket: dict[_ReportKey, list[tuple[str, _Structure, _Condition]]] = {}
     for key, record in items:
         structure, condition = _extract(record)
@@ -205,7 +205,7 @@ def _compare_pair(
 
 
 def _extract(record: ReportRecord) -> tuple[_Structure | None, _Condition | None]:
-    """``ReportRecord`` から 構造と条件を取り出す（ ``record.report`` は入口でそろえてある ）。"""
+    """``ReportRecord`` から 構造と条件を取り出す（``record.report`` は入口でそろえてある）。"""
     metadata = record.report["reportMetadata"]
     return _extract_structure(metadata), _extract_condition(metadata)
 
@@ -262,7 +262,7 @@ def _normalize_value(value: object) -> str:
 
 
 def _normalize_json(value: object) -> str:
-    """list / dict を正規化（ 順序非依存 ） した JSON 文字列にする。"""
+    """list / dict を正規化（順序非依存） した JSON 文字列にする。"""
     if value is None or value == "" or value == [] or value == {}:
         return ""
     try:
@@ -383,7 +383,7 @@ def _format_filter(
 
 
 def _is_value_only_diff(a: _Condition, b: _Condition) -> bool:
-    """2 つの条件の差分が 「 値だけ 」 （ 同じ列キー・同じ演算子で値が違う、
+    """2 つの条件の差分が 「値だけ」 （ 同じ列キー・同じ演算子で値が違う、
     または日付の範囲だけ違う ） かを判定する。
     """
     if a.boolean_filter != b.boolean_filter:
@@ -466,7 +466,7 @@ def _build_adjacency(pairs: list[_PairResult]) -> dict[str, set[str]]:
 
 
 def _connected_components(adjacency: dict[str, set[str]]) -> list[list[str]]:
-    """``adjacency`` の連結成分 ( 深さ優先 ) を、 ノード順で並べて返す。"""
+    """``adjacency`` の連結成分 (深さ優先) を、 ノード順で並べて返す。"""
     visited: set[str] = set()
     components: list[list[str]] = []
     for node in adjacency:
@@ -503,7 +503,7 @@ def _make_group(
     component: list[str],
     pair_by_keys: dict[tuple[str, str], _PairResult],
 ) -> SimilarGroup:
-    """``component`` を基準 ( 管理番号昇順の先頭 ) 起点の ``SimilarGroup`` にまとめる。"""
+    """``component`` を基準 (管理番号昇順の先頭) 起点の ``SimilarGroup`` にまとめる。"""
     component_sorted = sorted(component)
     base = component_sorted[0]
     others = component_sorted[1:]

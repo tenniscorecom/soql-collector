@@ -160,7 +160,7 @@ def _record_to_payload(record: object) -> dict:
 
     JSON 廃止前はテストが ``payload["..."]`` で読んでいたため、 既存テストの
     読み取り箇所を最小限の差分で揃えるために用意する。 ``取得日時`` は
-    record には載せない （ CSV では使わない、 JSON にも残さない ）。
+    record には載せない （CSV では使わない、 JSON にも残さない）。
     """
     from src.fetch import ReportRecord
 
@@ -197,8 +197,8 @@ def _make_metadata(
     """レポート describe を作る。
 
     ``detail_column_labels`` で ``detailColumns`` 各列の表示名を指定できる
-    （ ``column_key`` → ``label`` ）。 未指定なら ``detailColumns[0]`` の
-    表示名は同じキーになる（ ``column_key`` をそのまま ``label`` として扱う）。
+    （``column_key`` → ``label``）。 未指定なら ``detailColumns[0]`` の
+    表示名は同じキーになる（``column_key`` をそのまま ``label`` として扱う）。
     """
     detail_columns = ["Opp.Name"]
     if extra and "detailColumns" in extra:
@@ -250,7 +250,7 @@ def _main_describe(
 def _describe_with_refs(name: str, refs: dict[str, str]) -> dict:
     """``.`` 以外の参照項目の describe を作る。 ``refs`` は ``項目名 -> 参照先オブジェクト`` の単一参照。
 
-    戻り値の ``relationshipName`` は ``<項目名>`` （ 単純化のため _ をつけない ）。
+    戻り値の ``relationshipName`` は ``<項目名>`` （単純化のため _ をつけない）。
     """
     fields = [
         {
@@ -313,13 +313,13 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
     assert payload["レポートID"] == "00O5g00000ABCDE"
     assert payload["URL"] == f"{DOMAIN}/00O5g00000ABCDE/view"
     assert payload["主オブジェクト"] == "Opportunity"
-    # ``report`` は slim した_モジュール定数（ 値は元と同じ、 不要なキーは落ちる ）。
+    # ``report`` は slim した_モジュール定数（値は元と同じ、 不要なキーは落ちる）。
     # allowlist のキーは全部残るので ``reportMetadata`` は等値になる
     assert payload["report"]["reportMetadata"] == metadata["reportMetadata"]
-    # ``record.report`` には許可リスト外キーの追跡は含まれない （ warnings に出る ）
+    # ``record.report`` には許可リスト外キーの追跡は含まれない （warnings に出る）
     assert set(payload["report"].keys()) == {"reportMetadata", "reportExtendedMetadata"}
     assert set(payload["objects"]) == {"Opportunity", "Account"}
-    # ``objects`` の各値は ``_slim_object`` を通った形（ name/label/custom/fields の 4 キー ）
+    # ``objects`` の各値は ``_slim_object`` を通った形（name/label/custom/fields の 4 キー）
     expected_opportunity = _slim_object(opportunity_with_name)
     assert payload["objects"]["Opportunity"] == expected_opportunity
     assert payload["objects"]["Account"] == _slim_object(_main_describe("Account"))
@@ -339,8 +339,8 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
 
 
 def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
-    """``objects`` の中身は ``_slim_object`` を通した形（ name/label/custom/fields の 4 キー ）
-    で書かれている。 JSON に重そうなキーは残らない（ childRelationships / recordTypeInfos など ）。
+    """``objects`` の中身は ``_slim_object`` を通した形（name/label/custom/fields の 4 キー）
+    で書かれている。 JSON に重そうなキーは残らない（childRelationships / recordTypeInfos など）。
     """
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
@@ -378,7 +378,7 @@ def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
 
 
 def test_objects_dict_does_not_mutate_original_describe(tmp_path: Path) -> None:
-    """``_slim_object`` が走っても、 ``describe_object`` の戻り値（ cache ）は
+    """``_slim_object`` が走っても、 ``describe_object`` の戻り値（cache）は
     変わらない（ 関連オブジェクト収集が原本の ``referenceTo`` /
     ``relationshipName`` を使うため ）。
     """
@@ -510,7 +510,7 @@ def _run_task_chain(tmp_path: Path, *, related_depth: int) -> dict:
 
 
 def test_related_depth_1_only_first_level(tmp_path: Path) -> None:
-    """``RELATED_DEPTH=1`` は 1 段目だけ取る （ 今と同じ挙動 ）。"""
+    """``RELATED_DEPTH=1`` は 1 段目だけ取る （今と同じ挙動）。"""
     payload = _run_task_chain(tmp_path, related_depth=1)
     # 1 段目: Account のみ
     assert list(payload["objects"]) == ["Task", "Account"]
@@ -563,7 +563,7 @@ def test_related_depth_3_includes_third_level(tmp_path: Path) -> None:
 def test_related_depth_dedup_across_paths(tmp_path: Path) -> None:
     """同じオブジェクトを複数の経路で参照しても describe は 1 回だけ、
     ただし ``関連オブジェクト`` には **取れたオブジェクト同士の参照を全部**
-    載せるので、 ``Y`` への参照は 2 本 （ ``X`` からと ``Z`` から ） 出る。
+    載せるので、 ``Y`` への参照は 2 本 （``X`` からと ``Z`` から） 出る。
 
     1 段目に ``X → Y`` と ``X → Z → Y`` で同じ ``Y`` に到達する形を作る。
     """
@@ -584,17 +584,17 @@ def test_related_depth_dedup_across_paths(tmp_path: Path) -> None:
     # JSON にも 1 回だけ
     assert list(payload["objects"]).count("Y") == 1
     # ``関連オブジェクト`` には ``Y`` への参照が 2 本
-    # （ X.AId→Y と Z.CId→Y ） 載る
+    # （X.AId→Y と Z.CId→Y） 載る
     y_entries = [r for r in payload["関連オブジェクト"] if r["子"] == "Y"]
     assert len(y_entries) == 2
     y_pairs = sorted((r["親"], r["参照項目"]) for r in y_entries)
     assert y_pairs == [("X", "AId"), ("Z", "CId")]
-    # 両方の段は 1 （ X / Z どちらも 1 段目で取れている ）
+    # 両方の段は 1 （X / Z どちらも 1 段目で取れている）
     assert all(r["段"] == 1 for r in y_entries)
 
 
 def test_related_depth_stops_at_cycle(tmp_path: Path) -> None:
-    """循環参照（ A→B→A ） で止まる。 同じオブジェクトを取り直さない。"""
+    """循環参照（A→B→A） で止まる。 同じオブジェクトを取り直さない。"""
     objects = {
         "A": _describe_with_refs("A", {"BId": "B"}),
         "B": _describe_with_refs("B", {"AId": "A", "CId": "C"}),
@@ -607,14 +607,14 @@ def test_related_depth_stops_at_cycle(tmp_path: Path) -> None:
     record = run_fetch([entry], site_for=site_for, **_settings(tmp_path, related_depth=5))[0].record
     payload = _record_to_payload(record)
 
-    # オブジェクトは 3 つとも取れる （ 各段で重複はなし ） 。
+    # オブジェクトは 3 つとも取れる （各段で重複はなし） 。
     assert set(payload["objects"]) == {"A", "B", "C"}
-    # ``A`` の describe は 1 回のみ （ 2 段目で再訪しない ）
+    # ``A`` の describe は 1 回のみ （2 段目で再訪しない）
     assert client.describe_object_calls.count("A") == 1
     # ``B`` は関連として 1 件だけ
     b_entries = [r for r in payload["関連オブジェクト"] if r["子"] == "B"]
     assert len(b_entries) == 1
-    # ``C`` は 2 段目として取れる （ さらに 3 段目で ``A`` を掘ろうとはしない ）
+    # ``C`` は 2 段目として取れる （さらに 3 段目で ``A`` を掘ろうとはしない）
     c_entries = [r for r in payload["関連オブジェクト"] if r["子"] == "C"]
     assert len(c_entries) == 1
     assert c_entries[0]["段"] == 2
@@ -622,7 +622,7 @@ def test_related_depth_stops_at_cycle(tmp_path: Path) -> None:
 
 def test_related_depth_max_limits_total_across_levels(tmp_path: Path) -> None:
     """``RELATED_MAX`` の合計件数で打ち切り、 近い段が優先される。"""
-    # 1 段目: Account / Contact （ 2 件 ） 、 2 段目: User / Group （ 2 件 ） → 計 4 件
+    # 1 段目: Account / Contact （2 件） 、 2 段目: User / Group （2 件） → 計 4 件
     objects = {
         "Task": _describe_with_refs(
             "Task",
@@ -644,9 +644,9 @@ def test_related_depth_max_limits_total_across_levels(tmp_path: Path) -> None:
     )[0].record
     payload = _record_to_payload(record)
 
-    # 近い段から 3 件: Account / Contact / User （ Group は取らない ）
+    # 近い段から 3 件: Account / Contact / User （Group は取らない）
     assert list(payload["objects"]) == ["Task", "Account", "Contact", "User"]
-    # 関連オブジェクトの行数も 3 本 （ Group への行は出ない ）
+    # 関連オブジェクトの行数も 3 本 （Group への行は出ない）
     assert len(payload["関連オブジェクト"]) == 3
     children = [r["子"] for r in payload["関連オブジェクト"]]
     assert children == ["Account", "Contact", "User"]
@@ -661,7 +661,7 @@ def test_related_depth_max_limits_total_across_levels(tmp_path: Path) -> None:
 
 def test_related_objects_n_chain_has_one_row_per_edge(tmp_path: Path) -> None:
     """Task→Account→User の 3 段チェーンで、 ``関連オブジェクト`` には親→子の
-    参照 3 本が並ぶ （ JSON のリスト順は 浅い段 → 親の出現順 ）。
+    参照 3 本が並ぶ （JSON のリスト順は 浅い段 → 親の出現順）。
     """
     payload = _run_task_chain(tmp_path, related_depth=3)
     assert payload["関連オブジェクト"] == [
@@ -694,8 +694,8 @@ def test_related_objects_multiple_parents_to_same_child_yields_separate_rows(
 ) -> None:
     """同じ子へ複数の親から行く場合は、 親ごとに 1 行ずつ別行にする。
 
-    主 = Task （ 1 段目 ）。 Task の WhatId と WhoId の **2 つのフィールドが
-    両方 ``User`` を指す**ようにすると、 「 Task→User 」 が 2 本出る。
+    主 = Task （1 段目）。 Task の WhatId と WhoId の **2 つのフィールドが
+    両方 ``User`` を指す**ようにすると、 「Task→User」 が 2 本出る。
     同じ段内で同じ親から複数のフィールドで同じ子を指している。
     """
     main = {
@@ -754,10 +754,10 @@ def test_related_objects_polymorphic_reference_yields_separate_rows(
     """ポリモーフィックな参照は ``referenceTo`` のエントリごとに 1 行ずつ。
 
     主 = Task。 Task.OwnerId は Who ロールで Contact / Lead / User への
-    ポリモーフィック参照 （ relationshipName = ``OwnerId`` ）、 すべて 1 段目
+    ポリモーフィック参照 （relationshipName = ``OwnerId``）、 すべて 1 段目
     に解決対象として並ぶ。 ここでは分かりやすくするため、 各子は
     ``referenceTo`` の最初の対象だけを ``relationshipName`` 付きで持つ形に
-    する （ Contact / Lead / User それぞれに対応 ）。
+    する （Contact / Lead / User それぞれに対応）。
     """
     main = {
         "name": "Task",
@@ -814,7 +814,7 @@ def test_related_table_omits_child_dropped_by_limit(tmp_path: Path) -> None:
             {"WhatId": "Account", "WhoId": "Contact"},
         ),
         "Account": _main_describe("Account"),
-        # Contact は ``RELATED_MAX=1`` のため skipped （ HTTP も打たれない ）
+        # Contact は ``RELATED_MAX=1`` のため skipped （HTTP も打たれない）
         "Contact": _main_describe("Contact"),
     }
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
@@ -842,7 +842,7 @@ def test_related_table_omits_child_dropped_by_limit(tmp_path: Path) -> None:
     # 警告に Contact が残る
     warning = next(w for w in payload["warnings"] if "上限" in w)
     assert "Contact" in warning
-    # HTTP は 「 Task の主オブジェクト + 上限内の Account 」 の 2 件のみ
+    # HTTP は 「Task の主オブジェクト + 上限内の Account」 の 2 件のみ
     assert client.describe_object_calls == ["Task", "Account"]
 
 
@@ -886,14 +886,14 @@ def test_collect_related_objects_skipped_dedup() -> None:
     assert skipped == ["User", "Contact"]
 
 
-# ── 主＋関連オブジェクト同士の参照（ 主への参照・自己参照 ） ───────────────
+# ── 主＋関連オブジェクト同士の参照（主への参照・自己参照） ───────────────
 
 
 def test_collect_related_objects_includes_main_and_self_references_in_relations() -> None:
     """再現例: 主=Task、 Account.OwnerId→User、 Account.ParentId→Account
     （自己参照）、 Account.TaskId→Task （主への参照）、 User.ManagerId→User
     （自己参照）。 ``nodes`` には主(Task)を含まないが、 ``relations`` には
-    主への参照（段 0 ） と自己参照も全部載る。 行の段は **子の段** （ 主=0 ）。
+    主への参照（段 0） と自己参照も全部載る。 行の段は **子の段** （主=0）。
     """
     from src.fetch import RelationRecord, _collect_related_objects
 
@@ -932,7 +932,7 @@ def test_collect_related_objects_includes_main_and_self_references_in_relations(
         related_max=40,
     )
 
-    # ``nodes`` は主を含まない。 段は浅い順 （ Account と User は 1 段目 ）
+    # ``nodes`` は主を含まない。 段は浅い順 （Account と User は 1 段目）
     assert [(node.name, node.depth) for node in nodes] == [("Account", 1), ("User", 1)]
     # ``relations`` は 6 行: 主→子、 Account→子、 User→子
     assert relations == [
@@ -984,7 +984,7 @@ def test_collect_related_objects_includes_main_and_self_references_in_relations(
 
 def test_collect_related_objects_skipped_child_excluded_from_relations() -> None:
     """``related_max=1`` で Account だけ取れて User は ``skipped`` 。
-    User を含む行は出ない（ User は取れていないため、 親にも子にもならない ）。
+    User を含む行は出ない（User は取れていないため、 親にも子にもならない）。
     Account 側の ``User`` への行も User が取れていないので出ない。
     """
     from src.fetch import _collect_related_objects
@@ -1006,7 +1006,7 @@ def test_collect_related_objects_skipped_child_excluded_from_relations() -> None
     assert [node.name for node in nodes] == ["Account"]
     # User を含む行は出ない
     assert all(r.child != "User" for r in relations)
-    # Account は出ている （ Task→Account 1 行だけ ）
+    # Account は出ている （Task→Account 1 行だけ）
     account_rows = [r for r in relations if r.child == "Account"]
     assert len(account_rows) == 1
     assert account_rows[0].parent == "Task"
@@ -1144,7 +1144,7 @@ def test_main_object_describe_failure_yields_null(tmp_path: Path) -> None:
     """主オブジェクトの describe_object が失敗（401/403 以外）→ ``主オブジェクト: null`` 、警告、
     関連は取らない。
 
-    列キー先頭のフォールバック （ ``Opp`` ） も試すようにしたので、
+    列キー先頭のフォールバック （``Opp``） も試すようにしたので、
     ``Opp`` も同じエラーにして 両方が全滅するシナリオを確かめる
     """
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
@@ -1342,7 +1342,7 @@ def test_site_for_salesforce_error_marks_id_failed(tmp_path: Path) -> None:
 
 
 def test_site_for_comken_error_marks_id_failed(tmp_path: Path) -> None:
-    """``site_for`` が ``ComkenError`` （ ``SalesforceError`` 以外の派生）を
+    """``site_for`` が ``ComkenError`` （``SalesforceError`` 以外の派生）を
     出しても、その ID だけ失敗扱いにする。
     """
     from comken.exceptions import ComkenError
@@ -1387,7 +1387,7 @@ def test_run_fetch_does_not_write_any_files(tmp_path: Path) -> None:
     assert not list(output.iterdir())
 
 
-# ── run 経由のテストは tests/test_run.py 側（ CLI は削除 ） ──────────────
+# ── run 経由のテストは tests/test_run.py 側（CLI は削除） ──────────────
 
 
 def test_run_fetch_does_not_use_atomic_write(tmp_path: Path) -> None:
@@ -1411,7 +1411,7 @@ def test_run_fetch_does_not_use_atomic_write(tmp_path: Path) -> None:
     outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
     assert outcomes[0].status == "ok"
     assert outcomes[0].record is not None
-    # 出力先ディレクトリも空のまま （ ``run_fetch`` はフォルダも作らない ）
+    # 出力先ディレクトリも空のまま （``run_fetch`` はフォルダも作らない）
     assert not list((tmp_path / "output").iterdir()) if (tmp_path / "output").exists() else True
 
 
@@ -1528,7 +1528,7 @@ def _make_report_metadata_with_extras() -> dict:
             "customSummaryFormula": [],
             "division": "",
             "hasDetailRows": True,
-            # 許可リストに無い余計なキー（ 落ちるはず ）
+            # 許可リストに無い余計なキー（落ちるはず）
             "useNormalizedFieldForCurrency": True,
             "userOrTeamFilterId": "005xx",
             "description": "管理メモ",
@@ -1542,7 +1542,7 @@ def _make_report_metadata_with_extras() -> dict:
             "reportTypeExtraInfo": {"heavy": "blob"},
             "joinedReportMetadata": {},
         },
-        # トップレベルの余計なキー（ 全部 ``_collect_dropped_keys()`` に出る ）
+        # トップレベルの余計なキー（全部 ``_collect_dropped_keys()`` に出る）
         "reportTypeMetadata": {"columns": ["very", "heavy", "data"] * 100},
         "attributes": {"type": "Report", "url": "/services/data/v60.0/analytics/reports/00O..."},
         "hasNestedReports": False,
@@ -1594,13 +1594,13 @@ def test_slim_report_keeps_only_allowed_keys() -> None:
     }
     assert result["reportExtendedMetadata"]["detailColumnInfo"] == {"Opp.Name": {"label": "商談名"}}
 
-    # 落としたキー名は result に含めない （ warnings 側で別管理 ）
+    # 落としたキー名は result に含めない （warnings 側で別管理）
     assert set(result.keys()) == {"reportMetadata", "reportExtendedMetadata"}
 
 
 def test_slim_report_excludes_heavy_keys_from_output() -> None:
     """reportTypeMetadata や attributes が出力に無いことを
-    厳密に確かめる（ 出力 dict のトップレベルキーが限定されている ）。"""
+    厳密に確かめる（出力 dict のトップレベルキーが限定されている）。"""
     result = _slim_report(_make_report_metadata_with_extras())
 
     # 出力トップレベルは reportMetadata / reportExtendedMetadata の 2 つだけ
@@ -1630,7 +1630,7 @@ def test_slim_report_handles_missing_or_bad_input() -> None:
 
 
 def test_slim_report_normalizes_scalars_and_top_rows() -> None:
-    """単純な値は str に、 上位N の件数は正の整数か None にそろえる（ 境界 ）。"""
+    """単純な値は str に、 上位N の件数は正の整数か None にそろえる（境界）。"""
     result = _slim_report(
         {
             "reportMetadata": {
@@ -1652,7 +1652,7 @@ def test_slim_report_normalizes_scalars_and_top_rows() -> None:
 
 
 def test_slim_report_normalizes_list_items() -> None:
-    """リストとして読むキーの中身の型をそろえる（ 境界 ）。 そろっていれば元の参照のまま。"""
+    """リストとして読むキーの中身の型をそろえる（境界）。 そろっていれば元の参照のまま。"""
     detail_columns = ["A", "B"]
     result = _slim_report(
         {
@@ -1672,7 +1672,7 @@ def test_slim_report_normalizes_list_items() -> None:
     metadata = result["reportMetadata"]
     assert metadata["detailColumns"] is detail_columns
     assert metadata["aggregates"] == ["s!Amount"]
-    # 絞り込みは位置を保つ（ 組立式の番号と対応しているため ）
+    # 絞り込みは位置を保つ（組立式の番号と対応しているため）
     assert metadata["reportFilters"] == [{"column": "A"}, {}, {}]
     assert metadata["groupingsDown"] == []
     assert metadata["reportType"] is None
@@ -1680,7 +1680,7 @@ def test_slim_report_normalizes_list_items() -> None:
 
 
 def test_slim_report_does_not_mutate_input_dict() -> None:
-    """_slim_report を呼んでも入力の dict は変わらない（ 別 dict にコピー ）。"""
+    """_slim_report を呼んでも入力の dict は変わらない（別 dict にコピー）。"""
     import copy
 
     original = _make_report_metadata_with_extras()
@@ -1748,11 +1748,11 @@ def test_collect_dropped_keys_empty_when_all_allowed() -> None:
     assert _collect_dropped_keys(metadata) == ()
 
 
-# ── standardDateFilter の 「 実質指定なし 」 落とし ──────────────────────
+# ── standardDateFilter の 「実質指定なし」 落とし ──────────────────────
 
 
 def test_is_undated_filter_recognizes_empty_specs() -> None:
-    """「 実質指定なし 」 の判定: startDate / endDate が空、 durationValue が空か CUSTOM で True。"""
+    """「実質指定なし」 の判定: startDate / endDate が空、 durationValue が空か CUSTOM で True。"""
     from src.fetch import _is_undated_filter
 
     # startDate / endDate が None
@@ -1779,7 +1779,7 @@ def test_is_undated_filter_recognizes_empty_specs() -> None:
         )
         is True
     )
-    # durationValue が空（ 空の column だけ ）
+    # durationValue が空（空の column だけ）
     assert _is_undated_filter({"column": "CLOSE_DATE", "startDate": "", "endDate": ""}) is True
     # 空白のみ
     assert (
@@ -1793,14 +1793,14 @@ def test_is_undated_filter_recognizes_empty_specs() -> None:
         )
         is True
     )
-    # dict で無い → 「 無かった 」 ものとして True
+    # dict で無い → 「無かった」 ものとして True
     assert _is_undated_filter(None) is True
     assert _is_undated_filter("string") is True
     assert _is_undated_filter([]) is True
 
 
 def test_is_undated_filter_keeps_relative_duration() -> None:
-    """相対期間 （ THIS_YEAR / LAST_N_DAYS:30 等 ） は 「 指定あり 」 なので False。"""
+    """相対期間 （THIS_YEAR / LAST_N_DAYS:30 等） は 「指定あり」 なので False。"""
     from src.fetch import _is_undated_filter
 
     assert (
@@ -1840,7 +1840,7 @@ def test_is_undated_filter_keeps_relative_duration() -> None:
 
 
 def test_is_undated_filter_keeps_when_one_side_present() -> None:
-    """開始 or 終了のどちらかが入っていれば 「 指定あり 」 で False。"""
+    """開始 or 終了のどちらかが入っていれば 「指定あり」 で False。"""
     from src.fetch import _is_undated_filter
 
     assert (
@@ -1868,9 +1868,9 @@ def test_is_undated_filter_keeps_when_one_side_present() -> None:
 
 
 def test_slim_report_drops_undated_standard_date_filter() -> None:
-    """「 実質指定なし 」 の ``standardDateFilter`` は ``_slim_report`` で落ちる。
+    """「実質指定なし」 の ``standardDateFilter`` は ``_slim_report`` で落ちる。
 
-    実物の describe 戻り値と同じ形 （ ``startDate`` / ``endDate`` が ``None`` ） で
+    実物の describe 戻り値と同じ形 （``startDate`` / ``endDate`` が ``None``） で
     確認する
     """
     raw_metadata = {
@@ -1890,7 +1890,7 @@ def test_slim_report_drops_undated_standard_date_filter() -> None:
 
 
 def test_slim_report_keeps_relative_standard_date_filter() -> None:
-    """相対期間 （ THIS_YEAR ） の ``standardDateFilter`` は残る。"""
+    """相対期間 （THIS_YEAR） の ``standardDateFilter`` は残る。"""
     raw_metadata = {
         "reportMetadata": {
             "id": "00O5g00000ABCDE",
@@ -1939,7 +1939,7 @@ def test_slim_report_keeps_one_sided_standard_date_filter() -> None:
 
 
 def test_slim_report_drops_when_only_column_present() -> None:
-    """``column`` だけ入って他が全部空 （ 典型的には UI の 「 クリア 」 跡 ） も「 実質指定なし 」 として落ちる。"""
+    """``column`` だけ入って他が全部空 （典型的には UI の 「クリア」 跡） も「実質指定なし」 として落ちる。"""
     raw_metadata = {
         "reportMetadata": {
             "id": "00O5g00000ABCDE",
@@ -1965,7 +1965,7 @@ def _make_full_describe() -> dict:
         "name": "Opportunity",
         "label": "商談",
         "custom": False,
-        # 落ちるはずのキー（ これらが JSON に残らないことを確認する ）
+        # 落ちるはずのキー（これらが JSON に残らないことを確認する）
         "childRelationships": [{"childSObject": "Account", "field": "OpportunityId"}],
         "recordTypeInfos": [{"recordTypeId": "012000000000001"}],
         "urls": {"rowTemplate": "/services/data/v60.0/..."},
@@ -1999,7 +1999,7 @@ def _make_full_describe() -> dict:
                 "type": "string",
                 "picklistValues": [],
             },
-            # ``picklistValues`` が無い（ active 絞りは要らない ）
+            # ``picklistValues`` が無い（active 絞りは要らない）
             {
                 "name": "Amount",
                 "label": "金額",
@@ -2068,7 +2068,7 @@ def test_slim_field_has_nine_keys_in_order() -> None:
 def test_slim_object_picklist_active_only_capped_at_thirty() -> None:
     """``picklist`` は active な ``value`` だけを最大 30 件、 ``picklistTotal``
     は active な選択肢の総数。"""
-    # active が 35 件、 inactive が 5 件（ active な V0..V34 がそのまま並ぶ ）
+    # active が 35 件、 inactive が 5 件（active な V0..V34 がそのまま並ぶ）
     picklist_values = [{"value": f"V{i}", "active": True} for i in range(35)] + [
         {"value": f"OFF{i}", "active": False} for i in range(5)
     ]
@@ -2102,7 +2102,7 @@ def test_slim_object_picklist_active_only_capped_at_thirty() -> None:
 
 def test_slim_object_missing_keys_use_defaults() -> None:
     """``custom`` / ``nameField`` 無しは ``False`` 、 ``referenceTo`` 無しは ``[]`` 、
-    ``relationshipName`` 無しは空文字（ 内側が None を考えずに読めるように ）。"""
+    ``relationshipName`` 無しは空文字（内側が None を考えずに読めるように）。"""
     describe = {
         "name": "Account",
         "label": "取引先",
@@ -2125,7 +2125,7 @@ def test_slim_object_missing_keys_use_defaults() -> None:
 
 
 def test_slim_object_skips_non_dict_field_entries() -> None:
-    """``fields`` の中に dict でない項目（ 文字列や ``None`` ）が混じっても飛ばす。"""
+    """``fields`` の中に dict でない項目（文字列や ``None``）が混じっても飛ばす。"""
     describe = {
         "name": "X",
         "label": "X",
@@ -2141,7 +2141,7 @@ def test_slim_object_skips_non_dict_field_entries() -> None:
 
 
 def test_slim_object_does_not_mutate_input() -> None:
-    """``_slim_object`` を呼んでも入力 dict は変わらない（ 別 dict にコピー ）。"""
+    """``_slim_object`` を呼んでも入力 dict は変わらない（別 dict にコピー）。"""
     import copy
 
     original = _make_full_describe()
@@ -2153,7 +2153,7 @@ def test_slim_object_does_not_mutate_input() -> None:
 
 
 def test_slim_object_handles_non_dict_input() -> None:
-    """``describe`` が dict でない（ ``None`` や文字列）でも例外を上げず、 空の形で返す。"""
+    """``describe`` が dict でない（``None`` や文字列）でも例外を上げず、 空の形で返す。"""
     empty = {"name": "", "label": "", "custom": False, "fields": []}
     assert _slim_object(None) == empty
     assert _slim_object("string") == empty
@@ -2170,7 +2170,7 @@ def test_record_report_has_no_heavy_keys(tmp_path: Path) -> None:
     ``"重いキー":`` の形が出ない）。
     なぜ: 機微な情報や、 巨大な原本が record の中に漏れていないことを保証する。
     """
-    # 元 describe に「 重い」 キーを全部盛りにした ``Account`` を作る
+    # 元 describe に「重い」 キーを全部盛りにした ``Account`` を作る
     full_describe = {
         "name": "Account",
         "label": "取引先",
@@ -2208,7 +2208,7 @@ def test_record_report_has_no_heavy_keys(tmp_path: Path) -> None:
     raw_text = _json.dumps({"report": record.report, "objects": record.objects}, ensure_ascii=False)
 
     # ``"重いキー":`` という**キー形**が出現しない（ 出力 record の中に
-    # 「 キー名そのもの 」 が文字列として現れるのは無い ）
+    # 「キー名そのもの」 が文字列として現れるのは無い ）
     for forbidden in (
         "reportTypeMetadata",
         "childRelationships",
@@ -2261,7 +2261,7 @@ def test_related_objects_collected_from_original_describe_not_slimmed(
     record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
     payload = _record_to_payload(record)
 
-    # ``Account`` が出てきている（ slim 後の fields から集めていれば出ない）
+    # ``Account`` が出てきている（slim 後の fields から集めていれば出ない）
     assert "Account" in payload["objects"]
 
 
@@ -2269,7 +2269,7 @@ def test_related_objects_collected_from_original_describe_not_slimmed(
 
 
 def test_slim_report_detects_allowlist_violation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``REPORT_METADATA_KEYS`` を広げると（ または完全に無視すると ）、
+    """``REPORT_METADATA_KEYS`` を広げると（または完全に無視すると）、
     ``reportMetadata`` の絞り込みが甘くなり、 本来落ちるキーが残ってしまう
     ことを検出できる。
     """
@@ -2288,7 +2288,7 @@ def test_slim_report_detects_allowlist_violation(monkeypatch: pytest.MonkeyPatch
     result = _slim_report(metadata)
 
     # 本来 ``_collect_dropped_keys`` 側に記録されるはずのキーが ``reportMetadata``
-    # に**残ってしまっている**（ 改ざんを検出できる ）
+    # に**残ってしまっている**（改ざんを検出できる）
     assert "useNormalizedFieldForCurrency" in result["reportMetadata"]
     assert "userOrTeamFilterId" in result["reportMetadata"]
     assert "description" in result["reportMetadata"]
@@ -2310,7 +2310,7 @@ def test_slim_report_detects_collect_dropped_keys_being_emptied(
 
     metadata = _make_report_metadata_with_extras()
     dropped = fetch_module._collect_dropped_keys(metadata)
-    # 落ちたキーが**記録されていない**（ 改ざんが検出できる ）
+    # 落ちたキーが**記録されていない**（改ざんが検出できる）
     assert dropped == ()
 
 
@@ -2340,7 +2340,7 @@ def test_slim_object_detects_picklist_total_being_zero(
     result = fetch_module._slim_object(describe)
     field = result["fields"][0]
 
-    # ``picklistTotal`` が 0 になっている（ 本来は 35 ）
+    # ``picklistTotal`` が 0 になっている（本来は 35）
     assert field["picklistTotal"] == 0
     # 本来の ``picklistTotal`` との差で改ざんが分かる
     assert field["picklistTotal"] != 35
@@ -2379,7 +2379,7 @@ def test_slim_object_detects_active_filter_dropped(
     result = fetch_module._slim_object(describe)
     field = result["fields"][0]
 
-    # inactive な "Off" / "Pending" が ``picklist`` に入っている（ 改ざんが分かる ）
+    # inactive な "Off" / "Pending" が ``picklist`` に入っている（改ざんが分かる）
     assert "Off" in field["picklist"]
     assert "Pending" in field["picklist"]
 
@@ -2410,7 +2410,7 @@ def test_slim_object_detects_input_mutation(
     original_snapshot = _copy.deepcopy(original)
     fetch_module._slim_object(original)
 
-    # 元 dict が壊されている（ ``fields`` が書き換わっている ）
+    # 元 dict が壊されている（``fields`` が書き換わっている）
     assert original != original_snapshot
     assert original["fields"] == [{"name": "Replaced", "label": "Replaced", "type": "string"}]
 
@@ -2422,7 +2422,7 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
     """関連オブジェクトの収集が slim 後の ``fields`` で行われる改ざんを検出できる。
     slim 後は ``referenceTo`` が空になるため、 関連が 1 つも取れなくなる。
 
-    検出方法: 関連オブジェクト収集が slim 後に走る「 悪い実装 」 に
+    検出方法: 関連オブジェクト収集が slim 後に走る「悪い実装」 に
     ``_related_ref_pairs`` を差し替える （ ``_slim_object`` を先に呼んで元
     dict を破壊してから原本を読む ）。 本物の実装は slim の前に走るので
     ``Account`` が取れる。
@@ -2435,7 +2435,7 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
 
     def bad_slim_object(describe):
         # 悪い例: 呼ぶと同時に元 dict を slim 後の形に**書き換える**
-        # （ ``referenceTo`` を [] に、 ``relationshipName`` を None にする）
+        # （``referenceTo`` を [] に、 ``relationshipName`` を None にする）
         if isinstance(describe, dict) and isinstance(describe.get("fields"), list):
             for field in describe["fields"]:
                 if isinstance(field, dict):
@@ -2477,7 +2477,7 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
     payload = _record_to_payload(record)
 
     # slim 後の ``fields`` から集めていると ``Account`` が**取れない**
-    # （ 本物の実装では ``Account`` が必ず取れる ）
+    # （本物の実装では ``Account`` が必ず取れる）
     assert "Account" not in payload["objects"]
     assert call_log  # 収集ロジックは呼ばれた
 
@@ -2492,7 +2492,7 @@ def test_run_fetch_does_not_leak_row_data_to_logs(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """``run_fetch`` を DEBUG ログで走らせても、 レポートの行データ
-    （ 個人情報を含みうる ``Table`` の値そのもの ） がログに一切出ないこと。
+    （個人情報を含みうる ``Table`` の値そのもの） がログに一切出ないこと。
     なぜ: 1 レポート分の経過ログを INFO で出すようにしたため、 うっかり
     値そのものを ``logger.info`` に渡していないことを保証する。
     """
@@ -2525,7 +2525,7 @@ def test_run_fetch_does_not_leak_row_data_to_logs(
     outcomes = run_fetch([entry], site_for=site_for, **_settings(tmp_path))
 
     assert outcomes[0].status == "ok"
-    # ログに値そのものが漏れていない （ DEBUG 以上全部 ）
+    # ログに値そのものが漏れていない （DEBUG 以上全部）
     for record in caplog.records:
         assert _LOG_SECRET not in record.getMessage(), (
             f"行データ {_LOG_SECRET!r} がログに漏れた: {record.getMessage()}"
@@ -2557,7 +2557,7 @@ def test_run_fetch_emits_each_outcome_warning_once_at_warning_level(
     assert outcomes[0].status == "ok"
     # warnings に User の失敗がちょうど 1 件だけ積まれている
     assert outcomes[0].warnings == (expected_warning,)
-    # WARNING レベルで 「  - 」 プレフィックス付きで 1 回出る
+    # WARNING レベルで 「-」 プレフィックス付きで 1 回出る
     prefixed_warning_records = [
         record
         for record in caplog.records
@@ -2568,7 +2568,7 @@ def test_run_fetch_emits_each_outcome_warning_once_at_warning_level(
         f"実際 {[r.getMessage() for r in prefixed_warning_records]}"
     )
     assert expected_warning in prefixed_warning_records[0].getMessage()
-    # 同じ文言が他の WARNING にも出ないこと （ 二重ログ防止 ）
+    # 同じ文言が他の WARNING にも出ないこと （二重ログ防止）
     duplicated = [
         record
         for record in caplog.records
@@ -2579,7 +2579,7 @@ def test_run_fetch_emits_each_outcome_warning_once_at_warning_level(
     )
 
 
-# ── 列の対応.csv の経路補完 （ End-to-end ） ────────────────────────────────
+# ── 列の対応.csv の経路補完 （End-to-end） ────────────────────────────────
 
 
 def _path_opp_with_account() -> dict:
@@ -2621,7 +2621,7 @@ def _path_account_with_owner() -> dict:
 
 
 def _path_owner_metadata() -> dict:
-    """``Account.Owner.Name`` （ 人が書いた ） を確認するためのメタデータ。
+    """``Account.Owner.Name`` （人が書いた） を確認するためのメタデータ。
 
     ``detailColumns = ["Opp.Account.Owner"]`` を使い、 自動では解決できず
     ``(不明)`` のままになる。 そこに人が ``Account.Owner.Name`` を書いて、
@@ -2697,7 +2697,7 @@ def test_run_fetch_fetches_missing_object_along_user_path(tmp_path: Path) -> Non
     row = next(r for r in record.column_map if r["列キー"] == "Opp.Account.Owner")
     assert row["対応フィールドAPI名"] == "Account.Owner.Name"
     assert row["型"] == "string"
-    # 「User の describe に失敗 」 系は出ない
+    # 「User の describe に失敗」 系は出ない
     assert not any("User の describe に失敗" in w for w in record.warnings)
 
 
@@ -2734,12 +2734,12 @@ def test_run_fetch_caches_fetched_user_across_reports(tmp_path: Path) -> None:
     # 2 件とも成功
     assert outcomes[0].status == "ok"
     assert outcomes[1].status == "ok"
-    # User は 1 回しか API を叩かれていない （ 共有ストアでキャッシュヒット ）
+    # User は 1 回しか API を叩かれていない （共有ストアでキャッシュヒット）
     assert client.describe_object_calls.count("User") == 1
 
 
 def test_run_fetch_uses_describe_csv_cache_for_user(tmp_path: Path) -> None:
-    """``describe.csv`` （ ``DescribeStore.csv_index`` ） に User が既にあれば
+    """``describe.csv`` （``DescribeStore.csv_index``） に User が既にあれば
     Salesforce に問い合わせない。 ``_run_fetch`` の前に ``store.csv_index`` に
     User の describe を入れて、 simulate する
     """
@@ -2758,7 +2758,7 @@ def test_run_fetch_uses_describe_csv_cache_for_user(tmp_path: Path) -> None:
     site_for, _ = _site_for(client)
     store = DescribeStore.empty(tmp_path / "describe.csv")
     # pre-populate csv_index with User. キーは ``org_from_url`` で取り出される
-    # URL のホスト名 （ 小文字 ） とオブジェクト名を lower で揃える。
+    # URL のホスト名 （小文字） とオブジェクト名を lower で揃える。
     # ``DOMAIN`` のホストは ``example--sandbox.sandbox.my.salesforce.com``
     from src.describe_store import org_from_url
 
@@ -2782,8 +2782,8 @@ def test_run_fetch_uses_describe_csv_cache_for_user(tmp_path: Path) -> None:
 
 
 def test_run_fetch_typo_in_path_warns_with_candidates(tmp_path: Path) -> None:
-    """``Account.Ownr.Name`` （ 打ち間違い ） → 「 Ownr が Account に見つかり
-    ません」 と候補 （ Owner など ） が WARNING に出る、 値は残る
+    """``Account.Ownr.Name`` （打ち間違い） → 「 Ownr が Account に見つかり
+    ません」 と候補 （Owner など） が WARNING に出る、 値は残る
     """
     account_describe = {
         "name": "Account",
@@ -2850,7 +2850,7 @@ def test_run_fetch_typo_in_path_warns_with_candidates(tmp_path: Path) -> None:
 
 
 def test_run_fetch_path_fetch_404_warns_and_record_ok(tmp_path: Path) -> None:
-    """経路上の参照先 （ User ） が ``describe_object`` で 404 → 「 参照先 User
+    """経路上の参照先 （User） が ``describe_object`` で 404 → 「 参照先 User
     の項目定義を取得できません 」 の WARNING、 値は残る、 そのレポートは成功
     """
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
@@ -2884,7 +2884,7 @@ def test_run_fetch_path_fetch_404_warns_and_record_ok(tmp_path: Path) -> None:
 
 
 def test_run_fetch_path_fetch_401_marks_report_failed(tmp_path: Path) -> None:
-    """経路上の参照先 （ User ） が ``describe_object`` で 401 → レポート全体が
+    """経路上の参照先 （User） が ``describe_object`` で 401 → レポート全体が
     失敗扱いになる。 record は None
     """
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
@@ -2915,7 +2915,7 @@ def test_run_fetch_path_fetch_401_marks_report_failed(tmp_path: Path) -> None:
 
 
 def test_run_fetch_handles_polymorphic_what(tmp_path: Path) -> None:
-    """ポリモーフィック （ ``What.Name`` で What → Account / Opportunity ）:
+    """ポリモーフィック （``What.Name`` で What → Account / Opportunity）:
     取得済みの ``referenceTo`` の順に試して最初の候補の ``Name`` で型を引く
     """
     metadata = {
@@ -2985,7 +2985,7 @@ def test_run_fetch_handles_polymorphic_what(tmp_path: Path) -> None:
 
 
 def test_run_fetch_path_too_long_warns(tmp_path: Path) -> None:
-    """6 段以上なら 「 経路が長すぎます 」 WARNING で止める。 値は残る"""
+    """6 段以上なら 「経路が長すぎます」 WARNING で止める。 値は残る"""
     metadata = {
         "reportMetadata": {
             "reportType": {"type": "Opportunity"},
@@ -3037,10 +3037,10 @@ def test_run_fetch_path_too_long_warns(tmp_path: Path) -> None:
 
 
 def test_run_fetch_user_fix_overrides_auto_resolved(tmp_path: Path) -> None:
-    """「 直したSOQL列名 」 に値があれば自動の結果より常に優先する。
+    """「直したSOQL列名」 に値があれば自動の結果より常に優先する。
 
     自動で取れた列でも、 人が ``列の直し.xlsx`` で値を入れていれば自動の値
-    は上書きされる （ 人が入力した値を尊重する方針 ） 。
+    は上書きされる （人が入力した値を尊重する方針） 。
     """
     metadata = _make_metadata(detail_column_labels={"Opp.Name": "名前"})
     opp_describe = {
@@ -3088,7 +3088,7 @@ def test_run_fetch_user_fix_overrides_auto_resolved(tmp_path: Path) -> None:
 
 def test_run_fetch_no_fetcher_legacy_behavior(tmp_path: Path) -> None:
     """``column_fix_overrides`` が空のときは、 fetcher は使われず、 WARNING も
-    「 たどれません 」 は出ない （ 何も上書きしない ） 。
+    「たどれません」 は出ない （何も上書きしない） 。
     """
     metadata = {
         "reportMetadata": {
@@ -3222,7 +3222,7 @@ def test_main_object_falls_back_to_column_key_prefix(tmp_path: Path) -> None:
     # 列キー先頭の Contact が主オブジェクトに
     assert payload["主オブジェクト"] == "Contact"
     # ``Contact_Retention__c`` の 404 が警告として残らない
-    # ( ``Contact`` 側の警告も無い = 正常な経路扱い )
+    # (``Contact`` 側の警告も無い = 正常な経路扱い)
     assert not any("Contact_Retention__c" in w for w in payload["warnings"])
     assert not any("Contact の describe に失敗" in w for w in payload["warnings"])
 
@@ -3230,7 +3230,7 @@ def test_main_object_falls_back_to_column_key_prefix(tmp_path: Path) -> None:
 def test_column_key_path_walks_soql_and_fetches_intermediate(tmp_path: Path) -> None:
     """列キーが ``Contact.Account.Name`` / ``Contact.Retention__c.Status__c``
     なら SOQL 列名が ``Account.Name`` / ``Retention__r.Status__c`` になり、
-    型が付き、 Retention__c は取りに行く （ describe 1 回 ） 。
+    型が付き、 Retention__c は取りに行く （describe 1 回） 。
     """
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
@@ -3279,8 +3279,8 @@ def test_column_key_path_falls_back_to_label_when_first_segment_404(
 ) -> None:
     """列キー ``Contact.Acount.Name`` (Acount は Contact に無い) → 経路の
     補完は失敗、 表示名の照合にフォールバック。 表示名が ``Account Name``
-    のときに Account.Name が取れて、 備考は 「 関連オブジェクト経由 」
-    ( 経路の補完失敗の理由は残らない )
+    のときに Account.Name が取れて、 備考は 「関連オブジェクト経由」
+    (経路の補完失敗の理由は残らない)
 
     """
     metadata = {
@@ -3364,7 +3364,7 @@ def test_column_key_path_falls_back_when_label_also_fails(tmp_path: Path) -> Non
 
 
 def test_standard_form_column_key_falls_back_to_label_matching(tmp_path: Path) -> None:
-    """``.`` を含まない列キー ( 例 ``OPPORTUNITY_NAME`` ) は列キーからの
+    """``.`` を含まない列キー (例 ``OPPORTUNITY_NAME``) は列キーからの
     経路を試さず、 既存の表示名引き当てがそのまま動く
     """
     metadata = {
@@ -3394,7 +3394,7 @@ def test_standard_form_column_key_falls_back_to_label_matching(tmp_path: Path) -
 
 def test_column_key_prefix_picks_2nd_when_first_404(tmp_path: Path) -> None:
     """``Contact_Retention__c`` の describe が 404 、 列キーの先頭 1 番目
-    ( 例 ``Contact_Retention__c`` ) も 404 、 2 番目 ( 例 ``Contact`` ) が
+    (例 ``Contact_Retention__c``) も 404 、 2 番目 (例 ``Contact``) が
     通る → 2 番目が主オブジェクトになる
     """
     metadata = {
@@ -3500,7 +3500,7 @@ def test_extract_column_key_prefix_candidates_orders_by_frequency() -> None:
                 "Account.Name",  # Account 1
                 "Contact.Account.Industry",  # Contact 3
                 "Owner.Name",  # Owner 1
-                "OPPORTUNITY_NAME",  # 対象外 ( ``.`` なし )
+                "OPPORTUNITY_NAME",  # 対象外 (``.`` なし)
             ],
             "reportFilters": [{"column": "Account.Owner"}],  # Account 2
         },
@@ -3508,7 +3508,7 @@ def test_extract_column_key_prefix_candidates_orders_by_frequency() -> None:
     assert _extract_column_key_prefix_candidates(metadata) == [
         "Contact",  # 3 件
         "Account",  # 2 件
-        "Owner",  # 1 件 ( 出現順が先 )
+        "Owner",  # 1 件 (出現順が先)
     ]
 
 
@@ -3534,6 +3534,6 @@ def test_extract_column_key_prefix_candidates_excludes_fk_prefix() -> None:
         },
     }
     assert _extract_column_key_prefix_candidates(metadata) == [
-        "Account",  # 2 件 ( Account.Name + Account.Owner 、 FK_Account.* は除外 )
-        "Contact",  # 1 件 ( 出現順が先 )
+        "Account",  # 2 件 (Account.Name + Account.Owner 、 FK_Account.* は除外)
+        "Contact",  # 1 件 (出現順が先)
     ]

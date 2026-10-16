@@ -52,7 +52,7 @@ def _column_map_entry(
     owner_object: str = "",
     note: str = "",
 ) -> dict[str, str]:
-    """``column_map`` の 1 行を作る（ ``mapping.build_column_map`` と同じキーをそろえる ）。"""
+    """``column_map`` の 1 行を作る（``mapping.build_column_map`` と同じキーをそろえる）。"""
     return {
         "列キー": column_key,
         "表示名": display_name,
@@ -74,11 +74,11 @@ def _build_contract_records() -> list[ReportRecord]:
 
     シナリオ:
     - 1001 ( Opportunity ) : Account.Name / Amount / Name の 3 列
-    - 1002 ( Opportunity ) : Amount （ 表示名 「 売上金額 」 ）
-    - 1003 ( Opportunity ) : Amount （ 表示名 「 金額 」 ）
+    - 1002 ( Opportunity ) : Amount （表示名 「売上金額」）
+    - 1003 ( Opportunity ) : Amount （表示名 「金額」）
     - 1004 ( Task ) : Subject
 
-    Amount は 2 本が 「 金額 」 ・ 1 本が 「 売上金額 」 。 「 売上金額 」 の
+    Amount は 2 本が 「金額」 ・ 1 本が 「売上金額」 。 「売上金額」 の
     最小管理番号は 1002 なので、 ``備考`` は
     ``別の表示名あり: 売上金額（1002）`` になる。
     """
@@ -153,7 +153,7 @@ def test_run_tables_writes_byte_identical_contract_csv(
     ``tests/contract/列名の対応.contract.csv`` と **バイト単位で完全に同じ** 。
 
     日付を 2026-10-14 に固定し、 出力の文字コード・改行・列順・並び順・表示名
-    の多数決（ ``別の表示名あり: …`` ）をまとめて確かめる。
+    の多数決（``別の表示名あり: …``）をまとめて確かめる。
     """
     # 今日の日付を 2026-10-14 に固定
     monkeypatch.setattr("src.tables._today_local", lambda: date(2026, 10, 14))

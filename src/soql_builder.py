@@ -6,7 +6,7 @@
 ``COUNT()`` とレポート件数の突き合わせを行うため、 省いた条件は必ず
 ``missing`` に残す。
 
-組み立て規則は ``docs/仕様書.md`` の 「 SOQL 自動生成 」 節と依頼仕様の
+組み立て規則は ``docs/仕様書.md`` の 「SOQL 自動生成」 節と依頼仕様の
 対応表に従う。
 
 対応表 (``column_map``) は ``mapping.build_column_map()`` が
@@ -98,7 +98,7 @@ _BOOLEAN_TYPES: frozenset[str] = frozenset(
 _RELATIVE_DATE_PATTERN = re.compile(r"^[A-Z_]+(:\d+)?$")
 
 # 数値リテラルとして許容する形 (``-1.5`` / ``100`` など)。 カンマは含まない
-# ( 桁区切りは SOQL 側で分割事故になるので missing に送る ) 。
+# (桁区切りは SOQL 側で分割事故になるので missing に送る) 。
 _NUMERIC_PATTERN = re.compile(r"^-?\d+(\.\d+)?$")
 
 # ``reportBooleanFilter`` の番号 (``1`` / ``10``) を 1 件ずつ区別して置換する
@@ -106,7 +106,7 @@ _NUMERIC_PATTERN = re.compile(r"^-?\d+(\.\d+)?$")
 # 必ず ``(?<!\d)`` / ``(?!\d)`` で挟む
 _BOOLEAN_FILTER_NUMBER_PATTERN = re.compile(r"(?<!\d)(\d+)(?!\d)")
 
-# SOQL リテラルのエスケープ ( 単一引用符とバックスラッシュ )
+# SOQL リテラルのエスケープ (単一引用符とバックスラッシュ)
 _QUOTE_ESCAPE_PATTERN = re.compile(r"(['\\])")
 
 
@@ -115,13 +115,13 @@ class SoqlDraft:
     """``build_soql`` の戻り値。 ``frozen`` で再代入しない。
 
     Attributes:
-        soql: 組み立てた SOQL ( 1 つの文 ) 。 作れなかったときは空文字。
+        soql: 組み立てた SOQL (1 つの文) 。 作れなかったときは空文字。
         status: 状態。 ``作成済み`` / ``要確認`` / ``一部作れず`` / ``作れず``
             のいずれか。
-        missing: 作れなかった部分 ( 1 件 1 要素 )。 例: 「 列: 商談名
+        missing: 作れなかった部分 (1 件 1 要素)。 例: 「 列: 商談名
             (Opp.Name) — 対応フィールドなし 」 「 条件 2: Stage equals
-            Closed ( 省いたので件数が増える可能性 ) 」 。
-        checks: 人が実行前に確認すべき事項 ( 1 件 1 要素 )。 例: 「 ス
+            Closed (省いたので件数が増える可能性) 」 。
+        checks: 人が実行前に確認すべき事項 (1 件 1 要素)。 例: 「 ス
             コープ=MyTerritory: 実行ユーザーで結果が変わる。 OwnerId 等
             の条件を足すか確認 」 「 日時の条件をタイムゾーン無しの UTC 0 時
             で置き換えた: CloseDate >= 2025-01-01 」 。
@@ -147,7 +147,7 @@ def _escape_string_literal(value: str) -> str:
     """SOQL 文字列リテラル用に ``'`` と ``\\`` をエスケープして ``'...'`` で囲む。
 
     内部の ``'`` は ``\\'`` に、 ``\\`` は ``\\\\`` に置換する。 ``\\\\n`` 等の
-    制御文字はここでは触らない ( 値に入っていない前提 ) 。
+    制御文字はここでは触らない (値に入っていない前提) 。
     """
     escaped = _QUOTE_ESCAPE_PATTERN.sub(r"\\\1", value)
     return "'" + escaped + "'"
@@ -187,16 +187,16 @@ def _format_value_for_field(
     """``column_map`` の ``型`` に応じて SOQL の値リテラルを書く。
 
     Args:
-        value: レポート上の値 ( 文字列 ) 。
-        field_type: ``column_map.型`` の値 ( 小文字化なし、 そのまま ) 。
-        field_name: SOQL 上の項目名 ( エラーメッセージ用 ) 。
+        value: レポート上の値 (文字列) 。
+        field_type: ``column_map.型`` の値 (小文字化なし、 そのまま) 。
+        field_name: SOQL 上の項目名 (エラーメッセージ用) 。
 
     Returns:
         ``(リテラル文字列, 追加 missing, 追加 checks)`` のタプル。
         型が分からない、 もしくは日付/日時/数値の値が解釈できないときは
         ``""`` と共に ``missing`` 側に理由を入れて返し、 呼び出し側で
-        さらに「 演算子 N の値が解釈できません: ... 」 を足す。
-        解釈できたが注意点がある ( 日時の UTC 化など ) ときは
+        さらに「演算子 N の値が解釈できません: ...」 を足す。
+        解釈できたが注意点がある (日時の UTC 化など) ときは
         ``checks`` 側にメッセージを入れて返す。
     """
     field_type_lower = (field_type or "").strip().lower()
@@ -216,7 +216,7 @@ def _format_value_for_field(
         return _format_datetime_value(value, field_name)
 
     # 型が分からない
-    return "", [f"値の解釈不可 ( {field_name}: 型 {field_type!r} が未知 ): missing"], []
+    return "", [f"値の解釈不可 ({field_name}: 型 {field_type!r} が未知): missing"], []
 
 
 def _format_string_value(value: str) -> tuple[str, list[str], list[str]]:
@@ -233,7 +233,7 @@ def _format_boolean_value(value: str, field_name: str) -> tuple[str, list[str], 
         return "false", [], []
     return (
         "",
-        [f"値の解釈不可 ( {field_name}: boolean として解釈できない {value!r} ): missing"],
+        [f"値の解釈不可 ({field_name}: boolean として解釈できない {value!r}): missing"],
         [],
     )
 
@@ -245,10 +245,10 @@ def _format_numeric_value(value: str, field_name: str) -> tuple[str, list[str], 
     if "," in value:
         return (
             "",
-            [f"値の解釈不可 ( {field_name}: 数値の値にカンマが含まれる可能性 {value!r} ): missing"],
+            [f"値の解釈不可 ({field_name}: 数値の値にカンマが含まれる可能性 {value!r}): missing"],
             [],
         )
-    return "", [f"値の解釈不可 ( {field_name}: 数値として解釈できない {value!r} ): missing"], []
+    return "", [f"値の解釈不可 ({field_name}: 数値として解釈できない {value!r}): missing"], []
 
 
 def _format_date_value(value: str, field_name: str) -> tuple[str, list[str], list[str]]:
@@ -257,19 +257,19 @@ def _format_date_value(value: str, field_name: str) -> tuple[str, list[str], lis
     if _RELATIVE_DATE_PATTERN.fullmatch(value):
         return value, [], []
     # 日付として解釈できる形なら、 ``YYYY-MM-DD`` に正規化して返す
-    # ( 実在しない日付・ ``YYYY/MM/DD`` 表記揺れを吸収 )
+    # (実在しない日付・ ``YYYY/MM/DD`` 表記揺れを吸収)
     if _looks_like_date(value):
         normalized, missing_msg = _normalize_date_literal(value)
         if missing_msg:
             return (
                 "",
-                [f"値の解釈不可 ( {field_name}: date として解釈できない {value!r} ): missing"],
+                [f"値の解釈不可 ({field_name}: date として解釈できない {value!r}): missing"],
                 [],
             )
         return normalized, [], []
     return (
         "",
-        [f"値の解釈不可 ( {field_name}: date として解釈できない {value!r} ): missing"],
+        [f"値の解釈不可 ({field_name}: date として解釈できない {value!r}): missing"],
         [],
     )
 
@@ -283,13 +283,13 @@ def _format_datetime_value(value: str, field_name: str) -> tuple[str, list[str],
     if _RELATIVE_DATE_PATTERN.fullmatch(value):
         return value, [], []
     # 日付だけの値なら ``YYYY-MM-DDT00:00:00Z`` に拡張して checks 追加
-    # ( ``YYYY/MM/DD`` 表記も ``-`` に正規化してから ``T00:00:00Z`` を付与 )
+    # (``YYYY/MM/DD`` 表記も ``-`` に正規化してから ``T00:00:00Z`` を付与)
     if _looks_like_date(value):
         normalized, missing_msg = _normalize_date_literal(value)
         if missing_msg:
             return (
                 "",
-                [f"値の解釈不可 ( {field_name}: datetime として解釈できない {value!r} ): missing"],
+                [f"値の解釈不可 ({field_name}: datetime として解釈できない {value!r}): missing"],
                 [],
             )
         return (
@@ -302,7 +302,7 @@ def _format_datetime_value(value: str, field_name: str) -> tuple[str, list[str],
         )
     return (
         "",
-        [f"値の解釈不可 ( {field_name}: datetime として解釈できない {value!r} ): missing"],
+        [f"値の解釈不可 ({field_name}: datetime として解釈できない {value!r}): missing"],
         [],
     )
 
@@ -366,7 +366,7 @@ def _build_comparison_condition(
     missing: list[str] = []
     checks: list[str] = []
     if len(values) != 1:
-        missing.append(f"演算子 {op} は単一値のみ対応 ( 値: {values!r} )")
+        missing.append(f"演算子 {op} は単一値のみ対応 (値: {values!r})")
         return "", missing, checks
     literal, extra_missing, extra_checks = _format_value_for_field(values[0], field_type, field_api)
     if not literal:
@@ -404,7 +404,7 @@ def _build_like_condition(
         missing.append(f"演算子 {op} の値が無い")
         return "", missing, checks
     if field_type.strip().lower() not in _STRING_TYPES:
-        missing.append(f"演算子 {op} は文字列系の項目でのみ使用可 ( 型: {field_type!r} )")
+        missing.append(f"演算子 {op} は文字列系の項目でのみ使用可 (型: {field_type!r})")
         return "", missing, checks
     pieces: list[tuple[str, str]] = []  # (value, literal)
     for value in values:
@@ -425,7 +425,7 @@ def _format_like_expression(
     """組み立て済みの ``(value, '%v%' literal)`` 群から SOQL の LIKE 式にする。"""
     if op == "startsWith":
         if len(pieces) != 1:
-            missing.append(f"演算子 startsWith は単一値のみ対応 ( 値: {[p[0] for p in pieces]!r} )")
+            missing.append(f"演算子 startsWith は単一値のみ対応 (値: {[p[0] for p in pieces]!r})")
             return "", missing, checks
         value, _ = pieces[0]
         if "%" in value or "_" in value:
@@ -454,9 +454,7 @@ def _build_picklist_inclusion_condition(
     missing: list[str] = []
     checks: list[str] = []
     if field_type.strip().lower() not in ("multipicklist", "picklist"):
-        missing.append(
-            f"演算子 {op} は multipicklist / picklist のみで使用可 ( 型: {field_type!r} )"
-        )
+        missing.append(f"演算子 {op} は multipicklist / picklist のみで使用可 (型: {field_type!r})")
         return "", missing, checks
     if not values:
         missing.append(f"演算子 {op} の値が無い")
@@ -523,14 +521,14 @@ def _build_where_clause(
     ``crossFilters`` から WHERE 句を組み立てる。
 
     ``reportFilters`` の条件は **1 始まり番号 → 条件式** の対応で持ち、
-    組立式 (``reportBooleanFilter``) はその番号で ``( 条件式 )`` に
+    組立式 (``reportBooleanFilter``) はその番号で ``(条件式)`` に
     置き換える。 日付条件 (``standardDateFilter``) は **別管理** にして、
-    組立式の結果 ( 全体を 1 行として扱う ) と AND で並べる。 組立式が
+    組立式の結果 (全体を 1 行として扱う) と AND で並べる。 組立式が
     無いときは ``reportFilters`` の各条件と日付条件を AND でつなぐ。
 
     組立式の **参照番号** が ``reportFilters`` のどれかに対応しない
-    とき ( その条件が ``column_map`` に無く作れなかった等 ) 、 式が壊れる
-    ため WHERE は空にして missing に「 組立式の条件を作れない 」 を入れる。
+    とき (その条件が ``column_map`` に無く作れなかった等) 、 式が壊れる
+    ため WHERE は空にして missing に「組立式の条件を作れない」 を入れる。
     クロスフィルタや日付条件の ``missing`` だけでは WHERE 全体は捨てない。
 
     Returns:
@@ -566,7 +564,7 @@ def _collect_report_filter_conditions(
             continue
         column_info = column_lookup.get(column)
         if not column_info or column_info["対応フィールドAPI名"] in ("", "(不明)"):
-            missing.append(f"条件 {index}: {column} ( 省いたので件数が増える可能性 )")
+            missing.append(f"条件 {index}: {column} (省いたので件数が増える可能性)")
             continue
         values = _extract_filter_values(column_info, index, entry, missing)
         if values is None:
@@ -596,7 +594,7 @@ def _extract_filter_values(
     """``reportFilters`` 1 件の ``value`` を、 型に合わせて ``values`` リストにする。
 
     数値系のときは ``1,000`` のような桁区切りを missing に送って ``None`` を返す
-    ( カンマで分割すると ``IN`` の要素が壊れるため ) 。 それ以外はカンマで分割する。
+    (カンマで分割すると ``IN`` の要素が壊れるため) 。 それ以外はカンマで分割する。
     """
     field_type = column_info["型"]
     raw_value = _coerce_str(entry.get("value"))
@@ -614,7 +612,7 @@ def _collect_standard_date_lines(
     missing: list[str],
     checks: list[str],
 ) -> list[str]:
-    """``standardDateFilter`` を SOQL の日付条件式 ( 1 行 ) にして返す。
+    """``standardDateFilter`` を SOQL の日付条件式 (1 行) にして返す。
 
     ``CUSTOM`` なら start / end を ``>=`` / ``<=`` に展開、 相対日付リテラル
     ならそのまま ``= durationValue`` にする。 全期間は空リスト。
@@ -631,7 +629,7 @@ def _collect_standard_date_lines(
         return []
     column_info = column_lookup.get(column)
     if not column_info or column_info["対応フィールドAPI名"] in ("", "(不明)"):
-        missing.append(f"日付条件の列 {column} に対応が無い ( 省いた )")
+        missing.append(f"日付条件の列 {column} に対応が無い (省いた)")
         return []
     field_api = column_info["対応フィールドAPI名"]
     field_type = column_info["型"].strip().lower()
@@ -698,24 +696,24 @@ def _collect_standard_filter_checks(
     metadata: dict[str, Any],
     checks: list[str],
 ) -> None:
-    """``standardFilters`` を ``checks`` に並べる ( 汎用には訳せない ) 。"""
+    """``standardFilters`` を ``checks`` に並べる (汎用には訳せない) 。"""
     standard_filters = metadata.get("standardFilters")
     if not (isinstance(standard_filters, list) and standard_filters):
         return
     for index, sf in enumerate(standard_filters, start=1):
-        checks.append(f"標準フィルタ {index}: {sf!r} ( そのままでは SOQL に翻訳できない )")
+        checks.append(f"標準フィルタ {index}: {sf!r} (そのままでは SOQL に翻訳できない)")
 
 
 def _collect_cross_filter_missing(
     metadata: dict[str, Any],
     missing: list[str],
 ) -> None:
-    """``crossFilters`` を ``missing`` に並べる ( 副問い合わせが必要 ) 。"""
+    """``crossFilters`` を ``missing`` に並べる (副問い合わせが必要) 。"""
     cross_filters = metadata.get("crossFilters")
     if not (isinstance(cross_filters, list) and cross_filters):
         return
     for index, cf in enumerate(cross_filters, start=1):
-        missing.append(f"クロスフィルタ {index}: {cf!r} ( 副問い合わせが必要 )")
+        missing.append(f"クロスフィルタ {index}: {cf!r} (副問い合わせが必要)")
 
 
 def _combine_filter_conditions(
@@ -726,7 +724,7 @@ def _combine_filter_conditions(
     """組立式 ``reportBooleanFilter`` があれば番号置換、 無ければ番号順で並べる。
 
     戻り値の ``ok`` は組立式の解釈に成功したかどうか。 ``False`` のときは呼び出し側で
-    WHERE 全体を空にする (``missing`` には理由が既に入っている ) 。
+    WHERE 全体を空にする (``missing`` には理由が既に入っている) 。
     """
     bool_filter = metadata.get("reportBooleanFilter", "")
     if not bool_filter:
@@ -737,7 +735,7 @@ def _combine_filter_conditions(
         missing.insert(0, f"組立式の解釈失敗: {exc}")
         missing.insert(
             0,
-            "組立式の条件を作れない ( 条件を省くと式が壊れるため WHERE 全体を出さない )",
+            "組立式の条件を作れない (条件を省くと式が壊れるため WHERE 全体を出さない)",
         )
         return [], False
     return [combined], True
@@ -751,7 +749,7 @@ def _replace_boolean_filter_numbers(
 
     ``1`` と ``10`` がぶつからないように ``(?<!\\d)(\\d+)(?!\\d)`` で
     数字の塊を 1 個ずつ取り出して置換する。 同じ番号が 2 回出現した場合も
-    同じ条件式で置き換える ( 2 回目を数字のまま残さない ) 。
+    同じ条件式で置き換える (2 回目を数字のまま残さない) 。
     """
 
     def replace_one(match: re.Match[str]) -> str:
@@ -783,7 +781,7 @@ def _build_order_by_clause(
             continue
         column_info = column_lookup.get(sort_column)
         if not column_info or column_info["対応フィールドAPI名"] in ("", "(不明)"):
-            missing.append(f"並び順 {index}: {sort_column} に対応が無い ( 省いた )")
+            missing.append(f"並び順 {index}: {sort_column} に対応が無い (省いた)")
             continue
         field_api = column_info["対応フィールドAPI名"]
         sort_order = sb.get("sortOrder", "").strip().upper()
@@ -807,19 +805,19 @@ def _build_order_by_clause(
 
 
 def build_soql(record: ReportRecord) -> SoqlDraft:
-    """``record`` (``ReportRecord``) から ``SoqlDraft`` を組み立てる ( 純粋関数 ) 。
+    """``record`` (``ReportRecord``) から ``SoqlDraft`` を組み立てる (純粋関数) 。
 
-    規則は依頼仕様 ( ルール詳細 ) に従う。 ``record`` は ``ReportRecord``
+    規則は依頼仕様 (ルール詳細) に従う。 ``record`` は ``ReportRecord``
     互換 (``key`` / ``summary`` / ``main_object`` / ``report`` / ``column_map``
     ) であれば良い。 ``report`` は ``_slim_report`` で絞った形式
-    (``reportMetadata`` / ``reportExtendedMetadata`` のみ ) を想定。
+    (``reportMetadata`` / ``reportExtendedMetadata`` のみ) を想定。
 
     status の判定ルール:
 
-    - ``作れず`` … 主オブジェクト不明 (``main_object`` が空 / ``None`` ) または
+    - ``作れず`` … 主オブジェクト不明 (``main_object`` が空 / ``None``) または
       SELECT に入れられる列が 1 つも無い ( 全列 ``(不明)`` または全列
       ``missing`` のため SELECT から落ちた ) 。
-    - ``一部作れず`` … ``missing`` に 1 件以上ある ( SOQL から省いた部分がある )
+    - ``一部作れず`` … ``missing`` に 1 件以上ある (SOQL から省いた部分がある)
     - ``要確認`` … ``missing`` は無いが ``checks`` に 1 件以上ある。
     - ``作成済み`` … ``missing`` も ``checks`` も無い。
     """
@@ -832,7 +830,7 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
             checks=(),
         )
 
-    # ``record.report`` は入口（ ``_slim_report`` ）で形をそろえてある
+    # ``record.report`` は入口（``_slim_report``）で形をそろえてある
     metadata = record.report["reportMetadata"]
     column_lookup = _build_column_lookup(record.column_map)
 
@@ -893,7 +891,7 @@ def _build_select_lines(
                 missing.append(f"列: {label} ( {column_key} ) — 対応フィールドなし")
             continue
         if field_api in seen_fields:
-            # 重複は除く ( 同一フィールドが detail / groupings 両方に )
+            # 重複は除く (同一フィールドが detail / groupings 両方に)
             continue
         seen_fields.add(field_api)
         select_lines.append(field_api)
@@ -915,7 +913,7 @@ def _collect_unresolved_metadata_missing(
             )
             missing.append(
                 f"バケット {index}: {name or '(名称不明)'} ( {label} ) "
-                "( 集計のため SOQL には入れない )"
+                "(集計のため SOQL には入れない)"
             )
 
     custom_summary_formula = metadata.get("customSummaryFormula")
@@ -925,18 +923,18 @@ def _collect_unresolved_metadata_missing(
             label = _coerce_str(csf_dict.get("label"))
             formula = _coerce_str(csf_dict.get("formula"))
             missing.append(
-                f"独自計算式 {index}: {label or '(ラベル不明)'} = {formula} ( SOQL には入れない )"
+                f"独自計算式 {index}: {label or '(ラベル不明)'} = {formula} (SOQL には入れない)"
             )
 
     # ``aggregates`` の ``"!"`` 形式は集計レポートなので SOQL にしない
-    # ( ``RowCount`` は集計行が無いだけなので missing にも入れない )
+    # (``RowCount`` は集計行が無いだけなので missing にも入れない)
     for agg in metadata.get("aggregates", []):
         if "!" not in agg:
             continue
         target = agg.split("!", 1)[-1]
         if target == "RowCount":
             continue
-        missing.append(f"集計 {agg}: 集計レポートのため SOQL にしない ( 明細として取れない )")
+        missing.append(f"集計 {agg}: 集計レポートのため SOQL にしない (明細として取れない)")
 
     # ``historicalSnapshotDates`` は履歴スナップショットの日付指定。 SOQL に訳せず、
     # 黙って捨てるとレポート以上の範囲を取る危険があるため missing に理由を入れて
@@ -962,7 +960,7 @@ def _assemble_soql_text(
     main_object: str,
 ) -> tuple[str, str]:
     """組み立て済みの SELECT / WHERE / ORDER BY から、 本文用と件数用の SOQL を返す。"""
-    # 条件のリストを直接整形する ( 文字列リテラル内の ' AND ' で改行を入れて値を変えない )
+    # 条件のリストを直接整形する (文字列リテラル内の ' AND ' で改行を入れて値を変えない)
     where_block = "\n  AND\n  ".join(where_lines) if where_lines else ""
     select_block = ",\n  ".join(select_lines)
     soql_lines: list[str] = [f"SELECT {select_block}", f"FROM {main_object}"]
@@ -972,7 +970,7 @@ def _assemble_soql_text(
         soql_lines.append(order_by_clause)
     soql = "\n".join(soql_lines)
 
-    # 件数用は同じ ``select_lines`` / ``where_lines`` から組み立てる ( 文字列の切り貼りをしない )
+    # 件数用は同じ ``select_lines`` / ``where_lines`` から組み立てる (文字列の切り貼りをしない)
     count_lines: list[str] = ["SELECT COUNT()", f"FROM {main_object}"]
     if where_block:
         count_lines.append(f"WHERE {where_block}")
@@ -994,7 +992,7 @@ def _apply_incomplete_marker(
     count_soql: str,
     status: str,
 ) -> tuple[str, str]:
-    """``一部作れず`` の SOQL には 1 行目に印を付ける ( ダウンローダーが実行前に止める ) 。"""
+    """``一部作れず`` の SOQL には 1 行目に印を付ける (ダウンローダーが実行前に止める) 。"""
     if status != STATUS_PARTIAL:
         return soql, count_soql
     return f"{INCOMPLETE_MARKER}\n{soql}", f"{INCOMPLETE_MARKER}\n{count_soql}"
@@ -1027,5 +1025,5 @@ def build_count_soql(record: ReportRecord) -> tuple[str | None, int | None]:
 
 
 def _extract_top_rows_limit(metadata: dict[str, Any]) -> int | None:
-    """``topRows.rowLimit``（ 入口で正の整数か None にそろえてある ）を返す。"""
+    """``topRows.rowLimit``（入口で正の整数か None にそろえてある）を返す。"""
     return (metadata.get("topRows") or {}).get("rowLimit")

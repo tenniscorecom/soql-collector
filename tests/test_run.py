@@ -103,7 +103,7 @@ def _write_ini_without_survey(tmp_path: Path, master_xlsx: Path) -> None:
 
 
 def _make_file_paths(tmp_path: Path, master: Path) -> Any:
-    """``run()`` 用の ``FilePaths`` を作る（ ``read_file_paths`` の差し替えに使う）。"""
+    """``run()`` 用の ``FilePaths`` を作る（``read_file_paths`` の差し替えに使う）。"""
     from src.run import FilePaths
 
     return FilePaths(
@@ -152,7 +152,7 @@ class _ReportStub:
 
 
 class _FakeClient:
-    """Fake Salesforce クライアント（ ``with site() as client`` の中身 ）。"""
+    """Fake Salesforce クライアント（``with site() as client`` の中身）。"""
 
     def __init__(
         self,
@@ -181,7 +181,7 @@ class _FakeClient:
 class _FakeSite:
     """Fake の ``SalesforceBase`` サブクラス。
 
-    ``site_for(url)`` でインスタンス（ 実質 ``class`` のようなもの ） を返し、
+    ``site_for(url)`` でインスタンス（実質 ``class`` のようなもの） を返し、
     ``site_class()`` で ``__call__`` が ``self`` を返し、 ``__enter__`` で
     ``_FakeClient`` を返す形にする。 ``__name__`` は本物のクラスと同じく
     文字列なので、 組織クラス名の一覧表示にも使える。
@@ -238,7 +238,7 @@ def test_run_with_argv_returns_2_and_skips_site_for(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """引数が 1 つでもあれば ERROR（ 終了コード 2 ） を出して ``site_for`` を呼ばない。"""
+    """引数が 1 つでもあれば ERROR（終了コード 2） を出して ``site_for`` を呼ばない。"""
     from src import run as run_module
 
     called = {"site_for": 0}
@@ -348,7 +348,7 @@ def test_run_filters_disabled_rows(
 
 
 class RecordStub:
-    """``ReportRecord`` 互換のスタブ （ テスト用 ）。 dataclass で型互換 。"""
+    """``ReportRecord`` 互換のスタブ （テスト用）。 dataclass で型互換 。"""
 
     def __init__(self, key: str, summary: str, report_id: str, url: str) -> None:
         from src.fetch import ReportRecord
@@ -736,7 +736,7 @@ def test_run_dry_run_skips_site_for_and_writes(
     assert called["tables"] == 0
     # 何も書かれていない
     assert not (tmp_path / "output").exists() or not list((tmp_path / "output").iterdir())
-    # 後始末（ dry-run を明示解除 ）
+    # 後始末（dry-run を明示解除）
     assert not runtime.is_dry_run()
 
 

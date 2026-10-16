@@ -5,15 +5,15 @@ CSV を組み立てる。
 2 種類のファイルを書く:
 
 - ``SOQL調査.xlsx`` … 人が見る 1 冊のブック。 毎回その回の結果で丸ごと
-  作り直す。 シートは **3 枚** （ 一覧 / 列の対応 / 関係図 ） 、 すべて
-  Excel のテーブル （ 構造化 ） にする。 comken の
+  作り直す。 シートは **3 枚** （一覧 / 列の対応 / 関係図） 、 すべて
+  Excel のテーブル （構造化） にする。 comken の
   ``Sheet.create_table(name, table, start_cell)`` を使う
 - ``列名の対応.csv`` … ダウンローダーが SOQL レポートの列名の置き換えに使う
   CSV。 全レポート分を積み上げる。 その回に取れた ``(主オブジェクト,
   SOQL列名)`` の行は今回書いた内容で入れ替わり、 他の行はそのまま残る
 
 ``run_fetch`` が ``Record`` を 1 件も作れなかったときは ``SOQL調査.xlsx``
-は作らず、 ``列名の対応.csv`` も何もしない （ 既存もそのまま ） 。
+は作らず、 ``列名の対応.csv`` も何もしない （既存もそのまま） 。
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # 1 つの CSV ファイルあたりの選択肢の最大値数。 超えたら末尾に ``…`` を付ける
 PICKLIST_LIMIT = 30
 
-# 「 複数候補あり 」 備考に並べる鎖+項目の最大件数
+# 「複数候補あり」 備考に並べる鎖+項目の最大件数
 MULTIPLE_CANDIDATES_LIMIT = 5
 
 # 一覧 / 列の対応 シートの 1 行目に出す案内文
@@ -48,20 +48,20 @@ _ANNOUNCEMENT_TEXT = (
     "直すときは input/列の直し.xlsx の『直したSOQL列名』に書いて、もう一度実行してください。"
 )
 
-# 警告 「 オブジェクト {name} の describe に失敗 … 」 を (name, reason) に分ける
+# 警告 「オブジェクト {name} の describe に失敗 …」 を (name, reason) に分ける
 DESCRIBE_FAILURE_PATTERN = re.compile(r"^オブジェクト (.+?) の describe に失敗(.*)$")
 
 # 1 レポートの中で同じ表示名が複数回現れたときの 取得できなかった項目 シートの理由
 DUPLICATE_LABEL_REASON = "同じレポート内で表示名が重複"
 
-# xlsx / csv 出力ファイル名 （ 既定値 ）
+# xlsx / csv 出力ファイル名 （既定値）
 XLSX_NAME = "SOQL調査.xlsx"
 COLUMN_NAMES_CSV_NAME = "列名の対応.csv"
 
 
 # ── シート名・列名定数 ────────────────────────────────────────────────────
 
-# シート名 （ 表示順 ）
+# シート名 （表示順）
 SHEET_OVERVIEW = "一覧"
 SHEET_COLUMNS = "列の対応"
 SHEET_RELATION_DIAGRAM = "関係図"
@@ -72,7 +72,7 @@ SHEET_NAMES_IN_ORDER: tuple[str, ...] = (
     SHEET_RELATION_DIAGRAM,
 )
 
-# テーブル名 （ Excel テーブル、 英数字のみ ）
+# テーブル名 （Excel テーブル、 英数字のみ）
 TABLE_OVERVIEW = "T_Overview"
 TABLE_COLUMNS = "T_ColumnMap"
 TABLE_DIAGRAM = "T_RelationDiagram"
@@ -108,7 +108,7 @@ COLUMNS_SHEET_COLUMNS: tuple[str, ...] = (
     "自動の値",
 )
 
-# 関係図シートの列名 （ 主オブジェクト単位の木を Excel で見やすくしたもの ）
+# 関係図シートの列名 （主オブジェクト単位の木を Excel で見やすくしたもの）
 RELATION_DIAGRAM_COLUMNS: tuple[str, ...] = (
     "主オブジェクト",
     "段",
@@ -118,7 +118,7 @@ RELATION_DIAGRAM_COLUMNS: tuple[str, ...] = (
     "参照項目API名",
 )
 
-# 列名の対応.csv の列名 （ ダウンローダー固定 ）
+# 列名の対応.csv の列名 （ダウンローダー固定）
 COLUMN_NAMES_COLUMNS: tuple[str, ...] = (
     "主オブジェクト",
     "SOQL列名",
@@ -178,7 +178,7 @@ def run_tables(
     sorted_records = sorted(record_list, key=lambda r: r.key)
     ok_keys = [r.key for r in sorted_records]
 
-    # 個人情報は取得時に列ごとに判定済み（ 判定し直さない ）
+    # 個人情報は取得時に列ごとに判定済み（判定し直さない）
     pii_lookups = {record.key: record.pii.by_column for record in sorted_records}
 
     # 似たレポート判定
@@ -238,26 +238,26 @@ def run_tables(
         )
         wrote.append(xlsx_path)
         logger.info(
-            "Excel を書き出し: %s（ 一覧=%d / 列の対応=%d / 関係図=%d ）",
+            "Excel を書き出し: %s（一覧=%d / 列の対応=%d / 関係図=%d）",
             xlsx_path,
             len(survey_rows),
             len(columns_rows),
             len(relation_diagram_rows),
         )
 
-    # 列名の対応.csv （ 積み上げ ）
+    # 列名の対応.csv （積み上げ）
     column_names_path = output_dir / COLUMN_NAMES_CSV_NAME
     if ok_keys:
         column_names_rows = _resolved_fields_to_csv_rows(resolved_fields, _today_local())
         _merge_column_names_csv(column_names_path, column_names_rows, ok_keys)
         logger.info(
-            "CSV を書き出し: %s（ %d 行 ）",
+            "CSV を書き出し: %s（%d 行）",
             column_names_path,
             len(column_names_rows),
         )
     elif column_names_path.exists():
         logger.info(
-            "CSV は既存を維持: %s（ record なしのため新規/置換なし ）",
+            "CSV は既存を維持: %s（record なしのため新規/置換なし）",
             column_names_path,
         )
     if column_names_path.exists():
@@ -266,7 +266,7 @@ def run_tables(
     # 1 レポート 1 つの Markdown 資料を ``SOQL資料/{管理番号}.md`` に書く。
     # AI に SOQL を組ませるときにそのまま渡す用途。 既存のファイルはそのまま
     # 残し、 今回取れた record の分だけ上書きする。 似たレポートの情報を
-    # ``similar_lookup`` で渡すと、 Markdown の 「 似たレポート 」 セクションに
+    # ``similar_lookup`` で渡すと、 Markdown の 「似たレポート」 セクションに
     # 反映される
     wrote.extend(
         ai_markdown.write_ai_markdowns(
@@ -301,7 +301,7 @@ def _survey_pii_display(record: ReportRecord) -> tuple[str, str]:
 
 
 def soql_status_for_record(record: ReportRecord) -> str:
-    """``record.soql_draft.status`` をそのまま返す （ 無ければ空文字 ） 。"""
+    """``record.soql_draft.status`` をそのまま返す （無ければ空文字） 。"""
     return record.soql_draft.status if record.soql_draft is not None else ""
 
 
@@ -378,7 +378,7 @@ def _build_columns_sheet_rows_from_records(
 ) -> list[dict[str, str]]:
     """列の対応シートの行を組み立てる。 1 行 = 1 レポートの 1 列。
 
-    並び: 管理番号 → 列キーの順 （ レポートに並んだ順 ）
+    並び: 管理番号 → 列キーの順 （レポートに並んだ順）
     """
     rows: list[dict[str, str]] = []
     for record in records:
@@ -429,7 +429,7 @@ def _aggregate_resolved_fields(
             field_api = col["対応フィールドAPI名"]
             if not field_api or field_api == "(不明)":
                 continue
-            # 人が直した値で上書きされている場合、 備考に 「 直したSOQL列名 」 を含むが
+            # 人が直した値で上書きされている場合、 備考に 「直したSOQL列名」 を含むが
             # CSV に出すのは実 SOQL 列名で良い
             pii_status, pii_basis = pii_lookup.get(col["列キー"], ("", ""))
             dedup_key = (main_object_text, field_api)
@@ -513,7 +513,7 @@ def _resolved_fields_to_csv_rows(
 def _build_warning_table_rows_from_records(
     records: Sequence[ReportRecord],
 ) -> list[dict[str, str]]:
-    """警告の行を作る。 describe 失敗（ 列の対応の 「 取れず 」 で分かる ）は除く。"""
+    """警告の行を作る。 describe 失敗（列の対応の 「取れず」 で分かる）は除く。"""
     return [
         {"管理番号": record.key, "警告": warning}
         for record in records
@@ -523,7 +523,7 @@ def _build_warning_table_rows_from_records(
 
 
 def _parse_describe_failure_warning(warning: str) -> tuple[str, str] | None:
-    """警告 「 オブジェクト X の describe に失敗… 」 から ``(name, reason)`` を取り出す。"""
+    """警告 「オブジェクト X の describe に失敗…」 から ``(name, reason)`` を取り出す。"""
     if not warning.startswith("オブジェクト "):
         return None
     match = DESCRIBE_FAILURE_PATTERN.match(warning)
@@ -543,7 +543,7 @@ def _parse_describe_failure_warning(warning: str) -> tuple[str, str] | None:
 def _build_relation_diagram_rows(
     diagrams: dict[str, relation_diagram.Diagram],
 ) -> list[dict[str, str]]:
-    """``diagrams`` （ 主オブジェクト → ``Diagram`` ） から 関係図シートの行を作る。"""
+    """``diagrams`` （主オブジェクト → ``Diagram``） から 関係図シートの行を作る。"""
     rows: list[dict[str, str]] = []
     for main_object, diagram in diagrams.items():
         for depth, label, soql_hint, field_api, _note, target in _iter_diagram_rows(
@@ -782,7 +782,7 @@ def _write_table(
     start_col: int,
     table_name: str,
 ) -> None:
-    """openpyxl で 「 見出し行 + データ行 + Excel テーブル 」 を一度に書く。"""
+    """openpyxl で 「見出し行 + データ行 + Excel テーブル」 を一度に書く。"""
     from openpyxl.styles import Font
     from openpyxl.utils import get_column_letter as _gcl
     from openpyxl.worksheet.table import Table as XlsxTable
@@ -873,7 +873,7 @@ def _apply_status_fills(
 
 
 def _today_local() -> date:
-    """「 今日の日付 」 をこの PC のローカル時間で返す。"""
+    """「今日の日付」 をこの PC のローカル時間で返す。"""
     return datetime.now(tz=UTC).astimezone().date()
 
 

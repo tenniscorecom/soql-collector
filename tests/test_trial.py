@@ -2,7 +2,7 @@
 実 Salesforce に繋がないよう、 ``site_for`` をテストで差し替えられる形にし、
 ``tmp_path`` 配下の ``config.ini`` + 空の管理表で ``_read_trial_file_paths`` を動かす。
 
-``trial/`` は **名前空間パッケージ** （ ``__init__.py`` を **持たない** ）。
+``trial/`` は **名前空間パッケージ** （``__init__.py`` を **持たない**）。
 ``python -m trial.fetch_one_report`` でそのまま動くことを前提に、
 ``tests/`` 側での ``sys.path`` 書き換えは **行わない** 。
 """
@@ -27,7 +27,7 @@ DOMAIN_PROD = "https://example.my.salesforce.com/lightning/r/Report"
 def _build_master(path: Path) -> None:
     """``MASTER_XLSX_PATH`` の指す xlsx を作る。
 
-    中身は空の ``PY_管理表`` 1 枚でよい （ 例題は管理表を読まない ）。
+    中身は空の ``PY_管理表`` 1 枚でよい （例題は管理表を読まない）。
     """
     workbook = Workbook()
     active = workbook.active
@@ -97,7 +97,7 @@ def _write_ini(tmp_path: Path, master: Path) -> None:
 
 
 def _patched_master_path(cfg, project_root: Path, name_attr: str = "MASTER_XLSX_PATH") -> Path:
-    """``cfg.FILES.MASTER_XLSX_PATH`` がそのまま使える形（絶対 or 解決済み相対 ）で返す。
+    """``cfg.FILES.MASTER_XLSX_PATH`` がそのまま使える形（絶対 or 解決済み相対）で返す。
 
     comken の ``_parse_value`` は区切り文字を含まない値（``master.xlsx``）を
     文字列のまま返すので、 ``project_root`` を基準に解決する。 ``./master.xlsx``
@@ -583,7 +583,7 @@ def test_fetch_objects_refreshes_existing_cache(
 ) -> None:
     """キャッシュにすでに値があっても、 API を 1 回は必ず呼び、 値を上書きする。
 
-    壊す系 （ ``record_api_success`` を呼ばない ） にするとこのテストが落ちる
+    壊す系 （``record_api_success`` を呼ばない） にするとこのテストが落ちる
     ことを、 実装を書くときに一度確かめる。
     """
     from src.describe_store import DescribeStore, upsert_object_rows
@@ -599,7 +599,7 @@ def test_fetch_objects_refreshes_existing_cache(
     _write_ini(tmp_path, master)
     _patch_read_file_paths(monkeypatch, fetch_objects, tmp_path)
 
-    # キャッシュに 「 古い Account 」 を入れておく （ 1 項目だけ ）
+    # キャッシュに 「古い Account」 を入れておく （1 項目だけ）
     old_describe = {
         "name": "Account",
         "label": "古い取引先",
@@ -629,7 +629,7 @@ def test_fetch_objects_refreshes_existing_cache(
     )
 
     assert code == 0
-    # API は呼ばれた （ キャッシュを読まず ）
+    # API は呼ばれた （キャッシュを読まず）
     assert client.describe_object_calls == ["Account"]
 
     # キャッシュが新しい値で上書きされている
@@ -651,7 +651,7 @@ def test_fetch_objects_refreshes_existing_cache(
 def test_fetch_objects_partial_failure_returns_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """1 件失敗（ ``ValueError`` ） しても他は取り、 終了コードは 1。"""
+    """1 件失敗（``ValueError``） しても他は取り、 終了コードは 1。"""
     from trial import fetch_objects
 
     master = tmp_path / "master.xlsx"
@@ -735,7 +735,7 @@ def test_fetch_objects_empty_object_names_returns_2(
 def test_fetch_objects_output_csv_columns_and_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """出力 CSV の列順・行の中身が仕様どおり （ 9 列、 参照 / picklist / カスタム ）。"""
+    """出力 CSV の列順・行の中身が仕様どおり （9 列、 参照 / picklist / カスタム）。"""
     import csv
 
     from trial import fetch_objects
@@ -806,7 +806,7 @@ def test_fetch_objects_broken_no_cache_write_fails_test(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``record_api_success`` を呼ばないように ``fetch_objects`` を壊すと、
-    「 キャッシュに入ること 」 のテストが落ちることを確かめる （ 戻す前に確認用 ）。
+    「キャッシュに入ること」 のテストが落ちることを確かめる （戻す前に確認用）。
 
     このテスト自体は壊した実装がどう振る舞うかを見るためのもので、 修正後は
     ``monkeypatch.setattr`` ではなく普通の ``fetch_objects.main`` を呼ぶ。
@@ -841,7 +841,7 @@ def test_fetch_objects_broken_no_cache_write_fails_test(
         site_for=_site_for(client),
     )
 
-    # API 呼び出し自体は成功扱いになる （ exit code は 0 ）
+    # API 呼び出し自体は成功扱いになる （exit code は 0）
     assert code == 0
 
     # ただしキャッシュには何も書かれていない

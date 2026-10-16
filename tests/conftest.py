@@ -3,13 +3,14 @@
 優先順:
 
 1. 環境変数 ``PYTHON_LIBRARY`` が指すフォルダ
-2. このリポジトリの親にある ``../comken`` （ 共有リポジトリの配置 ）
+2. このリポジトリの親にある ``../comken`` （共有リポジトリの配置）
 
 どちらも無い場合は何もしない（ ``comken`` が ``pip install`` 済み、
 もしくは PYTHONPATH 恒久設定済みとみなす）。
 ``pyproject.toml`` に ``F:/dev/comken`` を直書きする旧方式を、
 実行する PC に依存しない形へ移すための仕掛け。
 """
+
 from __future__ import annotations
 
 import os

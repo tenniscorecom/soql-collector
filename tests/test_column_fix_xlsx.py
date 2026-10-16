@@ -1,7 +1,7 @@
 """``src.column_fix_xlsx`` のテスト。
 
-人の入力を 「 直したSOQL列名 」 に保持し、 自動で取れた列も人の値で上書きされる
-（ 人の入力を尊重する ） ことを確かめる。 旧 ``列の対応.csv`` からの
+人の入力を 「直したSOQL列名」 に保持し、 自動で取れた列も人の値で上書きされる
+（人の入力を尊重する） ことを確かめる。 旧 ``列の対応.csv`` からの
 移行も検証する。
 """
 
@@ -99,11 +99,11 @@ def test_load_column_fix_raises_on_bad_header(tmp_path: Path) -> None:
         load_column_fix(path)
 
 
-# ── 人の値が自動に勝つ（ 自動で取れた列でも ） ───────
+# ── 人の値が自動に勝つ（自動で取れた列でも） ───────
 
 
 def test_user_fix_overrides_auto_resolved(tmp_path: Path) -> None:
-    """「 直したSOQL列名 」 に値があれば自動の結果より常に優先する。"""
+    """「直したSOQL列名」 に値があれば自動の結果より常に優先する。"""
     column_map = [
         {
             "列キー": "Account.Name",
@@ -184,7 +184,7 @@ def test_user_fix_can_set_field_type(tmp_path: Path) -> None:
 
 
 def test_user_fix_typo_adds_warning(tmp_path: Path) -> None:
-    """人の値がたどれなければ 「 打ち間違い？ 」 ヒントを WARNING に足す。"""
+    """人の値がたどれなければ 「打ち間違い？」 ヒントを WARNING に足す。"""
     column_map = [
         {
             "列キー": "Account.Name",
@@ -227,7 +227,7 @@ def test_user_fix_typo_adds_warning(tmp_path: Path) -> None:
 
 
 def test_user_fix_is_preserved_across_runs(tmp_path: Path) -> None:
-    """人の 「 直したSOQL列名 」 と 「 メモ 」 は 2 度目の実行でも消えない。"""
+    """人の 「直したSOQL列名」 と 「メモ」 は 2 度目の実行でも消えない。"""
     observed = [
         ObservedAutoRow(
             main_object="Account",
@@ -390,7 +390,7 @@ def test_sort_order_status_then_main_then_key(tmp_path: Path) -> None:
 
 
 def test_migrate_legacy_csv_keeps_manual_only(tmp_path: Path) -> None:
-    """旧 ``列の対応.csv`` の 「 メモ=手入力 」 行だけを人の値として引き継ぐ。"""
+    """旧 ``列の対応.csv`` の 「メモ=手入力」 行だけを人の値として引き継ぐ。"""
     import csv
 
     path = tmp_path / "legacy.csv"
@@ -459,7 +459,7 @@ def test_permission_error_on_write_does_not_raise(tmp_path: Path, caplog) -> Non
     assert path.exists()
 
 
-# ── 状態=要確認 （ 人の値がたどれない ） ────────────────────
+# ── 状態=要確認 （人の値がたどれない） ────────────────────
 
 
 def test_status_needs_check_when_user_fix_unresolved(tmp_path: Path) -> None:
@@ -503,7 +503,7 @@ def test_status_needs_check_when_user_fix_unresolved(tmp_path: Path) -> None:
 
 def test_apply_overrides_marks_note_when_path_unresolved(tmp_path: Path) -> None:
     """``apply_overrides`` でたどれなかったとき、 備考に
-    「 人が直した（要確認: たどれない） 」 を入れる
+    「人が直した（要確認: たどれない）」 を入れる
     """
     column_map = [
         {
@@ -566,7 +566,7 @@ def test_apply_overrides_marks_note_when_path_unresolved(tmp_path: Path) -> None
 
 
 def test_xlsx_has_freeze_widths_and_user_header_color(tmp_path: Path) -> None:
-    """``列の直し.xlsx`` に 見出し固定・ 列幅・ 「 直したSOQL列名 」「 メモ 」
+    """``列の直し.xlsx`` に 見出し固定・ 列幅・ 「直したSOQL列名」「メモ」
     見出しの色が入っている
     """
     from openpyxl import load_workbook
@@ -596,7 +596,7 @@ def test_xlsx_has_freeze_widths_and_user_header_color(tmp_path: Path) -> None:
     # 列幅が入っている
     widths = {letter: dim.width for letter, dim in sheet.column_dimensions.items() if dim.width}
     assert len(widths) >= 8
-    # 「 直したSOQL列名 」 「 メモ 」 の見出しが薄い緑
+    # 「直したSOQL列名」 「メモ」 の見出しが薄い緑
     headers = [c.value for c in sheet[1]]
     fixed_idx = headers.index("直したSOQL列名") + 1
     note_idx = headers.index("メモ") + 1

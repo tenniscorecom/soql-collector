@@ -29,7 +29,7 @@ def report_type_candidates(report_type: str) -> list[str]:
     - ``@`` が含まれるときは、 最初の ``@`` より左だけを使う
     - 残りを ``$`` で区切る
     - 空文字と、 ``CustomEntity`` を 1 回以上繰り返しただけのトークン
-      （ ``CustomEntity`` / ``CustomEntityCustomEntity`` など ） を除く
+      （``CustomEntity`` / ``CustomEntityCustomEntity`` など） を除く
     - 重複は除き、 出現順を保つ
     - ``$`` も ``@`` も無ければ ``[report_type]``
 
@@ -60,9 +60,9 @@ def report_type_candidates(report_type: str) -> list[str]:
 
 def candidate_failure_reason(original: str, candidates: list[str]) -> str:
     """``$`` / ``@`` を含む ``reportType.type`` で候補を試したが全滅した
-    （ または候補が空だった ） ときの理由文言を組み立てる。
+    （または候補が空だった） ときの理由文言を組み立てる。
 
-    元の ``reportType.type`` の値と試した候補の一覧を添え、 「 手動で確認 」
+    元の ``reportType.type`` の値と試した候補の一覧を添え、 「手動で確認」
     の手引きを入れる。 ``build_column_map()`` の備考列にそのまま埋め込む
     1 行分のテキスト。
     """

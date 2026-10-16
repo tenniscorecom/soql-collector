@@ -1,6 +1,6 @@
 """主オブジェクトから関連オブジェクトまでのリレーション鎖を組み立てる。
 
-``relations`` （ ``RelationRecord`` のリスト ） から浅さ順に 1 本ずつ鎖を選び、
+``relations`` （``RelationRecord`` のリスト） から浅さ順に 1 本ずつ鎖を選び、
 主→関連の経路でレポート列を辿れるようにする。
 """
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class _ChainCandidate:
     """主オブジェクトからある関連オブジェクトまでの候補 1 本。
 
-    ``chain``: ``.`` 区切りのリレーション名シーケンス （ 浅い順 ） 。
+    ``chain``: ``.`` 区切りのリレーション名シーケンス （浅い順） 。
     ``object_name``: 末端のオブジェクト名。
     ``depth``: 主オブジェクトから数えた段数。
     """
@@ -31,15 +31,15 @@ def build_relation_chains(
     relations: list[RelationRecord],
     main_object: str | None,
 ) -> dict[str, list[_ChainCandidate]]:
-    """``relations`` から「 主→そのオブジェクトまでのリレーション鎖 」 を作る。
+    """``relations`` から「主→そのオブジェクトまでのリレーション鎖」 を作る。
 
     関連オブジェクト名ごとに、 浅い順に並んだ ``_ChainCandidate`` のリスト
     を返す。 各オブジェクトに **複数の経路** がある場合は、 最も浅い経路を
     先頭にして、 同じ深さなら出現順を保つ。 主オブジェクト自身は対象外
-    （ 候補に入れない ） 。
+    （候補に入れない） 。
 
-    鎖は **リレーション名のシーケンス** で、 例: Task → Account （ rel="What" ）
-    → User （ rel="Owner" ） のとき User の鎖は ``"What.Owner"`` 。
+    鎖は **リレーション名のシーケンス** で、 例: Task → Account （rel="What"）
+    → User （rel="Owner"） のとき User の鎖は ``"What.Owner"`` 。
 
     Args:
         relations: ``fetch._collect_related_objects`` が返した
@@ -65,7 +65,7 @@ def build_relation_chains(
             # 主からの直エッジは depth=1 の chain になる
             adjacency.setdefault(parent, []).append((child, rel_name, child))
 
-    # より深い段も集める （ 内部の関連 ）
+    # より深い段も集める （内部の関連）
     for rel in relations:
         parent = rel.parent
         child = rel.child
@@ -96,7 +96,7 @@ def build_relation_chains(
             visited_depth[child] = depth + 1
             queue.append((child, new_chain, depth + 1))
 
-    # 子→ candidate のリストに展開 （ 1 件だけ。 浅い経路のみ採用 ）
+    # 子→ candidate のリストに展開 （1 件だけ。 浅い経路のみ採用）
     result: dict[str, list[_ChainCandidate]] = {}
     for child, chain in visited.items():
         if child == main_object:

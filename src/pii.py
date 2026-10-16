@@ -1,11 +1,11 @@
-"""個人情報（ PII ） の判定ロジック（ 純粋関数 ）。
+"""個人情報（PII） の判定ロジック（純粋関数）。
 
 レポートの **出力に出る列** （ detailColumns / groupingsDown / groupingsAcross /
 集計対象列 ） だけを対象にし、 絞り込みにだけ使う列は対象外。 判定はあくまで
-機械的な目安で、 最終判断は人が行う。 曖昧なものは 「 要確認 」 に倒す
-（ 「 なし 」 に倒さない ）。
+機械的な目安で、 最終判断は人が行う。 曖昧なものは 「要確認」 に倒す
+（「なし」 に倒さない）。
 
-判定ルール（ 列単位 ）:
+判定ルール（列単位）:
 
 - ``あり``
   - 項目の型が ``email`` / ``phone`` / ``address`` / ``location``
@@ -18,8 +18,8 @@
 
 キーワード一致のさせ方は **単純な部分一致ではなく、 3 段階** で判定する:
 
-- **1 文字の日本語キーワード** （ ``姓`` / ``名`` ）: 表示名が **完全一致**
-  するときだけ一致 （ 前後の空白は除く ）。 API 名には適用しない。
+- **1 文字の日本語キーワード** （``姓`` / ``名``）: 表示名が **完全一致**
+  するときだけ一致 （前後の空白は除く）。 API 名には適用しない。
   ``商談名`` は ``名`` に **当たらない**
 - **ASCII キーワード** （ ``email`` / ``phone`` / ``city`` / ``state`` /
   ``zip`` / ``fax`` / ``birth`` / ``gender`` / ``mobile`` / ``street`` /
@@ -27,10 +27,10 @@
   空白 / camelCase の切れ目 `BillingCity` → `Billing` `City` /
   数字との切れ目 ） して、 トークンがキーワードに **一致** するとき一致する。
   ``birth`` だけはトークンの **先頭一致** も許す
-- **2 文字以上の日本語キーワード** （ ``氏名`` / ``名前`` / ``メール`` など ）
-  は従来どおり **部分一致** （ 大文字小文字を無視 ）
+- **2 文字以上の日本語キーワード** （``氏名`` / ``名前`` / ``メール`` など）
+  は従来どおり **部分一致** （大文字小文字を無視）
 
-レポート単位の集約は あり > 要確認 > なし。 該当列（ 表示名(根拠) ） は最大
+レポート単位の集約は あり > 要確認 > なし。 該当列（表示名(根拠)） は最大
 10 件。
 """
 
@@ -97,7 +97,7 @@ MATCHING_COLUMNS_LIMIT = 10
 
 @dataclass(frozen=True)
 class PIIConfig:
-    """PII 判定の設定。 呼び出し側（ ``run.py`` / ``fetch.py`` ） から渡される。"""
+    """PII 判定の設定。 呼び出し側（``run.py`` / ``fetch.py``） から渡される。"""
 
     keywords: tuple[str, ...]
     person_objects: tuple[str, ...]
@@ -140,14 +140,14 @@ def evaluate_column_pii(
     config: PIIConfig,
     objects: dict[str, Any],
 ) -> ColumnPIIResult:
-    """1 列ぶんの PII 判定をする（ 純粋関数 ）。
+    """1 列ぶんの PII 判定をする（純粋関数）。
 
     Args:
         ref: 判定対象の列。 解決済みなら ``resolved=True`` で ``field_name`` /
             ``field_type`` / ``owner_object`` が入る。 未解決なら ``resolved=False``
             で ``field_name`` 以降は空文字。
         config: キーワードと個人系オブジェクトの設定。
-        objects: レポートが取れたオブジェクトの describe （ 個人系の動的判定に使う ）。
+        objects: レポートが取れたオブジェクトの describe （個人系の動的判定に使う）。
     """
     label = ref.label or ref.column_key
 
@@ -221,12 +221,12 @@ def evaluate_report_pii(
 
 def _match_keyword(field_name: str, label: str, keywords: Iterable[str]) -> str | None:
     """API 名と表示名のどちらかにキーワードが一致するかを返す。 一致した
-    キーワードを返す（ 根拠用 ）。
+    キーワードを返す（根拠用）。
 
     判定ルール:
 
-    - 1 文字の日本語キーワード（ ``姓`` / ``名`` など ）: 表示名が
-      **キーワードと完全一致** するときだけ一致とする （ 前後の空白は除く ）。
+    - 1 文字の日本語キーワード（``姓`` / ``名`` など）: 表示名が
+      **キーワードと完全一致** するときだけ一致とする （前後の空白は除く）。
       API 名には適用しない
     - ASCII キーワード（ ``email`` / ``phone`` / ``city`` / ``state`` /
       ``zip`` / ``fax`` / ``birth`` / ``gender`` / ``mobile`` / ``street`` /
@@ -234,14 +234,14 @@ def _match_keyword(field_name: str, label: str, keywords: Iterable[str]) -> str 
       トークンがキーワードに **一致** するとき一致とする。 ``birth`` だけは
       トークンの **先頭一致** も許す （ ``Birthdate`` / ``BirthDate`` /
       ``Birth_Date`` などにヒット ）
-    - 上記以外のキーワード（ 2 文字以上の日本語 ）: 表示名または API 名に
+    - 上記以外のキーワード（2 文字以上の日本語）: 表示名または API 名に
       **部分一致** するかを従来どおり見る
 
     なぜ 単純な ``in`` での部分一致にしないか:
-    - ``商談名`` がキーワード ``名`` に当たって 商談レポートが全部 「 要確認 」
+    - ``商談名`` がキーワード ``名`` に当たって 商談レポートが全部 「要確認」
       になるため
     - ``Capacity`` が ``city`` に、 ``Estate`` が ``state`` に当たるため
-      （ いずれも短い英単語の部分一致 ）
+      （いずれも短い英単語の部分一致）
     """
     field_tokens = _tokenize_identifier(field_name)
     label_tokens = _tokenize_identifier(label)
@@ -251,7 +251,7 @@ def _match_keyword(field_name: str, label: str, keywords: Iterable[str]) -> str 
             continue
         if keyword.isascii():
             # ASCII キーワード: トークンに一致したときだけ採用。 ``birth`` だけは
-            # 先頭一致を許す （ Birthdate / Birth_Date にヒットさせるため ）
+            # 先頭一致を許す （Birthdate / Birth_Date にヒットさせるため）
             keyword_lower = keyword.lower()
             if keyword_lower == "birth":
                 if any(t.lower().startswith("birth") for t in field_tokens + label_tokens):
@@ -261,7 +261,7 @@ def _match_keyword(field_name: str, label: str, keywords: Iterable[str]) -> str 
                 return keyword
             continue
         if len(keyword) == 1:
-            # 日本語 1 文字: 表示名の完全一致だけ （ API 名は見ない ）
+            # 日本語 1 文字: 表示名の完全一致だけ （API 名は見ない）
             if label_stripped == keyword:
                 return keyword
             continue
@@ -290,8 +290,8 @@ def _tokenize_identifier(value: object) -> list[str]:
     分解ルール:
 
     - Salesforce のカスタム接尾辞 ``__c`` は落とす
-    - ``_`` と空白で先に切る （ ``Mailing_State`` → ``Mailing`` / ``State`` ）
-    - camelCase の切れ目で切る （ ``BillingCity`` → ``Billing`` / ``City`` ）
+    - ``_`` と空白で先に切る （``Mailing_State`` → ``Mailing`` / ``State``）
+    - camelCase の切れ目で切る （``BillingCity`` → ``Billing`` / ``City``）
     - ASCII レターと数字の切れ目で切る （ ``PersonEmail2`` → ``Person`` /
       ``Email`` / ``2`` ）
     - 結果のトークン列から、 数字だけ ・ 非 ASCII のものを除く
@@ -312,7 +312,7 @@ def _tokenize_identifier(value: object) -> list[str]:
     for piece in _SPLIT_ON_UNDERSCORE_OR_SPACE.split(cleaned):
         if not piece:
             continue
-        # camelCase と頭字語 （ ``URLPath`` → ``URL Path`` ） の切れ目
+        # camelCase と頭字語 （``URLPath`` → ``URL Path``） の切れ目
         piece = _CAMEL_ACRONYM_BOUNDARY.sub(" ", piece)
         piece = _CAMEL_BOUNDARY.sub(" ", piece)
         piece = _LETTER_DIGIT_BOUNDARY.sub(" ", piece)
