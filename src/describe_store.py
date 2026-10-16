@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from comken.core.files import ensure_dir
 from comken.core.table import Table
 from comken.exceptions import CSVError
 from comken.toolbox.csv import CSV
@@ -309,7 +310,7 @@ def upsert_object_rows(
 
     rows.sort(key=lambda r: (r["組織"], r["オブジェクト"], r["取得日時"], r["項目API名"]))
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_dir(path.parent)
     with CSV(path, columns=list(DESCRIBE_CSV_COLUMNS)) as csv:
         csv.replace(Table(list(DESCRIBE_CSV_COLUMNS), rows))
 
