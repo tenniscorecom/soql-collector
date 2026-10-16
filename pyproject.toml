@@ -1,7 +1,7 @@
 # Ruff（リント・フォーマット）の設定。comken 本体と揃える。
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "C4", "LOG", "G", "DTZ", "RUF", "TID", "C90"]
