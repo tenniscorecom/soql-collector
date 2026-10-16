@@ -38,11 +38,7 @@ def candidate_relationship_names(fields: list[dict[str, Any]], limit: int = 10) 
 
     列キーからの経路たどりに失敗したときの備考で使う。
     """
-    return [
-        field["relationshipName"]
-        for field in fields
-        if field.get("relationshipName")
-    ][:limit]
+    return [field["relationshipName"] for field in fields if field.get("relationshipName")][:limit]
 
 
 def prefix_matches(chain_candidate: _ChainCandidate, prefix: str) -> bool:
@@ -209,9 +205,7 @@ def _walk_soql_path(
             return _segment_not_found_result(part, current_object, describe)
 
         if index == len(parts) - 1:
-            return _finalize_soql_segment(
-                matched, soql_segments, objects, fetch_object
-            )
+            return _finalize_soql_segment(matched, soql_segments, objects, fetch_object)
 
         advanced = _advance_soql_segment(
             matched, part, current_object, soql_segments, objects, fetch_object

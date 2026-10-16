@@ -95,17 +95,14 @@ def build_column_map(
     column_info = collect_column_info(metadata)
 
     main_object = _resolve_main_object(main_object, main_describe)
-    object_label_to_api = _build_object_label_to_api(
-        main_object, main_describe, related_describes
-    )
+    object_label_to_api = _build_object_label_to_api(main_object, main_describe, related_describes)
     field_index = _build_main_field_index(main_describe)
     ordered_chains = _build_ordered_chains(relations, main_object)
 
     # ``main_describe`` が無い / ``reason`` が有るときは 「 不明 」 化で早期 return
     if main_describe is None or field_index is None or reason is not None:
         return [
-            _unknown_row(column_key, column_info, main_object, reason)
-            for column_key in columns
+            _unknown_row(column_key, column_info, main_object, reason) for column_key in columns
         ]
 
     ctx = ResolveContext(
@@ -145,9 +142,7 @@ class ResolveContext:
     related_describes: dict[str, dict[str, Any]]
     object_label_to_api: dict[str, str]
     fetch_object: Callable[[str], dict[str, Any] | None] | None
-    related_indices: dict[str, dict[str, list[dict[str, Any]]]] = field(
-        default_factory=dict
-    )
+    related_indices: dict[str, dict[str, list[dict[str, Any]]]] = field(default_factory=dict)
 
 
 def _resolve_main_object(
@@ -582,9 +577,7 @@ def _try_resolve_by_fk(ctx: ResolveContext, column_key: str) -> ResolverResult:
 
     target_describe = _fk_target_describe(ctx, fk_target)
     if target_describe is None:
-        return ResolverResult(
-            failure_note=f"FK_ で {fk_target} の項目定義を取得できません"
-        )
+        return ResolverResult(failure_note=f"FK_ で {fk_target} の項目定義を取得できません")
 
     fk_sub_soql, fk_sub_type, fk_sub_failure, fk_sub_id_column = resolve_column_key_to_soql(
         main_object=fk_target,
@@ -595,8 +588,7 @@ def _try_resolve_by_fk(ctx: ResolveContext, column_key: str) -> ResolverResult:
     )
     if not fk_sub_soql:
         return ResolverResult(
-            failure_note=fk_sub_failure
-            or f"FK_ で {fk_target} の経路 {fk_remainder} が解けません"
+            failure_note=fk_sub_failure or f"FK_ で {fk_target} の経路 {fk_remainder} が解けません"
         )
 
     if len(fk_matches) == 1:
@@ -623,8 +615,7 @@ def _fk_reference_fields(
         and field.get("relationshipName")
         and field.get("name")
         and any(
-            reference.lower() == fk_target.lower()
-            for reference in field.get("referenceTo") or []
+            reference.lower() == fk_target.lower() for reference in field.get("referenceTo") or []
         )
     ]
 
@@ -662,9 +653,7 @@ def _match_from_fk_single(
             "referenceTo": [],
             "relationshipName": "",
         }
-    note_suffix_id_column = (
-        f"{fk_rel}.{fk_sub_id_column}" if fk_sub_id_column else None
-    )
+    note_suffix_id_column = f"{fk_rel}.{fk_sub_id_column}" if fk_sub_id_column else None
     return ResolverResult(
         match=ResolvedMatch(
             note="FK_ から",
@@ -695,8 +684,7 @@ def _multi_from_fk(
         for fk_field in fk_matches
     ]
     rendered = "複数候補あり: " + " / ".join(
-        f"{fk_rel}.{fk_sub_soql}（{field_name}）"
-        for fk_rel, field_name in resolved[:5]
+        f"{fk_rel}.{fk_sub_soql}（{field_name}）" for fk_rel, field_name in resolved[:5]
     )
     return ResolverResult(multi_note=rendered)
 
@@ -727,9 +715,7 @@ def _try_resolve_by_label(
 
     if len(candidates) == 1:
         owner, soql_chain, field, terminal_describe = candidates[0]
-        soql_name = (
-            f"{soql_chain}.{field['name']}" if soql_chain else field["name"]
-        )
+        soql_name = f"{soql_chain}.{field['name']}" if soql_chain else field["name"]
         return ResolverResult(
             match=ResolvedMatch(
                 note="関連オブジェクト経由" if soql_chain else "",
@@ -744,9 +730,7 @@ def _try_resolve_by_label(
     filtered = _filter_label_candidates_by_prefix(ctx, candidates, column_key)
     if len(filtered) == 1:
         owner, soql_chain, field, terminal_describe = filtered[0]
-        soql_name = (
-            f"{soql_chain}.{field['name']}" if soql_chain else field["name"]
-        )
+        soql_name = f"{soql_chain}.{field['name']}" if soql_chain else field["name"]
         return ResolverResult(
             match=ResolvedMatch(
                 note="列キーの接頭辞で絞り込み",
@@ -788,9 +772,7 @@ def _collect_label_candidates(
             continue
         if target_object_hint is not None and chain.object_name != target_object_hint:
             continue
-        related_index = _get_or_build_related_index(
-            ctx, chain.object_name, related_describe
-        )
+        related_index = _get_or_build_related_index(ctx, chain.object_name, related_describe)
         for related_field in related_index.get(normalized_label, []):
             candidates.append((chain.object_name, chain.chain, related_field, related_describe))
 
@@ -857,9 +839,7 @@ def _prefix_matches(
         return False
     parts = chain_candidate.chain.split(".")
     first_rel = parts[0]
-    normalized_prefix = (
-        prefix_norm if prefix_norm is not None else normalize_identifier(prefix)
-    )
+    normalized_prefix = prefix_norm if prefix_norm is not None else normalize_identifier(prefix)
     if normalize_identifier(first_rel) == normalized_prefix:
         return True
     if normalize_identifier(chain_candidate.object_name) == normalized_prefix:

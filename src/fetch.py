@@ -1172,9 +1172,7 @@ def _refresh_keys_in_store(
             key[0],
             object_name,
         )
-        refreshed_raw = store.refresh_from_api(
-            client, key[0], object_name, warnings
-        )
+        refreshed_raw = store.refresh_from_api(client, key[0], object_name, warnings)
         if refreshed_raw is None:
             continue
         # 境界: 取り直した describe もここで整えてからメモリに反映

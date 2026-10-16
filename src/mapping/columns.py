@@ -12,9 +12,7 @@ from typing import Any
 def filter_only_columns(report_filters: list[dict[str, Any]]) -> list[str]:
     """``reportFilters`` にだけ現れる列キーを返す （ SELECT には出ない列 ） 。"""
     return [
-        report_filter["column"]
-        for report_filter in report_filters
-        if report_filter.get("column")
+        report_filter["column"] for report_filter in report_filters if report_filter.get("column")
     ]
 
 

@@ -224,9 +224,7 @@ def _format_string_value(value: str) -> tuple[str, list[str], list[str]]:
     return _escape_string_literal(value), [], []
 
 
-def _format_boolean_value(
-    value: str, field_name: str
-) -> tuple[str, list[str], list[str]]:
+def _format_boolean_value(value: str, field_name: str) -> tuple[str, list[str], list[str]]:
     """boolean 系の値を ``true`` / ``false`` に解釈する。 解釈できなければ missing。"""
     lowered = value.strip().lower()
     if lowered in ("true", "1", "yes"):
@@ -240,27 +238,20 @@ def _format_boolean_value(
     )
 
 
-def _format_numeric_value(
-    value: str, field_name: str
-) -> tuple[str, list[str], list[str]]:
+def _format_numeric_value(value: str, field_name: str) -> tuple[str, list[str], list[str]]:
     """数値系の値をそのままの表記で返す。 カンマを含む値や数値として解釈できない値は missing。"""
     if _NUMERIC_PATTERN.fullmatch(value):
         return value, [], []
     if "," in value:
         return (
             "",
-            [
-                f"値の解釈不可 ( {field_name}: 数値の値にカンマが含まれる可能性 "
-                f"{value!r} ): missing"
-            ],
+            [f"値の解釈不可 ( {field_name}: 数値の値にカンマが含まれる可能性 {value!r} ): missing"],
             [],
         )
     return "", [f"値の解釈不可 ( {field_name}: 数値として解釈できない {value!r} ): missing"], []
 
 
-def _format_date_value(
-    value: str, field_name: str
-) -> tuple[str, list[str], list[str]]:
+def _format_date_value(value: str, field_name: str) -> tuple[str, list[str], list[str]]:
     """date 系の値を ``YYYY-MM-DD`` または相対日付リテラルにして返す。 解釈できなければ missing。"""
     # 既に相対日付リテラルならそのまま
     if _RELATIVE_DATE_PATTERN.fullmatch(value):
@@ -283,9 +274,7 @@ def _format_date_value(
     )
 
 
-def _format_datetime_value(
-    value: str, field_name: str
-) -> tuple[str, list[str], list[str]]:
+def _format_datetime_value(value: str, field_name: str) -> tuple[str, list[str], list[str]]:
     """datetime 系の値を ``YYYY-MM-DDT00:00:00Z`` または相対日付リテラルにして返す。
 
     日付だけの値は UTC 0 時に拡張して checks にメッセージを足す。 解釈できなければ missing。
@@ -300,10 +289,7 @@ def _format_datetime_value(
         if missing_msg:
             return (
                 "",
-                [
-                    f"値の解釈不可 ( {field_name}: datetime として解釈できない "
-                    f"{value!r} ): missing"
-                ],
+                [f"値の解釈不可 ( {field_name}: datetime として解釈できない {value!r} ): missing"],
                 [],
             )
         return (
@@ -352,9 +338,7 @@ def _build_equality_condition(
     checks: list[str] = []
     parts: list[str] = []
     for value in values:
-        literal, extra_missing, extra_checks = _format_value_for_field(
-            value, field_type, field_api
-        )
+        literal, extra_missing, extra_checks = _format_value_for_field(value, field_type, field_api)
         if not literal:
             missing.append(f"演算子 {op} の値が解釈できません: {value!r}")
             missing.extend(extra_missing)
@@ -384,9 +368,7 @@ def _build_comparison_condition(
     if len(values) != 1:
         missing.append(f"演算子 {op} は単一値のみ対応 ( 値: {values!r} )")
         return "", missing, checks
-    literal, extra_missing, extra_checks = _format_value_for_field(
-        values[0], field_type, field_api
-    )
+    literal, extra_missing, extra_checks = _format_value_for_field(values[0], field_type, field_api)
     if not literal:
         missing.append(f"演算子 {op} の値が解釈できません: {values[0]!r}")
         missing.extend(extra_missing)
@@ -620,9 +602,7 @@ def _extract_filter_values(
     raw_value = _coerce_str(entry.get("value"))
     if field_type.strip().lower() in _NUMERIC_TYPES:
         if raw_value and "," in raw_value:
-            missing.append(
-                f"条件 {index}: 数値の値にカンマが含まれる可能性 {raw_value!r}: missing"
-            )
+            missing.append(f"条件 {index}: 数値の値にカンマが含まれる可能性 {raw_value!r}: missing")
             return None
         return [raw_value] if raw_value else []
     return _split_values(raw_value)

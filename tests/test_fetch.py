@@ -1780,12 +1780,7 @@ def test_is_undated_filter_recognizes_empty_specs() -> None:
         is True
     )
     # durationValue が空（ 空の column だけ ）
-    assert (
-        _is_undated_filter(
-            {"column": "CLOSE_DATE", "startDate": "", "endDate": ""}
-        )
-        is True
-    )
+    assert _is_undated_filter({"column": "CLOSE_DATE", "startDate": "", "endDate": ""}) is True
     # 空白のみ
     assert (
         _is_undated_filter(

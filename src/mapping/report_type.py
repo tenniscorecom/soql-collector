@@ -47,9 +47,7 @@ def report_type_candidates(report_type: str) -> list[str]:
         report_type = report_type.split("@", 1)[0]
     tokens = report_type.split("$")
     cleaned = [
-        token
-        for token in tokens
-        if token and not _CUSTOM_ENTITY_TOKEN_PATTERN.fullmatch(token)
+        token for token in tokens if token and not _CUSTOM_ENTITY_TOKEN_PATTERN.fullmatch(token)
     ]
     seen: set[str] = set()
     unique: list[str] = []

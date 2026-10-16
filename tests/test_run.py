@@ -250,9 +250,7 @@ def test_run_with_argv_returns_2_and_skips_site_for(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_read_file_paths(
-        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
-    )
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master), tmp_path)
 
     def site_for(url: str):
         called["site_for"] += 1
@@ -274,9 +272,7 @@ def test_run_with_none_argv_uses_sys_argv(
     master = tmp_path / "master.xlsx"
     _build_master(master, [])
     _write_ini(tmp_path, master)
-    _patch_read_file_paths(
-        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
-    )
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master), tmp_path)
 
     monkeypatch.setattr(sys, "argv", ["main.py", "--help"])
 
@@ -304,9 +300,7 @@ def test_run_filters_disabled_rows(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_read_file_paths(
-        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
-    )
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master), tmp_path)
 
     captured_keys: list[str] = []
 
@@ -428,9 +422,7 @@ def test_run_no_enabled_rows_returns_2(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_read_file_paths(
-        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
-    )
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master), tmp_path)
 
     called = {"site_for": 0}
 
@@ -461,9 +453,7 @@ def test_run_returns_2_when_survey_config_missing(
         ],
     )
     _write_ini_without_survey(tmp_path, master)
-    _patch_read_file_paths(
-        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
-    )
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master), tmp_path)
 
     called = {"fetch": 0, "site_for": 0}
 
@@ -509,9 +499,7 @@ def test_run_writes_jsons_and_csvs(
         ],
     )
     _write_ini(tmp_path, master)
-    _patch_read_file_paths(
-        monkeypatch, _make_file_paths(tmp_path, master), tmp_path
-    )
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master), tmp_path)
 
     def fake_run_fetch(
         entries,
