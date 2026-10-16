@@ -348,21 +348,23 @@ def test_e2e_field_table_段_is_filled(tmp_path: Path) -> None:
     rows = sheets["関係図"]
     # 主オブジェクト Task
     task_rows = [r for r in rows if r["主オブジェクト"] == "Task"]
-    assert any(r["段"] == "0" for r in task_rows)
-    # 行き先 Account と User
-    targets = {r["行き先オブジェクト"] for r in task_rows if r["段"] == "1"}
+    assert any(not r["1段目"] for r in task_rows)
+    # 1 段目の列に Account と User が出る（「オブジェクト（リレーション名）」の形）
+    targets = {r["1段目"].split("（")[0] for r in task_rows if r["1段目"]}
     assert "Account" in targets
     assert "User" in targets
 
 
 def test_e2e_related_table(tmp_path: Path) -> None:
-    """関係図シートの段は 「子の段」 で、 孫以降は深さ + 1。"""
+    """関係図シートは、 深い段ほど右の「N 段目」の列に出る。"""
     output_dir = _run_e2e(tmp_path)
     sheets = _read_xlsx(output_dir / "SOQL調査.xlsx")
     rows = sheets["関係図"]
-    # e2e は 1〜2 段までの関係を含む （Account.Owner 経由で 段 2 が出る）
+    # e2e は 1〜2 段までの関係を含む （Account.Owner 経由で 2 段目が出る）
     for row in rows:
-        assert row["段"] in ("0", "1", "2")
+        assert "3段目" not in row
+        filled = [name for name in ("1段目", "2段目") if row.get(name)]
+        assert len(filled) <= 1  # 1 行に入るノードは 1 つ（深さの列だけ埋まる）
 
 
 def test_e2e_column_names_csv(tmp_path: Path) -> None:
