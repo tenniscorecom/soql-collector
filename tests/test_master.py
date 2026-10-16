@@ -194,3 +194,29 @@ def test_read_master_handles_true_and_whitespace(tmp_path: Path) -> None:
 
     flags = [entry.enabled for entry in read_master(path)]
     assert flags == [True, True, True]
+
+
+def test_is_enabled_delegates_to_is_enabled_mark() -> None:
+    """``_is_enabled`` は ``comken.core.text.is_enabled_mark`` に委譲し、
+    真偽値（``bool`` / ``int``）と ``str`` の両方で同じ結果を返す。
+
+    # なぜ: 真とみなす語の集合を comken 側に集約する変更で、
+    # ``○`` / ``有効`` / ``true`` などを真、 ``×`` / ``無効`` / 空文字 / ``false``
+    # などを偽とみなす判定基準が ``is_enabled_mark`` から外れていないことを
+    # 保つため
+    """
+    from comken.core.text import is_enabled_mark
+
+    # 真
+    for value in ("○", "有効", "true", "TRUE", "o", "yes", "1", "on", "はい", " true "):
+        assert _is_enabled(value) is True, value
+        assert _is_enabled(value) is is_enabled_mark(value), value
+    # 偽
+    for value in ("×", "無効", "false", "no", "0", "いいえ", "", "   "):
+        assert _is_enabled(value) is False, value
+        assert _is_enabled(value) is is_enabled_mark(value), value
+    # 真偽値
+    assert _is_enabled(True) is True
+    assert _is_enabled(False) is False
+    assert _is_enabled(1) is True
+    assert _is_enabled(0) is False

@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from comken.core.text import is_true_word
+from comken.core.text import is_enabled_mark
 from comken.toolbox.excel import Excel
 
 logger = logging.getLogger(__name__)
@@ -30,11 +30,6 @@ COL_KEY = "ID"
 COL_SUMMARY = "概要"
 COL_URL = "Salesforce URL"
 COL_ENABLED = "有効"
-
-# 「有効」を真とみなす文字列（小文字で比較）。comken の ``_TRUE_WORDS`` と同値だが、
-# ダウンロード側 (``Salesforceレポートダウンローダー/src/report_master.py`` の ``_to_bool``)
-# と判定をそろえるために同じ値をこの ``_TRUE_WORDS`` に持つ。
-_TRUE_WORDS = ("有効", "○", "o", "yes", "1", "on", "はい")
 
 
 @dataclass(frozen=True)
@@ -78,15 +73,13 @@ def filter_enabled(entries: list[MasterEntry]) -> list[MasterEntry]:
     return [entry for entry in entries if entry.enabled]
 
 
-def _is_enabled(text: str) -> bool:
-    """管理表の「有効」列の値を、真とみなす文字列かどうか判定する。
+def _is_enabled(value: object) -> bool:
+    """管理表の「有効」列の値を、真とみなすかどうか判定する。
 
-    英語の ``"true"`` 表記は ``comken.core.text.is_true_word`` で判定する。
-    それ以外の真とみなす値（``"有効"`` / ``"○"`` / ``"o"`` / ``"yes"`` /
-    ``"1"`` / ``"on"`` / ``"はい"``）は ``Salesforceレポートダウンローダー`` の
-    ``report_master._to_bool`` と判定をそろえる。comken の private 定数には
-    依存せず、同じ値をこの ``_TRUE_WORDS`` に持つ（小文字比較）。
-    前後の空白は ``strip`` してから比較する。
+    ``comken.core.text.is_enabled_mark`` に委譲する。 ``bool`` / ``int`` /
+    ``str`` を ``○`` / ``有効`` / ``はい`` / ``true`` 等で真とみなし、 ``×`` /
+    ``無効`` / 空文字 / ``false`` 等で偽とみなす。 判定基準は comken 側の
+    1 か所 (``is_enabled_mark``) に集約し、 ``Salesforceレポートダウン
+    ローダー`` の ``report_master._to_bool`` とも語集合をそろえる。
     """
-    stripped = text.strip()
-    return is_true_word(stripped) or stripped.lower() in _TRUE_WORDS
+    return is_enabled_mark(value)
