@@ -8,10 +8,14 @@ main.py — エントリポイント
 社内 RPA 基盤から動かす場合は、下の「社内 RPA 基盤から実行する場合」を参照。
 """
 
+import logging
+
 from comken import comken_logger
-from comken.runtime import run_main
+from comken.exceptions import ComkenError
 
 from src.run import run
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -34,30 +38,33 @@ if __name__ == "__main__":
     #   with dry_run():
     #       main()
     #
-    # 画面・ファイルとも DEBUG まで出したいときは、setup_local_logging() を debug(): の中で呼ぶ
+    # 画面・ファイルとも DEBUG まで出したいとき（@measure 付き関数の開始・完了・
+    # 所要時間ログも含む）は、setup_local_logging() を with debug(): の中で呼ぶ
     # （console_level / file_level を明示しなければ自動で DEBUG になる）:
     #   from comken import debug
     #   with debug():
     #       comken_logger.setup_local_logging()
     #       main()
-    #
-    # いつもの定型は comken.runtime.run_main に集めた:
-    #   comken_logger.setup_local_logging() は呼び出し側で 1 回呼ぶ
-    #   run_main は ComkenError を error ログして終了コード 1、 想定外は logger.exception して再送出
     comken_logger.setup_local_logging()
-    raise SystemExit(run_main(main))
+    try:
+        main()
+    except ComkenError as e:
+        # comken のエラーはメッセージに対処法が入っている（docs/ERRORS.md も参照）
+        logger.error("処理を中断しました: %s", e)
+        raise
+    except Exception:
+        logger.exception("予期しないエラーが発生しました")
+        raise
 
 # ── 社内 RPA 基盤から実行する場合 ─────────────────────────────────────────────
-# 上の `comken_logger.setup_local_logging()` と `run_main(main)` を、 次の形に差し替える。
+# 上の `comken_logger.setup_local_logging()` と `main()` の2行を、次の形に差し替える。
 # 基盤が設定の初期化・時間計測・ログ設定をしてから main を呼ぶので、
 # comken_logger.setup_local_logging() は呼ばない（呼んでも二重設定にはならないが、
 # 基盤の設定が正になる）。
 #
 #     from comken.toolbox.rpa import backoffice   # イントラネットのツールなら intranet に変える
-#     import logging
 #
 #     PROJECT_NAME = "soql-collector"   # 基盤へ渡す名前。ログの識別に使われる
-#     logger = logging.getLogger(__name__)
 #
 #     if __name__ == "__main__":
 #         try:
