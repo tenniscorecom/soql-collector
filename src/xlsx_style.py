@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from comken.toolbox.excel import column_letter
+
 # 列幅の最小 / 最大
 MIN_COLUMN_WIDTH = 8
 MAX_COLUMN_WIDTH = 60
@@ -74,14 +76,13 @@ def adjust_column_widths(
     列は折り返し表示にする
     """
     from openpyxl.styles import Alignment
-    from openpyxl.utils import get_column_letter as _gcl
 
     for index, header in enumerate(headers, start=1):
         max_width = display_width(header)
         for row in rows:
             value = row.get(header, "")
             max_width = max(max_width, display_width(str(value)))
-        col_letter = _gcl(index)
+        col_letter = column_letter(index)
         width = max(MIN_COLUMN_WIDTH, min(MAX_COLUMN_WIDTH, max_width + 2))
         worksheet.column_dimensions[col_letter].width = width
         if max_width >= MAX_COLUMN_WIDTH and rows:

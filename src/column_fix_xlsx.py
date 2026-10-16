@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from comken.exceptions import ExcelError
+from comken.toolbox.excel import column_letter
 
 from src import mapping, xlsx_style
 
@@ -348,7 +349,7 @@ def _write_xlsx(
         ]
         sheet.append(values)
     end_row = max(len(rows) + 1, 1)
-    end_col_letter = _get_column_letter(len(COLUMN_FIX_COLUMNS))
+    end_col_letter = column_letter(len(COLUMN_FIX_COLUMNS))
     table = XlsxTable(
         displayName=TABLE_NAME,
         ref=f"A1:{end_col_letter}{end_row}",
@@ -420,13 +421,6 @@ def _apply_status_fills_to_fix_sheet(
         for col_index in range(1, last_col + 1):
             cell = sheet.cell(row=2 + row_offset, column=col_index)
             cell.fill = fill
-
-
-def _get_column_letter(idx: int) -> str:
-    """1-indexed の列番号を Excel の列文字（A, B, ...） にする。"""
-    from openpyxl.utils import get_column_letter
-
-    return get_column_letter(idx)
 
 
 # ── 古い CSV からの移行 ─────────────────────────────────────────────

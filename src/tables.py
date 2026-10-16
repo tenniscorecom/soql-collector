@@ -30,6 +30,7 @@ from comken.core.files import ensure_dir
 from comken.core.table import Table
 from comken.exceptions import CSVError
 from comken.toolbox.csv import CSV
+from comken.toolbox.excel import column_letter
 
 from src import ai_markdown, mapping, relation_diagram, similar, xlsx_style
 
@@ -785,7 +786,6 @@ def _write_table(
 ) -> None:
     """openpyxl で 「 見出し行 + データ行 + Excel テーブル 」 を一度に書く。"""
     from openpyxl.styles import Font
-    from openpyxl.utils import get_column_letter as _gcl
     from openpyxl.worksheet.table import Table as XlsxTable
     from openpyxl.worksheet.table import TableStyleInfo
 
@@ -806,7 +806,7 @@ def _write_table(
     if end_row <= start_row:
         # データが無いときは Excel テーブルが作れないのでヘッダーだけにする
         return
-    ref = f"{_gcl(start_col)}{start_row}:{_gcl(end_col)}{end_row}"
+    ref = f"{column_letter(start_col)}{start_row}:{column_letter(end_col)}{end_row}"
     table = XlsxTable(displayName=table_name, ref=ref)
     table.tableStyleInfo = TableStyleInfo(
         name="TableStyleMedium2",
