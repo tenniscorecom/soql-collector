@@ -196,11 +196,11 @@ def _do_run(proj: Path, client: _FakeClient) -> int:
     """``run()`` を 1 回実行する。 ``comken`` の config を ``proj`` から読む
     ように ``sys.argv`` を切り替える
     """
-    from comken.core.config.base import _reset_cached_config
+    from comken_state import reset_cached_config
 
     from src.run import read_file_paths, run
 
-    _reset_cached_config()
+    reset_cached_config()
     original = sys.argv
     sys.argv = [str(proj / "main.py")]
     try:
@@ -208,7 +208,7 @@ def _do_run(proj: Path, client: _FakeClient) -> int:
         return run([], site_for=_site_for(client), file_paths=paths)
     finally:
         sys.argv = original
-        _reset_cached_config()
+        reset_cached_config()
 
 
 def _setup_project(tmp_path: Path, client: _FakeClient) -> Path:
@@ -333,8 +333,8 @@ def test_run_e2e_legacy_config_without_required_keys_aborts(tmp_path: Path) -> N
     """旧 ``config.ini`` （``COLUMN_FIX_XLSX_PATH`` などの新しいキーが無い）
     は comken の ``ConfigError`` で止まる。 既定値での補完はしない。
     """
-    from comken.core.config.base import _reset_cached_config
     from comken.exceptions import ConfigError, ConfigKeyNotFoundError
+    from comken_state import reset_cached_config
 
     from src.run import read_file_paths
 
@@ -347,7 +347,7 @@ def test_run_e2e_legacy_config_without_required_keys_aborts(tmp_path: Path) -> N
     _build_master(proj / "input" / "レポート管理表.xlsx")
     _write_legacy_ini(proj)
 
-    _reset_cached_config()
+    reset_cached_config()
     original = sys.argv
     sys.argv = [str(proj / "main.py")]
     try:
@@ -357,7 +357,7 @@ def test_run_e2e_legacy_config_without_required_keys_aborts(tmp_path: Path) -> N
         assert "COLUMN_FIX_XLSX_PATH" in str(exc_info.value)
     finally:
         sys.argv = original
-        _reset_cached_config()
+        reset_cached_config()
 
 
 # ── 人が書いた値がたどれない （Issue 2） ─────────────────────────

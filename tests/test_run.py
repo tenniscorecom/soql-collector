@@ -122,16 +122,16 @@ def _patch_read_file_paths(
 ) -> None:
     """``src.run.read_file_paths`` を差し替え、 ``run()`` が comken の
     デフォルト config から ``[SURVEY]`` / ``[PII]`` を読む先を ``tmp_path``
-    の ``config.ini`` に向ける （ ``_reset_cached_config`` でキャッシュも
+    の ``config.ini`` に向ける （ ``reset_cached_config`` でキャッシュも
     破棄 ）。
     """
     import sys
 
-    from comken.core.config.base import _reset_cached_config
+    from comken_state import reset_cached_config
 
     import src.run as run_module
 
-    _reset_cached_config()
+    reset_cached_config()
     monkeypatch.setattr(sys, "argv", [str(tmp_path / "fake_main.py")])
 
     monkeypatch.setattr(run_module, "read_file_paths", lambda: file_paths)

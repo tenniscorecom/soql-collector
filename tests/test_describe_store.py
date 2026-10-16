@@ -746,12 +746,12 @@ def test_settings_missing_describe_csv_raises(tmp_path: Path) -> None:
     （サブクラスの ``ConfigKeyNotFoundError``） が上がる。 既定値での
     補完はしない。
     """
-    from comken.core.config.base import _reset_cached_config
     from comken.exceptions import ConfigError, ConfigKeyNotFoundError
+    from comken_state import reset_cached_config
 
     from src.run import read_file_paths
 
-    _reset_cached_config()
+    reset_cached_config()
 
     config_dir = tmp_path / "proj"
     config_dir.mkdir()
@@ -776,7 +776,7 @@ def test_settings_missing_describe_csv_raises(tmp_path: Path) -> None:
         assert "DESCRIBE_CSV_PATH" in str(exc_info.value)
     finally:
         sys.argv = original_argv
-        _reset_cached_config()
+        reset_cached_config()
 
 
 # ── 終了ログ ─────────────────────────────────────────────────────────

@@ -125,11 +125,11 @@ def _patch_read_file_paths(
     import sys
 
     from comken.core.config import Config
-    from comken.core.config.base import _reset_cached_config
+    from comken_state import reset_cached_config
 
     from src.run import FilePaths
 
-    _reset_cached_config()
+    reset_cached_config()
     monkeypatch.setattr(sys, "argv", [str(project_root / "main.py")])
 
     def patched() -> FilePaths:

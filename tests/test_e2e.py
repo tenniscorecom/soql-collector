@@ -300,18 +300,18 @@ def _load_file_paths_for_test(tmp_path: Path):
     """``config.ini`` を ``tmp_path`` プロジェクトに見立てて ``FilePaths`` を読み込む。"""
     import sys
 
-    from comken.core.config.base import _reset_cached_config
+    from comken_state import reset_cached_config
 
     from src.run import read_file_paths
 
-    _reset_cached_config()
+    reset_cached_config()
     original_argv = sys.argv
     sys.argv = [str(tmp_path / "fake_main.py")]
     try:
         return read_file_paths()
     finally:
         sys.argv = original_argv
-        _reset_cached_config()
+        reset_cached_config()
 
 
 # ── テスト本体 ───────────────────────────────────────────────────────────
