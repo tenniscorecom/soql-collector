@@ -19,7 +19,6 @@ from src.tables import (
     COLUMN_NAMES_COLUMNS,
     COLUMN_NAMES_CSV_NAME,
     COLUMNS_SHEET_COLUMNS,
-    RELATION_DIAGRAM_COLUMNS,
     SHEET_COLUMNS,
     SHEET_OVERVIEW,
     SHEET_RELATION_DIAGRAM,
@@ -28,6 +27,7 @@ from src.tables import (
     TABLE_DIAGRAM,
     TABLE_OVERVIEW,
     XLSX_NAME,
+    relation_diagram_columns,
     run_tables,
 )
 
@@ -489,7 +489,7 @@ def test_relation_diagram_sheet_columns_match(tmp_path: Path) -> None:
     ws = workbook[SHEET_RELATION_DIAGRAM]
     headers = [c.value for c in ws[1]]
     workbook.close()
-    assert headers == list(RELATION_DIAGRAM_COLUMNS)
+    assert headers == list(relation_diagram_columns(1))
 
 
 def test_relation_diagram_sheet_writes_tree_with_polymorphic(tmp_path: Path) -> None:
@@ -522,11 +522,11 @@ def test_relation_diagram_sheet_writes_tree_with_polymorphic(tmp_path: Path) -> 
     headers = [c.value for c in ws[1]]
     workbook.close()
     data = [dict(zip(headers, row, strict=False)) for row in rows]
-    task_row = next(r for r in data if r["主オブジェクト"] == "Task" and r["段"] == "0")
-    assert task_row["行き先オブジェクト"] == "Task"
-    children = [r for r in data if r["主オブジェクト"] == "Task" and r["段"] == "1"]
-    targets = {str(r["行き先オブジェクト"]) for r in children}
-    assert targets == {"Account", "Opportunity"}
+    # 主オブジェクト自身の行は「N 段目」が全部空
+    assert any(r["主オブジェクト"] == "Task" and not r["1段目"] for r in data)
+    # ポリモーフィックは 1 行ずつ、 「オブジェクト（リレーション名）」の形で 1 段目の列に出る
+    children = [str(r["1段目"]) for r in data if r["主オブジェクト"] == "Task" and r["1段目"]]
+    assert sorted(children) == ["Account（What）", "Opportunity（What）"]
 
 
 # ── Excel テーブル・列幅・固定行 ──────────────────────────────────────

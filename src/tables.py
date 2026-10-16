@@ -108,15 +108,17 @@ COLUMNS_SHEET_COLUMNS: tuple[str, ...] = (
     "自動の値",
 )
 
-# 関係図シートの列名 （主オブジェクト単位の木を Excel で見やすくしたもの）
-RELATION_DIAGRAM_COLUMNS: tuple[str, ...] = (
-    "主オブジェクト",
-    "段",
-    "図",
-    "行き先オブジェクト",
-    "SOQLでの書き方",
-    "参照項目API名",
-)
+# 関係図シートの列名。 階層は「段目」の列を右へずらして表す
+# （主オブジェクトの下に 1 段目、 その下に 2 段目 …）。 段目の列数は、 掘った段数に合わせて増える
+RELATION_DIAGRAM_FIXED_HEAD: tuple[str, ...] = ("主オブジェクト",)
+RELATION_DIAGRAM_FIXED_TAIL: tuple[str, ...] = ("参照項目API名", "SOQLでの書き方", "備考")
+
+
+def relation_diagram_columns(max_depth: int) -> tuple[str, ...]:
+    """関係図シートの見出し。 ``max_depth`` 段目までの列を間に挟む（最低 1 段）。"""
+    levels = tuple(f"{depth}段目" for depth in range(1, max(max_depth, 1) + 1))
+    return RELATION_DIAGRAM_FIXED_HEAD + levels + RELATION_DIAGRAM_FIXED_TAIL
+
 
 # 列名の対応.csv の列名 （ダウンローダー固定）
 COLUMN_NAMES_COLUMNS: tuple[str, ...] = (
@@ -543,23 +545,48 @@ def _parse_describe_failure_warning(warning: str) -> tuple[str, str] | None:
 def _build_relation_diagram_rows(
     diagrams: dict[str, relation_diagram.Diagram],
 ) -> list[dict[str, str]]:
-    """``diagrams`` （主オブジェクト → ``Diagram``） から 関係図シートの行を作る。"""
-    rows: list[dict[str, str]] = []
+    """``diagrams`` （主オブジェクト → ``Diagram``） から関係図シートの行を作る。
+
+    1 行 = 木の 1 ノード（深さ優先）。 ノードの名前は、 その深さの「N 段目」の列に
+    ``オブジェクト名（リレーション名）`` の形で入れる。 主オブジェクト自身の行は
+    「N 段目」の列が全部空になる。 深い段は右の列へずれるので、 字下げした表に見える。
+    """
+    entries: list[tuple[str, int, str, str, str, str]] = []
     for main_object, diagram in diagrams.items():
-        for depth, label, soql_hint, field_api, _note, target in _iter_diagram_rows(
+        for depth, label, soql_hint, field_api, note, target in _iter_diagram_rows(
             diagram, depth=0
         ):
-            rows.append(
-                {
-                    "主オブジェクト": main_object,
-                    "段": str(depth),
-                    "図": label,
-                    "行き先オブジェクト": target,
-                    "SOQLでの書き方": soql_hint,
-                    "参照項目API名": field_api,
-                }
+            entries.append(
+                (main_object, depth, _node_cell_text(label, target), field_api, soql_hint, note)
             )
+
+    max_depth = max((entry[1] for entry in entries), default=1)
+    level_names = [f"{depth}段目" for depth in range(1, max(max_depth, 1) + 1)]
+    rows: list[dict[str, str]] = []
+    for main_object, depth, cell_text, field_api, soql_hint, note in entries:
+        row = {"主オブジェクト": main_object}
+        row.update(dict.fromkeys(level_names, ""))
+        if depth >= 1:
+            row[f"{depth}段目"] = cell_text
+        row["参照項目API名"] = field_api
+        row["SOQLでの書き方"] = soql_hint
+        row["備考"] = note
+        rows.append(row)
     return rows
+
+
+def _node_cell_text(label: str, target: str) -> str:
+    """``What → Account`` を ``Account（What）`` にする（矢印をやめ、 名前を先に出す）。"""
+    if " → " not in label:
+        return target
+    relationship = label.split(" → ", 1)[0]
+    return f"{target}（{relationship}）" if relationship else target
+
+
+def _relation_diagram_headers(rows: list[dict[str, str]]) -> tuple[str, ...]:
+    """行に入っている「N 段目」の列数から、 関係図シートの見出しを決める。"""
+    levels = sum(1 for key in (rows[0] if rows else {}) if key.endswith("段目"))
+    return relation_diagram_columns(levels)
 
 
 def _iter_diagram_rows(
@@ -759,15 +786,16 @@ def _write_xlsx(
 
     # 関係図シート
     diagram_sheet = workbook.create_sheet(SHEET_RELATION_DIAGRAM)
+    diagram_headers = _relation_diagram_headers(relation_diagram)
     _write_table(
         diagram_sheet,
-        headers=RELATION_DIAGRAM_COLUMNS,
+        headers=diagram_headers,
         rows=relation_diagram,
         start_row=1,
         start_col=1,
         table_name=TABLE_DIAGRAM,
     )
-    _adjust_column_widths(diagram_sheet, RELATION_DIAGRAM_COLUMNS, relation_diagram, start_row=1)
+    _adjust_column_widths(diagram_sheet, diagram_headers, relation_diagram, start_row=1)
     diagram_sheet.freeze_panes = "A2"
 
     workbook.save(path)
