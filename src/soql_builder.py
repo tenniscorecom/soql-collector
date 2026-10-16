@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import TYPE_CHECKING, Any
 
+from comken.services.salesforce_downloader.contract import INCOMPLETE_MARKER
+
 from src import mapping
 from src.text_utils import coerce_str as _coerce_str
 
@@ -38,11 +40,6 @@ STATUS_CREATED = "作成済み"
 STATUS_NEEDS_CHECK = "要確認"
 STATUS_PARTIAL = "一部作れず"
 STATUS_NONE = "作れず"
-
-# 未完成 SOQL の 1 行目に置く印。 ダウンローダーがこの印を見て実行前に止める。
-# 変えるときはダウンローダーと同時に。 この行があると Salesforce に投げても
-# 必ず構文エラーになり、レポート以上の範囲を取る危険を物理的に防ぐ
-INCOMPLETE_MARKER = "【未完成】作れなかった部分があります。このままでは実行できません。"
 
 
 # 文字列系として '...' で囲む型。 column_map の ``型`` 列の値で判定する。
