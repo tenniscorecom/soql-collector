@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from src.mapping.chains import _ChainCandidate
+from src.mapping.chains import ChainCandidate
 from src.mapping.normalizers import normalize_identifier
 
 # 列キーから SOQL 列名を取りに行くときのパスの最大段数。 6 段以上なら
@@ -41,7 +41,7 @@ def candidate_relationship_names(fields: list[dict[str, Any]], limit: int = 10) 
     return [field["relationshipName"] for field in fields if field.get("relationshipName")][:limit]
 
 
-def prefix_matches(chain_candidate: _ChainCandidate, prefix: str) -> bool:
+def prefix_matches(chain_candidate: ChainCandidate, prefix: str) -> bool:
     """列キーの最初の ``.`` の前の語が、 候補の鎖と一致するか。
 
     一致条件: 大文字小文字・``_`` を無視して、 次のいずれかと等しい

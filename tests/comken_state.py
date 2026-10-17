@@ -7,6 +7,6 @@ from comken.core.config import base as config_base
 
 def reset_cached_config() -> None:
     """``Config(path)`` のキャッシュとパス解決のキャッシュを破棄する。"""
-    config_base._get_or_build_config.cache_clear()
-    config_base._default_config_path.cache_clear()
+    config_base.get_or_build_config.cache_clear()
+    config_base.default_config_path.cache_clear()
     config_base._path_resolution_cache.clear()

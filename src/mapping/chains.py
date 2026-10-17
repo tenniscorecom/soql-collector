@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class _ChainCandidate:
+class ChainCandidate:
     """主オブジェクトからある関連オブジェクトまでの候補 1 本。
 
     ``chain``: ``.`` 区切りのリレーション名シーケンス （浅い順） 。
@@ -30,10 +30,10 @@ class _ChainCandidate:
 def build_relation_chains(
     relations: list[RelationRecord],
     main_object: str | None,
-) -> dict[str, list[_ChainCandidate]]:
+) -> dict[str, list[ChainCandidate]]:
     """``relations`` から「主→そのオブジェクトまでのリレーション鎖」 を作る。
 
-    関連オブジェクト名ごとに、 浅い順に並んだ ``_ChainCandidate`` のリスト
+    関連オブジェクト名ごとに、 浅い順に並んだ ``ChainCandidate`` のリスト
     を返す。 各オブジェクトに **複数の経路** がある場合は、 最も浅い経路を
     先頭にして、 同じ深さなら出現順を保つ。 主オブジェクト自身は対象外
     （候補に入れない） 。
@@ -48,7 +48,7 @@ def build_relation_chains(
         main_object: 主オブジェクト名。 ``None`` のときは空 dict を返す。
 
     Returns:
-        ``{子オブジェクト名: [_ChainCandidate, ...]}`` のマッピング。
+        ``{子オブジェクト名: [ChainCandidate, ...]}`` のマッピング。
     """
     if not main_object:
         return {}
@@ -97,12 +97,12 @@ def build_relation_chains(
             queue.append((child, new_chain, depth + 1))
 
     # 子→ candidate のリストに展開 （1 件だけ。 浅い経路のみ採用）
-    result: dict[str, list[_ChainCandidate]] = {}
+    result: dict[str, list[ChainCandidate]] = {}
     for child, chain in visited.items():
         if child == main_object:
             continue
         depth = visited_depth[child]
-        result[child] = [_ChainCandidate(chain=chain, object_name=child, depth=depth)]
+        result[child] = [ChainCandidate(chain=chain, object_name=child, depth=depth)]
 
     # 主オブジェクト自身は含めない
     result.pop(main_object, None)

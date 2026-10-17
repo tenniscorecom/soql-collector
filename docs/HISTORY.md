@@ -93,3 +93,12 @@
 - 以前の考え: 関連オブジェクト末端の参照項目は素の API 名のまま使っていた
 - いまの考え: 末端 reference を ``nameField`` に置換して表示名解決に使う
 - 理由: 列キーから SOQL 列名を一意に引けるようにするため
+## 2026-10-18 … ``_`` は「そのファイルの中だけで使う」印にそろえた
+
+- 以前の考え: ``mapping/`` に分けたとき、別ファイルから使うクラス ``_ChainCandidate`` が ``_`` 付きのまま
+  ``column_key.py`` / ``column_map.py`` / ``__init__.py`` から import されていた。
+- いまの考え: ``_`` は定義したファイルの中だけで使う印。別ファイルから使う内部の関数・クラスには付けない
+  （comken の ``docs/CONVENTIONS_PYTHON.md`` の命名規則と同じ）。``ChainCandidate`` にした。
+- comken 側で ``_get_or_build_config`` / ``_default_config_path`` などが ``_`` なしになったので、
+  ``tests/comken_state.py`` の参照も合わせた（comken のこの変更より前のタグでは動かない）。
+- ``tests/test_private_naming.py`` が、別ファイルからの ``_`` 付きの使用を検出する。

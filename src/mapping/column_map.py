@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.mapping.chains import _ChainCandidate, build_relation_chains
+from src.mapping.chains import ChainCandidate, build_relation_chains
 from src.mapping.column_key import (
     COLUMN_KEY_PATH_MAX_DEPTH,
     resolve_column_key_to_soql,
@@ -138,7 +138,7 @@ class ResolveContext:
     main_object: str
     main_describe: dict[str, Any]
     field_index: dict[str, list[dict[str, Any]]]
-    ordered_chains: list[_ChainCandidate]
+    ordered_chains: list[ChainCandidate]
     related_describes: dict[str, dict[str, Any]]
     object_label_to_api: dict[str, str]
     fetch_object: Callable[[str], dict[str, Any] | None] | None
@@ -216,7 +216,7 @@ def _build_field_index(
 def _build_ordered_chains(
     relations: list[Any],
     main_object: str,
-) -> list[_ChainCandidate]:
+) -> list[ChainCandidate]:
     """主オブジェクトからの関連オブジェクトの鎖を、 浅い順に並べたリストで返す。
 
     ``build_relation_chains()`` の戻り値を全候補に展開して ``(depth, object_name)``
@@ -225,7 +225,7 @@ def _build_ordered_chains(
     if not main_object:
         return []
     chains_by_object = build_relation_chains(relations, main_object)
-    ordered: list[_ChainCandidate] = []
+    ordered: list[ChainCandidate] = []
     for obj_name in chains_by_object:
         for chain in chains_by_object[obj_name]:
             ordered.append(chain)
@@ -808,7 +808,7 @@ def _find_chain(
     ctx: ResolveContext,
     owner: str,
     soql_chain: str,
-) -> _ChainCandidate | None:
+) -> ChainCandidate | None:
     """``ctx.ordered_chains`` から ``(object_name, chain)`` が一致する鎖を返す。"""
     return next(
         (
@@ -821,7 +821,7 @@ def _find_chain(
 
 
 def _prefix_matches(
-    chain_candidate: _ChainCandidate,
+    chain_candidate: ChainCandidate,
     prefix: str,
     prefix_norm: str | None = None,
 ) -> bool:

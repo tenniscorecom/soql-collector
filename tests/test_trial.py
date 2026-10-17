@@ -99,7 +99,7 @@ def _write_ini(tmp_path: Path, master: Path) -> None:
 def _patched_master_path(cfg, project_root: Path, name_attr: str = "MASTER_XLSX_PATH") -> Path:
     """``cfg.FILES.MASTER_XLSX_PATH`` がそのまま使える形（絶対 or 解決済み相対）で返す。
 
-    comken の ``_parse_value`` は区切り文字を含まない値（``master.xlsx``）を
+    comken の ``parse_value`` は区切り文字を含まない値（``master.xlsx``）を
     文字列のまま返すので、 ``project_root`` を基準に解決する。 ``./master.xlsx``
     なら comken 側で自動解決されるが、 テストでは ``master.name`` の形で書いて
     いるので、 ここで明示的に連結する。

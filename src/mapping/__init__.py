@@ -21,7 +21,7 @@ from __future__ import annotations
 
 # 公開 API を再エクスポートする。 既存の ``from src.mapping import X`` を
 # 壊さないことが最重要 （``test_mapping.py`` などで 直接 import される）
-from src.mapping.chains import _ChainCandidate, build_relation_chains
+from src.mapping.chains import ChainCandidate, build_relation_chains
 from src.mapping.column_key import (
     COLUMN_KEY_PATH_MAX_DEPTH,
     candidate_relationship_names,
@@ -56,7 +56,7 @@ __all__ = [
     "COLUMN_KEY_PATH_MAX_DEPTH",
     # --- chains ---
     "build_relation_chains",
-    "_ChainCandidate",
+    "ChainCandidate",
     # --- column_map ---
     "build_column_map",
     # --- row_status ---
