@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Callable
 from typing import Any
 
 from comken.core.table import Table
@@ -33,15 +32,12 @@ from comken.exceptions import ComkenError, SalesforceError, SalesforceRequestErr
 from comken.toolbox.csv import CSV
 
 from src.describe_store import DescribeStore, org_from_url
-from src.fetch import FATAL_STATUS_CODES
+from src.fetch import FATAL_STATUS_CODES, SiteFor
 from src.master import read_master
 from src.run import FilePaths, read_file_paths
 from src.text_utils import coerce_str as _coerce_str
 
 logger = logging.getLogger(__name__)
-
-# ``run_fetch`` の ``site_for`` と同じ型（テスト用差し替え）
-SiteFor = Callable[[str], type]
 
 # 取りたいオブジェクトの API 名。 ここを書き換えて実行する
 OBJECT_NAMES: list[str] = ["Account", "User"]

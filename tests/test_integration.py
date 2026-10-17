@@ -105,7 +105,7 @@ def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     return columns, rows
 
 
-def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
+def _read_xlsx(path: Path) -> dict[str, list[dict[str, object]]]:
     """xlsx を ``{シート名: [行 dict, ...]}`` で読む。
 
     一覧 / 列の対応 シートは 1 行目=案内、 2 行目=空、 3 行目=テーブル見出し、 4 行目以降=データ
@@ -113,7 +113,7 @@ def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
     それぞれ自動的に見つける
     """
     workbook = load_workbook(path)
-    result: dict[str, list[dict[str, str]]] = {}
+    result: dict[str, list[dict[str, object]]] = {}
     for sheet_name in workbook.sheetnames:
         sheet = workbook[sheet_name]
         all_rows = list(sheet.iter_rows(values_only=True))
@@ -131,7 +131,7 @@ def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
         data_rows = all_rows[header_idx + 1 :]
         result[sheet_name] = [
             {
-                header: ("" if value is None else value)
+                str(header): ("" if value is None else value)
                 for header, value in zip(headers, row, strict=False)
             }
             for row in data_rows
@@ -273,6 +273,8 @@ def test_e2e_run_tables_writes_overview_and_columns_sheet(tmp_path: Path) -> Non
 
     output = tmp_path / "output"
     output.mkdir(parents=True, exist_ok=True)
+    assert outcome_1001.record is not None
+    assert outcome_1002.record is not None
     records = [outcome_1001.record, outcome_1002.record]
     run_tables(
         output,
@@ -294,10 +296,10 @@ def test_e2e_run_tables_writes_overview_and_columns_sheet(tmp_path: Path) -> Non
     assert by_key["1001"]["個人情報"] == "あり"
     assert by_key["1002"]["個人情報"] == "あり"
     # 該当列に 「メール」 が出る
-    assert "メール" in by_key["1001"]["個人情報の該当列"]
+    assert "メール" in str(by_key["1001"]["個人情報の該当列"])
     # 似たレポートの列に 「グループN: ... が基準」 の形で出る
-    assert "基準" in by_key["1001"]["似たレポート"]
-    assert "基準" in by_key["1002"]["似たレポート"]
+    assert "基準" in str(by_key["1001"]["似たレポート"])
+    assert "基準" in str(by_key["1002"]["似たレポート"])
 
     # 列の対応シート: Contact.Email も出る
     columns_sheet = sheets["列の対応"]
@@ -337,6 +339,7 @@ def test_e2e_single_record_no_similar_text(tmp_path: Path) -> None:
         describe_csv_path=describe_csv_path,
         site_for=_site_for(client),
     )[0]
+    assert outcome.record is not None
     output = tmp_path / "output"
     output.mkdir(parents=True, exist_ok=True)
     run_tables(
@@ -383,6 +386,7 @@ def test_e2e_columns_sheet_resolves_related_email(tmp_path: Path) -> None:
         describe_csv_path=describe_csv_path,
         site_for=_site_for(client),
     )[0]
+    assert outcome.record is not None
     output = tmp_path / "output"
     output.mkdir(parents=True, exist_ok=True)
     run_tables(
@@ -397,4 +401,4 @@ def test_e2e_columns_sheet_resolves_related_email(tmp_path: Path) -> None:
     assert email_rows
     # 使う SOQL 列名に Contact__r.Email のような関連経由が入る
     soql = email_rows[0]["使うSOQL列名"]
-    assert "Email" in soql
+    assert "Email" in str(soql)

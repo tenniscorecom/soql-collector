@@ -142,7 +142,7 @@ class _FakeSite:
         return None
 
 
-def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
+def _read_xlsx(path: Path) -> dict[str, list[dict[str, object]]]:
     """xlsx を ``{シート名: [行 dict, ...]}`` で読む。
 
     一覧 / 列の対応 シートは 1 行目=案内、 2 行目=空、 3 行目=テーブル見出し、 4 行目以降=データ
@@ -150,7 +150,7 @@ def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
     それぞれ自動的に見つける
     """
     workbook = load_workbook(path)
-    result: dict[str, list[dict[str, str]]] = {}
+    result: dict[str, list[dict[str, object]]] = {}
     for sheet_name in workbook.sheetnames:
         sheet = workbook[sheet_name]
         # シートの 1 行目に Excel テーブルの参照があればその見出しを探す
@@ -171,7 +171,7 @@ def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
         data_rows = all_rows[header_idx + 1 :]
         result[sheet_name] = [
             {
-                header: ("" if value is None else value)
+                str(header): ("" if value is None else value)
                 for header, value in zip(headers, row, strict=False)
             }
             for row in data_rows

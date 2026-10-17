@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
+from typing import Self
 
 import pytest
 from comken.exceptions import SalesforceRequestError
@@ -68,7 +70,7 @@ class _FakeClient:
         # 完全一致した順に返す。 ``request_errors`` も同じ ``path`` の
         # 順に対応。 どちらかが空なら ``(None, {})`` / 例外なしで動く
         self._request_responses = request_responses or []
-        self._request_errors = request_errors or {}
+        self._request_errors = dict(request_errors or [])
         # 順序消費用のカーソル
         self._request_index = 0
         self.request_calls: list[tuple[str, str]] = []
@@ -115,7 +117,7 @@ class _FakeSite:
         self._client = client
         self.open_count = 0
 
-    def __call__(self) -> _FakeClient:
+    def __call__(self) -> Self:
         return self
 
     def __enter__(self) -> _FakeClient:
@@ -1316,7 +1318,7 @@ def test_site_for_salesforce_error_marks_id_failed(tmp_path: Path) -> None:
         object_describes={"Opportunity": _main_describe("Opportunity")},
     )
 
-    def resolver(url: str) -> _FakeSite:
+    def resolver(url: str) -> Callable[[], _FakeSite]:
         # bad だけ未登録組織として ``SalesforceError`` を投げる
         if "BBBBB" in url:
             raise SalesforceError("未登録")
@@ -2205,6 +2207,7 @@ def test_record_report_has_no_heavy_keys(tmp_path: Path) -> None:
     import json as _json
 
     record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+    assert record is not None
     raw_text = _json.dumps({"report": record.report, "objects": record.objects}, ensure_ascii=False)
 
     # ``"重いキー":`` という**キー形**が出現しない（ 出力 record の中に
@@ -2692,6 +2695,7 @@ def test_run_fetch_fetches_missing_object_along_user_path(tmp_path: Path) -> Non
     # User は ``describe_object`` を 1 回叩かれている
     assert client.describe_object_calls.count("User") == 1
     # User が ``record.objects`` にも入った
+    assert record is not None
     assert "User" in record.objects
     # 型は string
     row = next(r for r in record.column_map if r["列キー"] == "Opp.Account.Owner")
@@ -2777,6 +2781,7 @@ def test_run_fetch_uses_describe_csv_cache_for_user(tmp_path: Path) -> None:
     # User はキャッシュから返るので API は叩かれない
     assert "User" not in client.describe_object_calls
     # 型は引ける
+    assert outcomes[0].record is not None
     row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.Account.Owner")
     assert row["型"] == "string"
 
@@ -2839,6 +2844,7 @@ def test_run_fetch_typo_in_path_warns_with_candidates(tmp_path: Path) -> None:
     assert outcomes[0].status == "ok"
     record = outcomes[0].record
     # 値は残っている
+    assert record is not None
     row = next(r for r in record.column_map if r["列キー"] == "Opp.Account.Owner")
     assert row["対応フィールドAPI名"] == "Account.Ownr.Name"
     assert row["型"] == ""
@@ -2874,6 +2880,7 @@ def test_run_fetch_path_fetch_404_warns_and_record_ok(tmp_path: Path) -> None:
     )
     assert outcomes[0].status == "ok"
     record = outcomes[0].record
+    assert record is not None
     row = next(r for r in record.column_map if r["列キー"] == "Opp.Account.Owner")
     # 値は残る
     assert row["対応フィールドAPI名"] == "Account.Owner.Name"
@@ -2978,6 +2985,7 @@ def test_run_fetch_handles_polymorphic_what(tmp_path: Path) -> None:
         **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
+    assert outcomes[0].record is not None
     row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.What")
     # Account が先頭なので Account.Name で string が引ける
     assert row["対応フィールドAPI名"] == "What.Name"
@@ -3029,6 +3037,7 @@ def test_run_fetch_path_too_long_warns(tmp_path: Path) -> None:
         **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
+    assert outcomes[0].record is not None
     row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.A.B.C.D.E.F")
     # 値が残り、 型は空
     assert row["対応フィールドAPI名"] == "A.B.C.D.E.F"
@@ -3079,6 +3088,7 @@ def test_run_fetch_user_fix_overrides_auto_resolved(tmp_path: Path) -> None:
         **_settings(tmp_path),
     )
     assert outcomes[0].status == "ok"
+    assert outcomes[0].record is not None
     row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.Name")
     # 人の値で上書きされた
     assert row["対応フィールドAPI名"] == "Name_Renamed__c"
@@ -3119,6 +3129,7 @@ def test_run_fetch_no_fetcher_legacy_behavior(tmp_path: Path) -> None:
     # fetcher は呼ばれない (apply_overrides の経路補完は走らない)
     assert "User" not in client.describe_object_calls
     # 列は自動が取れなかったまま (不明)
+    assert outcomes[0].record is not None
     row = next(r for r in outcomes[0].record.column_map if r["列キー"] == "Opp.Account.Owner")
     assert row["対応フィールドAPI名"] in ("(不明)", "")
 
@@ -3249,6 +3260,7 @@ def test_column_key_path_walks_soql_and_fetches_intermediate(tmp_path: Path) -> 
     site_for, _ = _site_for(client)
     record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
 
+    assert record is not None
     rows_by_key = {r["列キー"]: r for r in record.column_map}
     name_row = rows_by_key["Contact.Name"]
     assert name_row["対応フィールドAPI名"] == "Name"
@@ -3315,6 +3327,7 @@ def test_column_key_path_falls_back_to_label_when_first_segment_404(
     )
     site_for, _ = _site_for(client)
     record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+    assert record is not None
     row = next(r for r in record.column_map if r["列キー"] == "Contact.Acount.Name")
     # 表示名で Account.Name が取れている
     assert row["対応フィールドAPI名"] == "Account.Name"
@@ -3356,6 +3369,7 @@ def test_column_key_path_falls_back_when_label_also_fails(tmp_path: Path) -> Non
     )
     site_for, _ = _site_for(client)
     record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+    assert record is not None
     row = next(r for r in record.column_map if r["列キー"] == "Contact.Acount.Name")
     assert row["対応フィールドAPI名"] == "(不明)"
     # 経路の補完失敗の理由がそのまま備考に入る
@@ -3385,6 +3399,7 @@ def test_standard_form_column_key_falls_back_to_label_matching(tmp_path: Path) -
     client = _FakeClient(describe=metadata, object_describes={"Opportunity": opportunity})
     site_for, _ = _site_for(client)
     record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
+    assert record is not None
     row = next(r for r in record.column_map if r["列キー"] == "OPPORTUNITY_NAME")
     assert row["対応フィールドAPI名"] == "Name"
     assert row["型"] == "string"
@@ -3446,9 +3461,10 @@ def test_column_key_break_makes_resilience(monkeypatch: pytest.MonkeyPatch, tmp_
         reason: str | None,
         *,
         fetch_object: object = None,
+        main_object: str | None = None,
         **kwargs: object,
     ) -> list[dict[str, str]]:
-        del fetch_object
+        del fetch_object, kwargs
         # 列キーからの経路の補完を試さない壊れた版
         return real(
             metadata,
@@ -3456,7 +3472,7 @@ def test_column_key_break_makes_resilience(monkeypatch: pytest.MonkeyPatch, tmp_
             reason,
             related_describes=None,
             relations=None,
-            main_object=kwargs.get("main_object"),
+            main_object=main_object,
             fetch_object=None,
         )
 
@@ -3482,6 +3498,7 @@ def test_column_key_break_makes_resilience(monkeypatch: pytest.MonkeyPatch, tmp_
     # ``Contact.Retention__c.Status__c`` の SOQL 列名は
     # ``Retention__r.Status__c`` にならず、 経路の補完が空だったために
     # ``(不明)`` のままになる
+    assert record is not None
     row = next(r for r in record.column_map if r["列キー"] == "Contact.Retention__c.Status__c")
     assert row["対応フィールドAPI名"] == "(不明)"
 

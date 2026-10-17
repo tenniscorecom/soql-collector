@@ -35,7 +35,6 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,15 +46,11 @@ from comken.toolbox.salesforce.report import report_id_from_url
 from src import column_fix_xlsx
 from src.column_fix_xlsx import ColumnFixRow
 from src.describe_store import DescribeStore
-from src.fetch import FetchOutcome, ReportRecord, run_fetch
+from src.fetch import FetchOutcome, ReportRecord, SiteFor, run_fetch
 from src.master import MasterEntry, filter_enabled, read_master
 from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
-
-
-# ``run_fetch`` の ``site_for`` と同じ型（テストで差し替えるため）
-SiteFor = Callable[[str], type]
 
 
 @dataclass(frozen=True)

@@ -662,9 +662,11 @@ def test_build_column_map_related_resolution_detects_main_only_regression(
         metadata: dict,
         main_describe: dict | None,
         reason: str | None,
+        *,
+        main_object: str | None = None,
         **kwargs: object,
     ) -> list[dict[str, str]]:
-
+        del kwargs
         # 関連オブジェクト ／ relations を渡さずに元のロジックを走らせる
 
         return real(
@@ -673,7 +675,7 @@ def test_build_column_map_related_resolution_detects_main_only_regression(
             reason,
             related_describes=None,
             relations=None,
-            main_object=kwargs.get("main_object"),
+            main_object=main_object,
         )
 
     monkeypatch.setattr(mapping_module, "build_column_map", main_only_build_column_map)

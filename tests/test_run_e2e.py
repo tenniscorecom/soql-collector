@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pytest
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell.cell import Cell
 from openpyxl.worksheet.table import Table as XlsxTable
 from openpyxl.worksheet.table import TableStyleInfo
 
@@ -138,14 +139,14 @@ def _scenario_describe_and_objects():
     return describe, objs
 
 
-def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
+def _read_xlsx(path: Path) -> dict[str, list[dict[str, object]]]:
     """``load_workbook`` でシート名 → データ行 dict の list を読む。
 
     1 行目=案内、 2 行目=空、 3 行目=テーブル見出し の構造を前提にし、
     最初の文字列で埋まる行を見出しとして採用する
     """
     workbook = load_workbook(path)
-    result: dict[str, list[dict[str, str]]] = {}
+    result: dict[str, list[dict[str, object]]] = {}
     for sheet_name in workbook.sheetnames:
         sheet = workbook[sheet_name]
         all_rows = list(sheet.iter_rows(values_only=True))
@@ -163,7 +164,7 @@ def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
         data_rows = all_rows[header_idx + 1 :]
         result[sheet_name] = [
             {
-                header: ("" if value is None else value)
+                str(header): ("" if value is None else value)
                 for header, value in zip(headers, row, strict=False)
             }
             for row in data_rows
@@ -288,10 +289,16 @@ def test_run_e2e_second_run_preserves_user_fix_and_uses_it(tmp_path: Path) -> No
     for r in range(2, sheet.max_row + 1):
         key = sheet.cell(r, head_idx["列キー"]).value
         if key == "MYSTERY":
-            sheet.cell(r, head_idx["直したSOQL列名"]).value = "Description"
-            sheet.cell(r, head_idx["メモ"]).value = "人が確認済み"
+            cell = sheet.cell(r, head_idx["直したSOQL列名"])
+            assert isinstance(cell, Cell)
+            cell.value = "Description"
+            cell = sheet.cell(r, head_idx["メモ"])
+            assert isinstance(cell, Cell)
+            cell.value = "人が確認済み"
         elif key == "SUBJECT":
-            sheet.cell(r, head_idx["直したSOQL列名"]).value = "Owner.Name"
+            cell = sheet.cell(r, head_idx["直したSOQL列名"])
+            assert isinstance(cell, Cell)
+            cell.value = "Owner.Name"
     workbook.save(fix_path)
     workbook.close()
 
@@ -385,7 +392,9 @@ def test_run_e2e_unresolved_user_value_is_need_check_in_both_files(
     head_idx = {name: headers.index(name) + 1 for name in headers}
     for r in range(2, sheet.max_row + 1):
         if sheet.cell(r, head_idx["列キー"]).value == "MYSTERY":
-            sheet.cell(r, head_idx["直したSOQL列名"]).value = "Description"
+            cell = sheet.cell(r, head_idx["直したSOQL列名"])
+            assert isinstance(cell, Cell)
+            cell.value = "Description"
     workbook.save(fix_path)
     workbook.close()
 
@@ -492,7 +501,9 @@ def test_run_e2e_column_fix_xlsx_user_fix_unresolved_yellow_check_fill(
     head_idx = {name: headers.index(name) + 1 for name in headers}
     for r in range(2, sheet.max_row + 1):
         if sheet.cell(r, head_idx["列キー"]).value == "MYSTERY":
-            sheet.cell(r, head_idx["直したSOQL列名"]).value = "Description"
+            cell = sheet.cell(r, head_idx["直したSOQL列名"])
+            assert isinstance(cell, Cell)
+            cell.value = "Description"
     workbook.save(fix_path)
     workbook.close()
 

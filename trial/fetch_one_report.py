@@ -21,19 +21,15 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from collections.abc import Callable
 
 from comken import config
 
-from src.fetch import run_fetch
+from src.fetch import SiteFor, run_fetch
 from src.master import MasterEntry
 from src.run import FilePaths, read_file_paths
 from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
-
-# ``run_fetch`` の ``site_for`` と同じ型（テスト用差し替え）
-SiteFor = Callable[[str], type]
 
 
 def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> int:

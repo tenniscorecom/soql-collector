@@ -205,7 +205,7 @@ class _FakeClient:
         return self._object_describes.get(name, {"name": name, "fields": []})
 
     def __enter__(self) -> _FakeClient:
-        return self._client
+        return self
 
     def __exit__(self, *args: object) -> None:
         return None

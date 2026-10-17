@@ -40,3 +40,8 @@ max-complexity = 14
 # 環境変数 `PYTHON_LIBRARY` か、 隣接する `../comken` フォルダから自動で拾う。
 # 詳細は `tests/conftest.py` を参照。
 # 直書きの `pythonpath` は使わない （ 共有リポジトリ側の場所を持ち込まないため ）。
+
+[tool.pyright]
+# 開発時は隣接する comken リポジトリを直接参照する。実行環境では
+# 環境変数 ``PYTHON_LIBRARY`` の値を ``PYTHONPATH`` に足して使う。
+extraPaths = [".", "../comken"]

@@ -7,12 +7,15 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from openpyxl import Workbook
 from openpyxl.worksheet.table import Table as XlsxTable
 from openpyxl.worksheet.table import TableStyleInfo
+
+if TYPE_CHECKING:
+    from src.fetch import ReportRecord
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
@@ -322,7 +325,7 @@ def test_run_filters_disabled_rows(
         captured_keys.extend(entry.key for entry in entries)
         outcomes = []
         for entry in entries:
-            rec = RecordStub(key=entry.key, summary=entry.summary, report_id="00O", url=entry.url)
+            rec = _record_stub(key=entry.key, summary=entry.summary, report_id="00O", url=entry.url)
             outcomes.append(
                 FetchOutcome(
                     entry=entry,
@@ -347,64 +350,22 @@ def test_run_filters_disabled_rows(
     assert captured_keys == ["1001", "1003"]
 
 
-class RecordStub:
-    """``ReportRecord`` 互換のスタブ （テスト用）。 dataclass で型互換 。"""
+def _record_stub(key: str, summary: str, report_id: str, url: str) -> ReportRecord:
+    """中身が空の ``ReportRecord`` を作る （テスト用）。"""
+    from src.fetch import ReportRecord
 
-    def __init__(self, key: str, summary: str, report_id: str, url: str) -> None:
-        from src.fetch import ReportRecord
-
-        self._inner = ReportRecord(
-            key=key,
-            summary=summary,
-            report_id=report_id,
-            url=url,
-            main_object=None,
-            report={},
-            objects={},
-            relations=(),
-            column_map=[],
-            warnings=(),
-        )
-
-    @property
-    def key(self) -> str:
-        return self._inner.key
-
-    @property
-    def summary(self) -> str:
-        return self._inner.summary
-
-    @property
-    def report_id(self) -> str:
-        return self._inner.report_id
-
-    @property
-    def url(self) -> str:
-        return self._inner.url
-
-    @property
-    def main_object(self):  # type: ignore[no-untyped-def]
-        return self._inner.main_object
-
-    @property
-    def report(self) -> dict:
-        return self._inner.report
-
-    @property
-    def objects(self) -> dict:
-        return self._inner.objects
-
-    @property
-    def relations(self) -> tuple:
-        return self._inner.relations
-
-    @property
-    def column_map(self) -> list:
-        return self._inner.column_map
-
-    @property
-    def warnings(self) -> tuple:
-        return self._inner.warnings
+    return ReportRecord(
+        key=key,
+        summary=summary,
+        report_id=report_id,
+        url=url,
+        main_object=None,
+        report={},
+        objects={},
+        relations=(),
+        column_map=[],
+        warnings=(),
+    )
 
 
 def test_run_no_enabled_rows_returns_2(
@@ -518,7 +479,7 @@ def test_run_writes_jsons_and_csvs(
     ):
         outcomes = []
         for entry in entries:
-            rec = RecordStub(key=entry.key, summary=entry.summary, report_id="00O", url=entry.url)
+            rec = _record_stub(key=entry.key, summary=entry.summary, report_id="00O", url=entry.url)
             outcomes.append(
                 FetchOutcome(
                     entry=entry,
@@ -595,7 +556,7 @@ def test_run_partial_failure_continues_and_returns_1(
         refresh_set=None,
         column_fix_overrides=None,
     ):
-        rec = RecordStub(key=entries[0].key, summary="", report_id="00O", url=entries[0].url)
+        rec = _record_stub(key=entries[0].key, summary="", report_id="00O", url=entries[0].url)
         return [
             FetchOutcome(
                 entry=entries[0],
@@ -665,7 +626,7 @@ def test_run_returns_1_when_run_tables_raises(
         refresh_set=None,
         column_fix_overrides=None,
     ):
-        rec = RecordStub(key=entries[0].key, summary="", report_id="00O", url=entries[0].url)
+        rec = _record_stub(key=entries[0].key, summary="", report_id="00O", url=entries[0].url)
         return [
             FetchOutcome(
                 entry=entries[0],

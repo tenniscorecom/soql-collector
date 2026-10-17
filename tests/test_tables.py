@@ -167,10 +167,10 @@ def _make_record(
     )
 
 
-def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
+def _read_xlsx(path: Path) -> dict[str, list[dict[str, object]]]:
     """``SOQL調査.xlsx`` を ``{シート名: [行 dict, ...]}`` で読む。"""
     workbook = load_workbook(path)
-    result: dict[str, list[dict[str, str]]] = {}
+    result: dict[str, list[dict[str, object]]] = {}
     for sheet_name in workbook.sheetnames:
         sheet = workbook[sheet_name]
         rows_iter = sheet.iter_rows(values_only=True)
@@ -181,7 +181,7 @@ def _read_xlsx(path: Path) -> dict[str, list[dict[str, str]]]:
             continue
         result[sheet_name] = [
             {
-                header: ("" if value is None else value)
+                str(header): ("" if value is None else value)
                 for header, value in zip(headers, row, strict=False)
             }
             for row in rows_iter
@@ -337,9 +337,9 @@ def test_survey_similar_group_text(tmp_path: Path) -> None:
     rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
     for row in rows:
         if row["管理番号"] == "1001":
-            assert row["似たレポート"].startswith("グループ")
+            assert str(row["似たレポート"]).startswith("グループ")
         else:
-            assert row["似たレポート"].startswith("グループ")
+            assert str(row["似たレポート"]).startswith("グループ")
 
 
 def test_survey_main_object_unknown(tmp_path: Path) -> None:
@@ -431,7 +431,7 @@ def test_columns_sheet_unresolved_status_is_needs_check_for_candidates(tmp_path:
     rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
     unknown_rows = [r for r in rows if r["列キー"] == "Opp.Unknown"]
     assert unknown_rows[0]["状態"] == "要確認"
-    assert "Name" in unknown_rows[0]["候補"]
+    assert "Name" in str(unknown_rows[0]["候補"])
 
 
 def test_columns_sheet_user_fixed_soql(tmp_path: Path) -> None:
@@ -525,7 +525,7 @@ def test_relation_diagram_sheet_writes_tree_with_polymorphic(tmp_path: Path) -> 
     task_row = next(r for r in data if r["主オブジェクト"] == "Task" and r["段"] == "0")
     assert task_row["行き先オブジェクト"] == "Task"
     children = [r for r in data if r["主オブジェクト"] == "Task" and r["段"] == "1"]
-    targets = {r["行き先オブジェクト"] for r in children}
+    targets = {str(r["行き先オブジェクト"]) for r in children}
     assert targets == {"Account", "Opportunity"}
 
 

@@ -37,10 +37,11 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 
 from comken.exceptions import (
     ComkenError,
@@ -96,7 +97,8 @@ ROW_CHECK_DISABLED = "未実施"
 _MAIN_OBJECT_PREFIX_LIMIT: int = 5
 
 # 接続先判定の既定実装（comken の ``site_for``）。 テストでは差し替える。
-SiteFor = Callable[[str], type]
+# ``with site_for(url)() as client:`` の形で使う。
+SiteFor = Callable[[str], Callable[[], AbstractContextManager[Any]]]
 
 # ``_slim_report`` で残す ``reportMetadata`` のキー（SOQL 組立に必要なものだけ）。
 # SELECT・ WHERE・ 日付条件・ サブクエリ・ GROUP BY・ 集計・ ORDER BY・ 件数・
@@ -438,18 +440,11 @@ def _log_pii(pii_result: pii.ReportPIIResult) -> None:
 # ── slim 後のデータ型 ─────────────────────────────────────────────
 # SOQL 組立と ``tables`` / ``ai_markdown`` が読む範囲だけを型で示す。
 # SlimReport は ``reportMetadata`` / ``reportExtendedMetadata`` を持つ dict。
-# SlimObject は ``_slim_object`` の戻り値の構造（TypedDict） 。 フィールドは
-# 全部 optional にして、 境界検証に失敗したときの欠落キーを表現する。
+# SlimObject は ``_slim_object`` の戻り値で、 ``name`` / ``label`` / ``custom`` /
+# ``fields`` の 4 キーを必ず持つ。 ``mapping`` やテストも describe を素の dict として
+# 扱うので、 TypedDict にはせず dict の別名にする。
 SlimReport = dict[str, Any]
-
-
-class SlimObject(TypedDict, total=False):
-    """``_slim_object`` の戻り値の構造。"""
-
-    name: str
-    label: str
-    custom: bool
-    fields: list[dict[str, Any]]
+SlimObject = dict[str, Any]
 
 
 def _slim_report(metadata: object) -> SlimReport:
