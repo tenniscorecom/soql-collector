@@ -96,9 +96,23 @@ ROW_CHECK_DISABLED = "未実施"
 # この値で十分
 _MAIN_OBJECT_PREFIX_LIMIT: int = 5
 
-# 接続先判定の既定実装（comken の ``site_for``）。 テストでは差し替える。
+# 接続先判定の型。 テストでは差し替える。
 # ``with site_for(url)() as client:`` の形で使う。
 SiteFor = Callable[[str], Callable[[], AbstractContextManager[Any]]]
+
+# 調査（列の対応・SOQL の下書き）はサンドボックスで行う。 管理表は本番の URL のまま
+# 1 レポート 1 行で、 接続先だけをサンドボックスの組織に差し替える（レポート ID は URL から
+# そのまま使うので、 サンドボックスに同じ ID のレポートがあることが前提）。
+# 本番へつなぎたいときだけ ``False`` にする。
+SURVEY_ON_SANDBOX: bool = True
+
+
+def default_site_for(url: str) -> Any:
+    """既定の接続先判定（comken の ``site_for``）。 ``SURVEY_ON_SANDBOX`` ならサンドボックス側。"""
+    from comken.toolbox.salesforce.sites import site_for
+
+    return site_for(url, sandbox=SURVEY_ON_SANDBOX)
+
 
 # ``_slim_report`` で残す ``reportMetadata`` のキー（SOQL 組立に必要なものだけ）。
 # SELECT・ WHERE・ 日付条件・ サブクエリ・ GROUP BY・ 集計・ ORDER BY・ 件数・
@@ -281,11 +295,7 @@ def run_fetch(
         入力と同じ順の ``FetchOutcome`` リスト。失敗 ID を含む個別では continue する。
     """
     if site_for is None:
-        from comken.toolbox.salesforce.sites import site_for as default_site_for
-
         site_for = default_site_for
-
-    assert site_for is not None  # 上の分岐で必ず代入される
 
     if describe_store is None:
         describe_store = DescribeStore.empty(describe_csv_path)
@@ -822,12 +832,11 @@ def _fetch_one(
     """
     if column_fix_overrides is None:
         column_fix_overrides = {}
-    org = org_from_url(entry.url)
-
     report_id, site_error = _resolve_report_id_and_site(entry, site_for)
     if site_error is not None:
         return site_error
     assert report_id is not None  # 上の分岐で必ず代入される
+    org = _org_of(entry, site_for)
 
     state = _FetchState()
     try:
@@ -896,6 +905,24 @@ class _FetchState:
     warnings: list[str] = dc_field(default_factory=list)
 
 
+# レポートが見つからないとき（HTTP 404）に、 警告へ足す説明
+_NOT_FOUND_HINT = (
+    "\nこのレポート ID は、 つないだ組織に無いようです。 サンドボックスで調査している場合、"
+    " サンドボックスの更新（リフレッシュ）より後に本番で作ったレポートは見つかりません"
+)
+
+
+def _org_of(entry: MasterEntry, site_for: SiteFor) -> str:
+    """実際につなぐ組織の識別（describe の保存のキー）を返す。
+
+    サンドボックスに差し替えているときは、 管理表の URL（本番）ではなく、 つなぐ組織クラスの
+    ``DOMAIN_URL`` で決める。 本番とサンドボックスの describe が、 同じ組織のものとして
+    混ざらないようにするため。 ``DOMAIN_URL`` を持たない接続先（テストの代用品）は URL で決める。
+    """
+    domain_url = getattr(site_for(entry.url), "DOMAIN_URL", "")
+    return org_from_url(domain_url or entry.url)
+
+
 def _resolve_report_id_and_site(
     entry: MasterEntry,
     site_for: SiteFor,
@@ -952,6 +979,7 @@ def _run_within_site(
     except SalesforceRequestError as exc:
         state.warnings.append(
             f"レポート describe に失敗（HTTP {exc.status_code}）: {report_id}\n{exc.detail}"
+            + _NOT_FOUND_HINT * (exc.status_code == 404)
         )
         return
 

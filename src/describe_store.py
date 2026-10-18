@@ -28,11 +28,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from comken.core.table import Table
 from comken.exceptions import CSVError
 from comken.toolbox.csv import CSV
+from comken.toolbox.salesforce.hosts import host_of
 
 from src.text_utils import coerce_str as _coerce_str
 
@@ -68,14 +68,13 @@ TRUE_MARK = "○"
 
 
 def org_from_url(url: str) -> str:
-    """URL からホスト名を取り出し、 小文字で返す。
+    """URL から、 組織を見分けるホスト名を取り出す（小文字）。
 
-    ``site_for`` と同じ ``urlsplit().netloc.lower()`` を使い、 大小文字の
-    違いを吸収する。 URL は ``comken.toolbox.salesforce.report_id_from_url``
-    でレポート ID を取り出す前にすでに ``site_for`` にかけているので、
-    ここで同じやり方で揃えておけば本番と Sandbox の取り違えが起きない。
+    comken の ``site_for`` と同じ ``host_of`` を使う。 大小文字の違いと、 ブラウザのアドレスバーの
+    URL（``○○.lightning.force.com``）と My Domain（``○○.my.salesforce.com``）の違いを吸収する
+    ので、 同じ組織が別の組織として保存されることはなく、 本番と Sandbox の取り違えも起きない。
     """
-    return urlsplit(url.strip()).netloc.lower()
+    return host_of(url)
 
 
 def _normalize_object(name: str) -> str:
