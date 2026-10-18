@@ -115,3 +115,42 @@ def test_unwritable_folder_only_warns(tmp_path: Path, caplog: pytest.LogCaptureF
         ReportStore.load(blocker / "項目定義.csv").put("org", "A", SLIM, ())
 
     assert "貯められませんでした" in caplog.text
+
+
+def test_prune_removes_files_of_reports_not_kept(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.put("org", "A", SLIM, ())
+    store.put("org", "B", SLIM, ())
+    store.put("other-org", "B", SLIM, ())
+
+    removed = store.prune({"A"})
+
+    assert removed == ["org__B.json", "other-org__B.json"]
+    assert [p.name for p in (tmp_path / "data" / "レポート定義").iterdir()] == ["org__A.json"]
+
+
+def test_prune_with_nothing_to_keep_removes_nothing(tmp_path: Path) -> None:
+    """管理表を読み違えて対象が 0 件になっても、 貯めたものを全部消さない。"""
+    store = _store(tmp_path)
+    store.put("org", "A", SLIM, ())
+
+    assert store.prune(set()) == []
+    assert (tmp_path / "data" / "レポート定義" / "org__A.json").exists()
+
+
+def test_prune_only_touches_files_made_by_the_store(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.put("org", "A", SLIM, ())
+    folder = tmp_path / "data" / "レポート定義"
+    (folder / "メモ.json").write_text("{}", encoding="utf-8")  # 「__」の無い名前
+    (folder / "org__B.txt").write_text("x", encoding="utf-8")  # .json でない
+
+    removed = store.prune({"Z"})
+
+    assert removed == ["org__A.json"]
+    assert sorted(p.name for p in folder.iterdir()) == ["org__B.txt", "メモ.json"]
+
+
+def test_prune_without_folder_or_with_empty_store_is_a_no_op(tmp_path: Path) -> None:
+    assert _store(tmp_path).prune({"A"}) == []  # フォルダがまだ無い
+    assert ReportStore.empty().prune({"A"}) == []

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table as XlsxTable
 from openpyxl.worksheet.table import TableStyleInfo
 
@@ -40,10 +41,15 @@ def _build_master(path: Path, rows: list[dict]) -> None:
         "0件あり",
         "備考",
     ]
+    # 「調査」列は任意。 行のどれかが「調査」を持つときだけ、 列を足す
+    if any("調査" in row for row in rows):
+        headers.append("調査")
     sheet.append(headers)
     for row in rows:
         sheet.append([row.get(col, "") for col in headers])
-    table = XlsxTable(displayName="PY_T_ReportEntry", ref=f"A1:I{len(rows) + 1}")
+    table = XlsxTable(
+        displayName="PY_T_ReportEntry", ref=f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
+    )
     table.tableStyleInfo = TableStyleInfo(
         name="TableStyleMedium2",
         showFirstColumn=False,
@@ -283,6 +289,139 @@ def test_run_with_none_argv_uses_sys_argv(
 
 
 # ── 「有効」の絞り込み ─────────────────────────────────────────────────
+
+
+def _run_with_fake_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, master: Path
+) -> list[str]:
+    """``run_fetch`` を差し替えて ``run()`` を回し、 取りに行った管理番号を返す。"""
+    from src import run as run_module
+    from src.fetch import FetchOutcome
+
+    _write_ini(tmp_path, master)
+    _patch_read_file_paths(monkeypatch, _make_file_paths(tmp_path, master), tmp_path)
+    fetched: list[str] = []
+
+    def fake_run_fetch(entries, **_kwargs):
+        fetched.extend(entry.key for entry in entries)
+        return [
+            FetchOutcome(
+                entry=entry,
+                status="ok",
+                record=_record_stub(
+                    key=entry.key, summary=entry.summary, report_id="00O", url=entry.url
+                ),
+                warnings=(),
+                error=None,
+            )
+            for entry in entries
+        ]
+
+    monkeypatch.setattr(run_module, "run_fetch", fake_run_fetch)
+    monkeypatch.setattr(run_module, "run_tables", lambda *args, **kwargs: None)
+
+    assert run_module.run([], site_for=lambda _u: (_ for _ in ()).throw(AssertionError())) == 0
+    return fetched
+
+
+def test_run_surveys_only_rows_marked_in_survey_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """「調査」列があれば、 「有効」かつ「調査」が ○ の行だけを取りに行く。"""
+    master = tmp_path / "master.xlsx"
+    _build_master(
+        master,
+        [
+            {
+                "ID": "1001",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
+                "有効": "○",
+                "調査": "○",
+            },
+            {
+                "ID": "1002",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view",
+                "有効": "○",
+                "調査": "",
+            },
+            {
+                "ID": "1003",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000CCCCC/view",
+                "有効": "×",
+                "調査": "○",
+            },
+        ],
+    )
+
+    assert _run_with_fake_fetch(tmp_path, monkeypatch, master) == ["1001"]
+
+
+def test_run_prunes_stored_report_definitions_of_reports_not_surveyed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """今回調べないレポートの貯めたレポート定義は消し、 調べるレポートのものは残す。
+
+    ``SOQL調査.xlsx`` / ``列名の対応.csv`` / ``項目定義.csv`` などの出力には触らない。
+    """
+    from src.describe_store import DESCRIBE_CSV_COLUMNS
+    from src.report_store import ReportStore
+
+    master = tmp_path / "master.xlsx"
+    _build_master(
+        master,
+        [
+            {
+                "ID": "1001",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
+                "有効": "○",
+                "調査": "○",
+            },
+            {
+                "ID": "1002",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view",
+                "有効": "○",
+                "調査": "",
+            },
+        ],
+    )
+    slim = {"reportMetadata": {"name": "x"}, "reportExtendedMetadata": {}}
+    store = ReportStore.load(tmp_path / "describe.csv")
+    store.put("example.my.salesforce.com", "00O5g00000AAAAA", slim, ())
+    store.put("example.my.salesforce.com", "00O5g00000BBBBB", slim, ())
+    store.put("example.my.salesforce.com", "00O5g00000ZZZZZ", slim, ())  # 管理表に無いレポート
+    output_keep = tmp_path / "output" / "列名の対応.csv"
+    output_keep.parent.mkdir(parents=True)
+    output_keep.write_text("残す", encoding="utf-8")
+    describe_csv = tmp_path / "describe.csv"
+    describe_content = ",".join(DESCRIBE_CSV_COLUMNS) + "\n"  # 見出しだけの正しい項目定義
+    describe_csv.write_text(describe_content, encoding="utf-8")
+
+    _run_with_fake_fetch(tmp_path, monkeypatch, master)
+
+    remaining = sorted(p.name for p in (tmp_path / "レポート定義").iterdir())
+    assert remaining == ["example.my.salesforce.com__00O5g00000AAAAA.json"]
+    assert output_keep.read_text(encoding="utf-8") == "残す"
+    assert describe_csv.read_text(encoding="utf-8") == describe_content
+
+
+def test_run_does_not_prune_when_switched_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src import run as run_module
+    from src.report_store import ReportStore
+
+    monkeypatch.setattr(run_module, "PRUNE_REPORT_STORE", False)
+    master = tmp_path / "master.xlsx"
+    _build_master(
+        master,
+        [{"ID": "1001", "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view", "有効": "○"}],
+    )
+    slim = {"reportMetadata": {"name": "x"}, "reportExtendedMetadata": {}}
+    ReportStore.load(tmp_path / "describe.csv").put("org", "00O5g00000ZZZZZ", slim, ())
+
+    _run_with_fake_fetch(tmp_path, monkeypatch, master)
+
+    assert [p.name for p in (tmp_path / "レポート定義").iterdir()] == ["org__00O5g00000ZZZZZ.json"]
 
 
 def test_run_filters_disabled_rows(

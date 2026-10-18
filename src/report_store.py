@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -98,6 +99,28 @@ class ReportStore:
             "レポート定義": slim_report,
         }
         _write(self._path_for(org, report_id), document)
+
+    def prune(self, keep_report_ids: Collection[str]) -> list[str]:
+        """``keep_report_ids`` に無いレポートのファイルを消し、 消したファイル名を返す。
+
+        今回調べないレポート（管理表から消えた・「有効」が ``×``・「調査」が ``○`` でない）の
+        貯めたものを残さないための掃除。 消すのはこのストアのフォルダの、 このストアが作る形の
+        ファイル名（``{組織}__{レポートID}.json``）だけ。
+        ``keep_report_ids`` が空のときは何も消さない（管理表を読み違えても、 全部は消えない）。
+        """
+        if self._folder is None or not keep_report_ids or not self._folder.is_dir():
+            return []
+        removed: list[str] = []
+        for path in sorted(self._folder.glob("*.json")):
+            if "__" not in path.stem or path.stem.rsplit("__", 1)[-1] in keep_report_ids:
+                continue
+            try:
+                path.unlink()
+            except OSError as exc:
+                logger.warning("対象外のレポート定義を消せませんでした: %s（%s）", path, exc)
+                continue
+            removed.append(path.name)
+        return removed
 
     def _path_for(self, org: str, report_id: str) -> Path:
         assert self._folder is not None
