@@ -422,6 +422,90 @@ def test_run_fetch_without_report_store_describes_every_time(tmp_path: Path) -> 
     assert not (tmp_path / "レポート定義").exists()
 
 
+SANDBOX_DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com"
+
+
+def test_default_site_for_connects_to_sandbox_of_production_url() -> None:
+    """管理表は本番の URL のまま。 既定の接続先は、 そのサンドボックス側の組織クラス。"""
+    from src.fetch import default_site_for
+
+    site = default_site_for(
+        "https://example.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
+    )
+
+    assert site.__name__ == "SolutionSandbox"
+
+
+def test_default_site_for_connects_to_production_when_switched_off(monkeypatch) -> None:
+    import src.fetch as fetch_module
+
+    monkeypatch.setattr(fetch_module, "SURVEY_ON_SANDBOX", False)
+
+    site = fetch_module.default_site_for(
+        "https://example.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
+    )
+
+    assert site.__name__ == "Solution"
+
+
+def test_run_fetch_keys_describes_by_connected_org_not_by_url(tmp_path: Path) -> None:
+    """管理表の URL は本番でも、 つないだのがサンドボックスなら、 describe の保存はサンドボックスの組織で持つ。
+
+    本番とサンドボックスの describe が、 同じ組織のものとして混ざらないようにする。
+    """
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_make_metadata(),
+        object_describes={"Opportunity": _main_describe("Opportunity")},
+    )
+    site_for, site = _site_for(client)
+    site.DOMAIN_URL = SANDBOX_DOMAIN  # つなぐ組織クラスが持つ URL（サンドボックス）
+    store = DescribeStore.empty(tmp_path / "describe.csv")
+
+    run_fetch([entry], site_for=site_for, describe_store=store, **_settings(tmp_path))
+
+    orgs = {org for org, _ in store.memory_cache}
+    assert orgs == {"example--sandbox.sandbox.my.salesforce.com"}
+
+
+def test_run_fetch_adds_hint_when_report_is_missing_in_connected_org(tmp_path: Path) -> None:
+    """レポートが見つからない（404）とき、 サンドボックスに無いだけかもしれないと説明を添える。"""
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(describe=_make_metadata())
+
+    def not_found(report_id: str) -> dict:
+        raise SalesforceRequestError(
+            "GET", f"/analytics/reports/{report_id}/describe", 404, "NOT_FOUND"
+        )
+
+    client.report.describe = not_found
+    site_for, _ = _site_for(client)
+
+    outcome = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0]
+
+    warning = next(w for w in outcome.warnings if "レポート describe に失敗" in w)
+    assert "HTTP 404" in warning
+    assert "サンドボックスの更新" in warning
+
+
+def test_run_fetch_has_no_hint_for_other_describe_errors(tmp_path: Path) -> None:
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(describe=_make_metadata())
+
+    def forbidden(report_id: str) -> dict:
+        raise SalesforceRequestError(
+            "GET", f"/analytics/reports/{report_id}/describe", 403, "FORBIDDEN"
+        )
+
+    client.report.describe = forbidden
+    site_for, _ = _site_for(client)
+
+    outcome = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0]
+
+    warning = next(w for w in outcome.warnings if "レポート describe に失敗" in w)
+    assert "サンドボックスの更新" not in warning
+
+
 def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
     """``objects`` の中身は ``_slim_object`` を通した形（name/label/custom/fields の 4 キー）
     で書かれている。 JSON に重そうなキーは残らない（childRelationships / recordTypeInfos など）。
