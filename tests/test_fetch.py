@@ -19,6 +19,7 @@ from src.fetch import (
     run_fetch,
 )
 from src.master import MasterEntry
+from src.report_store import ReportStore
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
@@ -38,9 +39,11 @@ class _ReportStub:
         self._get_table = get_table if get_table is not None else []
         self._get_error = get_error
         self.get_calls: list[str] = []
+        self.describe_calls: list[str] = []
 
     def describe(self, report_id: str) -> dict:
         self.last_report_id = report_id
+        self.describe_calls.append(report_id)
         return self._describe
 
     def get(self, report_id: str, filters: object = None, allow_truncated: bool = False) -> object:
@@ -338,6 +341,85 @@ def test_run_fetch_writes_json_with_all_keys(tmp_path: Path) -> None:
         }
     ]
     assert payload["warnings"] == []
+
+
+def test_run_fetch_does_not_describe_report_again_when_stored(tmp_path: Path) -> None:
+    """2 回目の実行は、 貯めてあるレポート定義を使い、 レポートの describe を呼ばない。
+
+    結果（record の中身と警告）は 1 回目と同じ。
+    """
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_make_metadata(),
+        object_describes={
+            "Opportunity": _main_describe("Opportunity", fields_map={"AccountId": ["Account"]}),
+            "Account": _main_describe("Account"),
+        },
+    )
+    site_for, _ = _site_for(client)
+    settings = _settings(tmp_path)
+
+    first_store = ReportStore.load(settings["describe_csv_path"])
+    first = run_fetch([entry], site_for=site_for, report_store=first_store, **settings)[0]
+    # 別の実行（ストアを作り直す）でも、 フォルダに貯めたものが使われる
+    second_store = ReportStore.load(settings["describe_csv_path"])
+    second = run_fetch([entry], site_for=site_for, report_store=second_store, **settings)[0]
+
+    assert client.report.describe_calls == ["00O5g00000ABCDE"]
+    assert (first_store.hit_count, first_store.api_count) == (0, 1)
+    assert (second_store.hit_count, second_store.api_count) == (1, 0)
+    assert first.record is not None
+    assert second.record is not None
+    assert second.record.report == first.record.report
+    assert second.record.column_map == first.record.column_map
+    assert second.warnings == first.warnings
+
+
+def test_run_fetch_keeps_dropped_keys_warning_when_report_is_stored(tmp_path: Path) -> None:
+    """貯めたレポート定義から読んでも、 「使わなかったキー」の警告は 1 回目と同じ。"""
+    metadata = _make_metadata()
+    metadata["reportMetadata"]["unknownKey"] = 1
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=metadata,
+        object_describes={"Opportunity": _main_describe("Opportunity")},
+    )
+    site_for, _ = _site_for(client)
+    settings = _settings(tmp_path)
+
+    first = run_fetch(
+        [entry],
+        site_for=site_for,
+        report_store=ReportStore.load(settings["describe_csv_path"]),
+        **settings,
+    )[0]
+    second = run_fetch(
+        [entry],
+        site_for=site_for,
+        report_store=ReportStore.load(settings["describe_csv_path"]),
+        **settings,
+    )[0]
+
+    expected = "レポート定義の中で使わなかったキー: unknownKey"
+    assert expected in first.warnings
+    assert expected in second.warnings
+    assert len(client.report.describe_calls) == 1
+
+
+def test_run_fetch_without_report_store_describes_every_time(tmp_path: Path) -> None:
+    """``report_store`` を渡さなければ、 これまでどおり毎回 describe する（何も貯めない）。"""
+    entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
+    client = _FakeClient(
+        describe=_make_metadata(),
+        object_describes={"Opportunity": _main_describe("Opportunity")},
+    )
+    site_for, _ = _site_for(client)
+
+    run_fetch([entry], site_for=site_for, **_settings(tmp_path))
+    run_fetch([entry], site_for=site_for, **_settings(tmp_path))
+
+    assert len(client.report.describe_calls) == 2
+    assert not (tmp_path / "レポート定義").exists()
 
 
 def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
