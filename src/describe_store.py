@@ -279,7 +279,7 @@ def upsert_object_rows(
     """CSV の ``(org, object)`` の行を入れ替えて atomic に書き換える。
 
     既存 CSV が無いときは新規作成。 既存 CSV が見出し違いのときは
-    ``CSVError`` を上げる （``_merge_column_names_csv`` と同じやり方）。
+    ``CSVError`` を上げる （``merge_column_names_csv`` と同じやり方）。
     """
     org_key = org.strip().lower()
     obj_key = _normalize_object(object_name)

@@ -156,7 +156,7 @@ def test_run_tables_writes_byte_identical_contract_csv(
     の多数決（``別の表示名あり: …``）をまとめて確かめる。
     """
     # 今日の日付を 2026-10-14 に固定
-    monkeypatch.setattr("src.tables._today_local", lambda: date(2026, 10, 14))
+    monkeypatch.setattr("src.tables.build._today_local", lambda: date(2026, 10, 14))
 
     output_dir = tmp_path / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
