@@ -93,22 +93,3 @@ def adjust_column_widths(
                     horizontal=cell.alignment.horizontal,
                     vertical=cell.alignment.vertical,
                 )
-
-
-def fill_cell_range(
-    worksheet: Any,
-    *,
-    start_row: int,
-    start_col: int,
-    end_row: int,
-    end_col: int,
-    color: str,
-) -> None:
-    """指定範囲のセルを ``color`` で塗りつぶす。 PatternFill を内部で作る。"""
-    from openpyxl.styles import PatternFill
-
-    fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
-    for r in range(start_row, end_row + 1):
-        for c in range(start_col, end_col + 1):
-            cell = worksheet.cell(row=r, column=c)
-            cell.fill = fill

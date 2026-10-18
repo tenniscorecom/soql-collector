@@ -90,7 +90,6 @@ _ERROR_REASON_MAX_LENGTH = 200
 ROW_CHECK_OVER = "超えている"
 ROW_CHECK_UNDER = "超えていない"
 ROW_CHECK_UNKNOWN = "判定不可"
-ROW_CHECK_DISABLED = "未実施"
 
 # ``reportType.type`` から主オブジェクトが取れなかったときの代替候補として、
 # 列キーの先頭を最大何個試すか。 多すぎても 1 度目で見つかることが多いので、

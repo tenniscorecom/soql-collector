@@ -998,32 +998,6 @@ def _apply_incomplete_marker(
     return f"{INCOMPLETE_MARKER}\n{soql}", f"{INCOMPLETE_MARKER}\n{count_soql}"
 
 
-def build_count_soql(record: ReportRecord) -> tuple[str | None, int | None]:
-    """``record.soql_draft`` に組み立て済みの件数用 SOQL と ``limit`` を返す。
-
-    文字列の切り貼りはしない。 ``build_soql(record)`` が同じ部品
-    (``select_lines`` / ``where_lines``) から組み立てた ``count_soql`` を
-    そのまま返す。 ``fetch.py`` では ``build_soql`` を 1 レポート分につき
-    1 回しか呼ばず、 その戻り値を record に持たせておいて、ここで読み出す。
-
-    Args:
-        record: ``ReportRecord`` 互換 (``main_object`` / ``report`` /
-            ``column_map`` 属性があれば良い )。 ``soql_draft`` 属性があれば
-            それを使う。 無ければ ``build_soql(record)`` を呼んで組み立てる。
-
-    Returns:
-        ``(count_soql, limit)``:
-        - ``count_soql`` … ``SELECT COUNT() FROM ... WHERE ...`` の SOQL 。
-          ``build_soql`` が ``作れず`` のときは ``None`` 。
-        - ``limit`` … ``topRows.rowLimit`` の値。 無い / 読めないときは ``None`` 。
-    """
-    soql_draft = record.soql_draft or build_soql(record)
-
-    if soql_draft.status == STATUS_NONE or not soql_draft.count_soql:
-        return None, soql_draft.limit
-    return soql_draft.count_soql, soql_draft.limit
-
-
 def _extract_top_rows_limit(metadata: dict[str, Any]) -> int | None:
     """``topRows.rowLimit``（入口で正の整数か None にそろえてある）を返す。"""
     return (metadata.get("topRows") or {}).get("rowLimit")

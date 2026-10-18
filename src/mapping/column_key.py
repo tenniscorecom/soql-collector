@@ -10,9 +10,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from src.mapping.chains import ChainCandidate
-from src.mapping.normalizers import normalize_identifier
-
 # 列キーから SOQL 列名を取りに行くときのパスの最大段数。 6 段以上なら
 # 経路が長すぎると判断して表示名引き当てにフォールバックする
 COLUMN_KEY_PATH_MAX_DEPTH: int = 5
@@ -39,29 +36,6 @@ def candidate_relationship_names(fields: list[dict[str, Any]], limit: int = 10) 
     列キーからの経路たどりに失敗したときの備考で使う。
     """
     return [field["relationshipName"] for field in fields if field.get("relationshipName")][:limit]
-
-
-def prefix_matches(chain_candidate: ChainCandidate, prefix: str) -> bool:
-    """列キーの最初の ``.`` の前の語が、 候補の鎖と一致するか。
-
-    一致条件: 大文字小文字・``_`` を無視して、 次のいずれかと等しい
-
-    - 鎖の最初のリレーション名 （``"A.Owner"`` → ``"A"``）
-    - 鎖の末端オブジェクト名 （``"What.Owner"`` → ``"User"``）
-
-    末端オブジェクト名は鎖の行き先そのものなので、 鎖が深くなっても
-    ``prefix`` が末端オブジェクトを指している場合は一致する。
-    """
-    if not chain_candidate.chain:
-        return False
-    parts = chain_candidate.chain.split(".")
-    first_rel = parts[0]
-    normalized_prefix = normalize_identifier(prefix)
-    if normalize_identifier(first_rel) == normalized_prefix:
-        return True
-    if normalize_identifier(chain_candidate.object_name) == normalized_prefix:
-        return True
-    return False
 
 
 def _resolve_name_field_for_reference(

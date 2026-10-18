@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -81,7 +81,6 @@ class Diagram:
 
     main_object: str
     root: DiagramNode  # 常に 1 ノード （主オブジェクト自身）
-    nodes_by_name: dict[str, DiagramNode] = field(default_factory=dict)
 
     def render_tree_lines(self) -> list[str]:
         """Excel に貼る字下げツリーを行のリストで返す。

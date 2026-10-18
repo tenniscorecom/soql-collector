@@ -1491,68 +1491,6 @@ def test_count_soql_with_top_rows_returns_limit_and_no_limit_clause() -> None:
     assert draft.limit == 42
 
 
-def test_build_count_soql_reads_from_soql_draft() -> None:
-    """``build_count_soql(record)`` は ``record.soql_draft`` の ``count_soql`` /
-    ``limit`` をそのまま返す (文字列を切り貼りしない)。"""
-    column_map = _column_map_with_types(
-        [
-            ("Subject", "Subject", "string"),
-            ("What.Name", "What.Name", "string"),
-            ("Owner.Name", "Owner.Name", "string"),
-        ]
-    )
-    record = _make_record(
-        detail_columns=["Subject", "What.Name", "Owner.Name"],
-        column_map=column_map,
-        report_filters=[
-            {"column": "Subject", "operator": "contains", "value": "A LIMIT B"},
-            {"column": "What.Name", "operator": "equals", "value": "ORDER BY B"},
-        ],
-        report_boolean_filter="1 OR 2",
-        top_rows={"rowLimit": 10},
-    )
-    # ``build_soql`` を回して ``soql_draft`` を持つ record を作る
-    draft = build_soql(record)
-    record_with_draft = ReportRecord(
-        key=record.key,
-        summary=record.summary,
-        report_id=record.report_id,
-        url=record.url,
-        main_object=record.main_object,
-        report=record.report,
-        objects=record.objects,
-        relations=record.relations,
-        column_map=record.column_map,
-        warnings=record.warnings,
-        soql_draft=draft,
-    )
-
-    from src.soql_builder import build_count_soql
-
-    count_soql, limit = build_count_soql(record_with_draft)
-    # ``build_soql`` が ``STATUS_NONE`` で無いので count_soql が返る
-    assert count_soql is not None
-    # このドラフトは ``topRows`` だけで ``sortBy`` が無いので missing に
-    # ``並び順が無いので LIMIT は出さない`` が入り、 結果は ``STATUS_PARTIAL``。
-    # 一部作れずの SOQL には 1 行目に未完成の印が付く
-    assert count_soql.startswith(f"{INCOMPLETE_MARKER}\nSELECT COUNT()\n")
-    assert limit == 10
-    # SELECT 部分 (``\nFROM`` の前) は ``SELECT COUNT()`` 1 行だけ
-    select_part = count_soql.split("\nFROM", 1)[0]
-    # 印の行を覗いた SELECT 行だけが残る
-    assert select_part.endswith("SELECT COUNT()")
-    # ``ORDER BY`` / ``LIMIT`` は末尾に付かない (``ORDER BY`` / ``LIMIT`` 句
-    # として出てこないこと。「値の ``ORDER BY`` / ``LIMIT``」 は WHERE 内に
-    # ``%A LIMIT B%`` / ``'ORDER BY B'`` として含まれているのを確認する)
-    soql_no_value_orderby = count_soql.replace("'ORDER BY B'", "")
-    soql_no_value_limit = soql_no_value_orderby.replace("'%A LIMIT B%'", "")
-    assert "ORDER BY" not in soql_no_value_limit.upper()
-    assert "LIMIT" not in soql_no_value_limit.upper()
-    # 値が壊れていない (元の SOQL の WHERE と一致)
-    assert "( Subject LIKE '%A LIMIT B%' )" in count_soql
-    assert "( What.Name = 'ORDER BY B' )" in count_soql
-
-
 def test_count_soql_for_three_columns_and_value_limit_does_not_break_wire() -> None:
     """3 列 + 値に ``LIMIT`` / ``ORDER BY`` を含む条件で ``_FakeClient`` の
     ``/query?q=...`` 側の SOQL 形 assert を通ること自体は、

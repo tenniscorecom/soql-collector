@@ -37,12 +37,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 1 つの CSV ファイルあたりの選択肢の最大値数。 超えたら末尾に ``…`` を付ける
-PICKLIST_LIMIT = 30
-
-# 「複数候補あり」 備考に並べる鎖+項目の最大件数
-MULTIPLE_CANDIDATES_LIMIT = 5
-
 # 一覧 / 列の対応 シートの 1 行目に出す案内文
 _ANNOUNCEMENT_TEXT = (
     "直すときは input/列の直し.xlsx の『直したSOQL列名』に書いて、もう一度実行してください。"
@@ -50,9 +44,6 @@ _ANNOUNCEMENT_TEXT = (
 
 # 警告 「オブジェクト {name} の describe に失敗 …」 を (name, reason) に分ける
 DESCRIBE_FAILURE_PATTERN = re.compile(r"^オブジェクト (.+?) の describe に失敗(.*)$")
-
-# 1 レポートの中で同じ表示名が複数回現れたときの 取得できなかった項目 シートの理由
-DUPLICATE_LABEL_REASON = "同じレポート内で表示名が重複"
 
 # xlsx / csv 出力ファイル名 （既定値）
 XLSX_NAME = "SOQL調査.xlsx"
@@ -65,12 +56,6 @@ COLUMN_NAMES_CSV_NAME = "列名の対応.csv"
 SHEET_OVERVIEW = "一覧"
 SHEET_COLUMNS = "列の対応"
 SHEET_RELATION_DIAGRAM = "関係図"
-
-SHEET_NAMES_IN_ORDER: tuple[str, ...] = (
-    SHEET_OVERVIEW,
-    SHEET_COLUMNS,
-    SHEET_RELATION_DIAGRAM,
-)
 
 # テーブル名 （Excel テーブル、 英数字のみ）
 TABLE_OVERVIEW = "T_Overview"
@@ -149,7 +134,6 @@ class _ResolvedField:
     reference_to: str
     pii_status: str
     pii_basis: str
-    report_count: int
     keys: tuple[str, ...]
     other_label_note: str
 
@@ -499,7 +483,6 @@ def _aggregate_resolved_fields(
                 reference_to=first_col["参照先オブジェクト"],
                 pii_status=pii_status,
                 pii_basis=pii_basis,
-                report_count=len(keys),
                 keys=tuple(keys),
                 other_label_note=other_note,
             )

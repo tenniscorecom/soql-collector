@@ -104,11 +104,6 @@ class ColumnFixRow:
     used_in_reports: str
     updated_at: str
 
-    @property
-    def has_user_fix(self) -> bool:
-        """「直したSOQL列名」 に人が値を入れていれば True 。"""
-        return bool(self.fixed_soql_name)
-
     def to_dict(self) -> dict[str, str]:
         return {
             "状態": self.status,
