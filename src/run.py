@@ -47,11 +47,17 @@ from src import column_fix_xlsx
 from src.column_fix_xlsx import ColumnFixRow
 from src.describe_store import DescribeStore
 from src.fetch import FetchOutcome, ReportRecord, SiteFor, run_fetch
-from src.master import MasterEntry, filter_enabled, read_master
+from src.master import MasterEntry, filter_survey_targets, read_master
 from src.report_store import ReportStore
 from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
+
+# 今回調べないレポート（管理表から消えた・「有効」が ×・「調査」が ○ でない）の、
+# 貯めたレポート定義を実行の最後に消す。 消すのは ``data/レポート定義/`` の中だけ
+# （``SOQL調査.xlsx`` / ``SOQL資料/`` / ``列名の対応.csv`` / ``項目定義.csv`` には触らない）。
+# 消したものは、 次に調べるときに取り直しになる。
+PRUNE_REPORT_STORE: bool = True
 
 
 @dataclass(frozen=True)
@@ -149,7 +155,26 @@ def _fetch(
         report_store.hit_count,
         report_store.api_count,
     )
+    if PRUNE_REPORT_STORE:
+        _prune_report_store(report_store, entries)
     return outcomes
+
+
+def _prune_report_store(report_store: ReportStore, entries: list[MasterEntry]) -> None:
+    """今回調べないレポートの、 貯めたレポート定義を消す（出力ファイルや項目定義には触らない）。"""
+    keep_ids: set[str] = set()
+    for entry in entries:
+        try:
+            keep_ids.add(report_id_from_url(entry.url))
+        except SalesforceReportIDNotFoundError:
+            continue  # URL が壊れた行は、 取得のときに個別の失敗として出ている
+    removed = report_store.prune(keep_ids)
+    if removed:
+        logger.info(
+            "今回調べないレポートの、 貯めたレポート定義を消しました: %d 件（%s）",
+            len(removed),
+            ", ".join(removed),
+        )
 
 
 def _write_output(
@@ -223,18 +248,20 @@ def run(
             file_paths = read_file_paths()
 
         all_entries = read_master(file_paths.master_xlsx_path)
-        entries = filter_enabled(all_entries)
-        enabled_count = len(entries)
+        entries = filter_survey_targets(all_entries)
+        enabled_count = sum(1 for entry in all_entries if entry.enabled)
+        target_count = len(entries)
         total_count = len(all_entries)
 
         # 設定は ``config.SURVEY.*`` / ``config.PII.*`` を直接読む （
         # キー欠落ならこの下で ``ConfigError`` ）
         logger.info(
-            "取得開始: 管理表=%s 全行数=%d 有効=%d 出力先=%s "
+            "取得開始: 管理表=%s 全行数=%d 有効=%d 調査対象=%d 出力先=%s "
             "RELATED_DEPTH=%d RELATED_MAX=%d ROW_LIMIT=%s SIMILAR=%.2f",
             file_paths.master_xlsx_path,
             total_count,
             enabled_count,
+            target_count,
             file_paths.output_dir,
             config.SURVEY.RELATED_DEPTH,
             config.SURVEY.RELATED_MAX,
@@ -247,7 +274,9 @@ def run(
             return 0
 
         if not entries:
-            logger.error("管理表に『有効』が ○ の行がありません")
+            logger.error(
+                "管理表に調べる行がありません（『有効』が ○ の行。 『調査』列があれば『調査』も ○）"
+            )
             return 2
 
         # 列の直しを読む（見出し違いなら ExcelError で止める）

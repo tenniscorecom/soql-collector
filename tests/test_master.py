@@ -9,9 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from src.master import MasterEntry, _is_enabled, filter_enabled, read_master
+from src.master import MasterEntry, _is_enabled, filter_survey_targets, read_master
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
@@ -35,10 +36,13 @@ def _build_master(path: Path, rows: list[dict]) -> None:
         "0件あり",
         "備考",
     ]
+    # 「調査」列は任意。 行のどれかが「調査」を持つときだけ、 列を足す
+    if any("調査" in row for row in rows):
+        headers.append("調査")
     sheet.append(headers)
     for row in rows:
         sheet.append([row.get(col, "") for col in headers])
-    table_ref = f"A1:I{len(rows) + 1}"
+    table_ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
     table = Table(displayName="PY_T_ReportEntry", ref=table_ref)
     table.tableStyleInfo = TableStyleInfo(
         name="TableStyleMedium2",
@@ -117,7 +121,7 @@ def test_read_master_enabled_variants(tmp_path: Path) -> None:
     assert [entry.enabled for entry in entries] == [True, False, True, True, False]
 
 
-def test_filter_enabled_drops_disabled(tmp_path: Path) -> None:
+def test_filter_survey_targets_drops_disabled(tmp_path: Path) -> None:
     path = tmp_path / "master.xlsx"
     _build_master(
         path,
@@ -127,8 +131,65 @@ def test_filter_enabled_drops_disabled(tmp_path: Path) -> None:
         ],
     )
 
-    enabled = filter_enabled(read_master(path))
-    assert [entry.key for entry in enabled] == ["1"]
+    targets = filter_survey_targets(read_master(path))
+    assert [entry.key for entry in targets] == ["1"]
+
+
+def test_master_without_survey_column_targets_every_enabled_row(tmp_path: Path) -> None:
+    """「調査」列が無い管理表は、 今までどおり「有効」だけで決まる。"""
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {"ID": "1", "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view", "有効": "○"},
+            {"ID": "2", "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view", "有効": "×"},
+        ],
+    )
+
+    entries = read_master(path)
+
+    assert [entry.survey for entry in entries] == [True, True]
+    assert [entry.key for entry in filter_survey_targets(entries)] == ["1"]
+
+
+def test_survey_column_picks_which_enabled_rows_to_survey(tmp_path: Path) -> None:
+    """「調査」列があれば、 「有効」のうち「調査」が ○ の行だけが対象になる。"""
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {
+                "ID": "1",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
+                "有効": "○",
+                "調査": "○",
+            },
+            {
+                "ID": "2",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view",
+                "有効": "○",
+                "調査": "",
+            },
+            {
+                "ID": "3",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000CCCCC/view",
+                "有効": "○",
+                "調査": "×",
+            },
+            {
+                "ID": "4",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000DDDDD/view",
+                "有効": "×",
+                "調査": "○",
+            },
+        ],
+    )
+
+    entries = read_master(path)
+
+    assert [entry.survey for entry in entries] == [True, False, False, True]
+    # 有効でない行は、 「調査」が ○ でも対象にならない
+    assert [entry.key for entry in filter_survey_targets(entries)] == ["1"]
 
 
 def test_read_master_bad_url_kept_as_text(tmp_path: Path) -> None:
