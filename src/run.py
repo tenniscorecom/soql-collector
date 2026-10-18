@@ -48,6 +48,7 @@ from src.column_fix_xlsx import ColumnFixRow
 from src.describe_store import DescribeStore
 from src.fetch import FetchOutcome, ReportRecord, SiteFor, run_fetch
 from src.master import MasterEntry, filter_enabled, read_master
+from src.report_store import ReportStore
 from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,7 @@ def _fetch(
     """``run_fetch`` を呼び ``outcomes`` を返す。 所要時間と describe の集計ログもここで出す。"""
     started_at = time.perf_counter()
     describe_store = DescribeStore.load(file_paths.describe_csv_path)
+    report_store = ReportStore.load(file_paths.describe_csv_path)
     refresh_set: set[tuple[str, str]] = set()
     outcomes = list(
         run_fetch(
@@ -122,6 +124,7 @@ def _fetch(
             describe_csv_path=file_paths.describe_csv_path,
             site_for=site_for,
             describe_store=describe_store,
+            report_store=report_store,
             refresh_set=refresh_set,
             column_fix_overrides=column_fix_overrides,
         )
@@ -140,6 +143,11 @@ def _fetch(
         describe_store.csv_hit_count,
         describe_store.api_count,
         describe_store.refresh_count,
+    )
+    logger.info(
+        "レポート定義の describe: 保存データから %d 件 / Salesforce から %d 件",
+        report_store.hit_count,
+        report_store.api_count,
     )
     return outcomes
 

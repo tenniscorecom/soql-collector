@@ -57,6 +57,7 @@ from comken.toolbox.salesforce.report import report_id_from_url
 from src import column_fix_xlsx, mapping, pii, soql_builder
 from src.describe_store import DescribeStore, active_picklist_values, org_from_url
 from src.master import MasterEntry
+from src.report_store import ReportStore
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +247,7 @@ def run_fetch(
     dry_run: bool = False,
     site_for: SiteFor | None = None,
     describe_store: DescribeStore | None = None,
+    report_store: ReportStore | None = None,
     refresh_set: set[tuple[str, str]] | None = None,
     column_fix_overrides: dict[tuple[str, str], Any] | None = None,
 ) -> list[FetchOutcome]:
@@ -289,6 +291,8 @@ def run_fetch(
 
     if describe_store is None:
         describe_store = DescribeStore.empty(describe_csv_path)
+    if report_store is None:
+        report_store = ReportStore.empty()
     if refresh_set is None:
         refresh_set = set()
     if column_fix_overrides is None:
@@ -332,6 +336,7 @@ def run_fetch(
             pii_person_objects=pii_person_objects,
             site_for=site_for,
             store=describe_store,
+            report_store=report_store,
             refresh_set=refresh_set,
             column_fix_overrides=column_fix_overrides,
         )
@@ -814,6 +819,7 @@ def _fetch_one(
     site_for: SiteFor,
     store: DescribeStore,
     refresh_set: set[tuple[str, str]],
+    report_store: ReportStore | None = None,
     column_fix_overrides: dict[tuple[str, str], Any] | None = None,
 ) -> FetchOutcome:
     """1 ID の describe を取り、 ``ReportRecord`` を組み立てて返す。
@@ -838,6 +844,7 @@ def _fetch_one(
                 org=org,
                 report_id=report_id,
                 store=store,
+                report_store=report_store or ReportStore.empty(),
                 row_limit=row_limit,
                 refresh_set=refresh_set,
                 related_depth=related_depth,
@@ -892,7 +899,7 @@ class _FetchState:
     relations: list[RelationRecord] = dc_field(default_factory=list)
     row_check: RowCheck | None = None
     slim_report: SlimReport = dc_field(default_factory=lambda: _slim_report(None))
-    raw_metadata: dict[str, Any] = dc_field(default_factory=dict)
+    dropped_keys: tuple[str, ...] = ()
     warnings: list[str] = dc_field(default_factory=list)
 
 
@@ -939,6 +946,7 @@ def _run_within_site(
     org: str,
     report_id: str,
     store: DescribeStore,
+    report_store: ReportStore,
     row_limit: bool,
     refresh_set: set[tuple[str, str]],
     related_depth: int,
@@ -947,17 +955,24 @@ def _run_within_site(
     state: _FetchState,
 ) -> None:
     """``with site_class() as client:`` の中で行う一連の取得・組み立てを行う。"""
-    try:
-        metadata = client.report.describe(report_id)
-    except SalesforceRequestError as exc:
-        state.warnings.append(
-            f"レポート describe に失敗（HTTP {exc.status_code}）: {report_id}\n{exc.detail}"
-        )
-        return
-
-    state.raw_metadata = metadata
-    # 境界: レポート定義はここで 1 回だけ整え、 以後は整えた値だけを使う
-    state.slim_report = _slim_report(metadata)
+    # 境界: レポート定義はここで 1 回だけ整え、 以後は整えた値だけを使う。
+    # 貯めてあればそれを使い（期限は無い。 作り直すときは ``レポート定義/`` を消す）、
+    # 無ければ API で取って貯める
+    cached = report_store.get(org, report_id)
+    if cached is not None:
+        state.slim_report = cached.slim_report
+        state.dropped_keys = cached.dropped_keys
+    else:
+        try:
+            metadata = client.report.describe(report_id)
+        except SalesforceRequestError as exc:
+            state.warnings.append(
+                f"レポート describe に失敗（HTTP {exc.status_code}）: {report_id}\n{exc.detail}"
+            )
+            return
+        state.slim_report = _slim_report(metadata)
+        state.dropped_keys = _collect_dropped_keys(metadata)
+        report_store.put(org, report_id, state.slim_report, state.dropped_keys)
 
     # 2000 行チェック: ``row_limit`` が True のときだけ実行
     state.row_check = _check_row_count(client, report_id) if row_limit else None
@@ -1202,8 +1217,7 @@ def _build_fetch_outcome(
             f"関連オブジェクトは取得していません"
         )
 
-    dropped_keys = _collect_dropped_keys(state.raw_metadata)
-    dropped_keys_warning = _dropped_keys_warning_text(dropped_keys)
+    dropped_keys_warning = _dropped_keys_warning_text(state.dropped_keys)
     if dropped_keys_warning:
         warnings.append(dropped_keys_warning)
 

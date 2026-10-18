@@ -319,6 +319,7 @@ def test_run_filters_disabled_rows(
         dry_run=False,
         site_for=None,
         describe_store=None,
+        report_store=None,
         refresh_set=None,
         column_fix_overrides=None,
     ):
@@ -474,6 +475,7 @@ def test_run_writes_jsons_and_csvs(
         dry_run=False,
         site_for=None,
         describe_store=None,
+        report_store=None,
         refresh_set=None,
         column_fix_overrides=None,
     ):
@@ -553,6 +555,7 @@ def test_run_partial_failure_continues_and_returns_1(
         dry_run=False,
         site_for=None,
         describe_store=None,
+        report_store=None,
         refresh_set=None,
         column_fix_overrides=None,
     ):
@@ -623,6 +626,7 @@ def test_run_returns_1_when_run_tables_raises(
         dry_run=False,
         site_for=None,
         describe_store=None,
+        report_store=None,
         refresh_set=None,
         column_fix_overrides=None,
     ):
