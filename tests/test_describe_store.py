@@ -1,8 +1,8 @@
 """``describe_store`` のテスト。
 
-「 1 回目の実行で API を呼んだオブジェクトが 2 回目の実行でも API を呼ばずに
-使われること 」 と 「別組織では別物扱い」「取り直し」「 見出し違いで
-失敗 」 を、 ``tmp_path`` の CSV と既存のフェイククライアントで検証する。
+「1 回目の実行で API を呼んだオブジェクトが 2 回目の実行でも API を呼ばずに
+使われること」 と 「別組織では別物扱い」「取り直し」「見出し違いで
+失敗」 を、 ``tmp_path`` の CSV と既存のフェイククライアントで検証する。
 
 設計メモ （このテストは実装の現状に合わせて書かれている）:
 
@@ -810,8 +810,8 @@ def test_run_logs_describe_counts(tmp_path: Path, caplog) -> None:
     )
     run_fetch([entry], site_for=_site_for(client), **settings)
     # ``run_fetch`` は終了ログを出さない （run.py 側） ので、 テストは
-    # ``DescribeStore`` のカウントを直接見て確認する。 （ 終了ログは run.py の
-    # 統合テストで別途確かめる ）
+    # ``DescribeStore`` のカウントを直接見て確認する。 （終了ログは run.py の
+    # 統合テストで別途確かめる）
 
 
 def test_describe_store_counts_track_sources(tmp_path: Path) -> None:

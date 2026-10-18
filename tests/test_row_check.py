@@ -175,8 +175,8 @@ def test_normal_get_marks_under_with_count() -> None:
 
 
 def test_summary_format_calls_get_and_marks_under_with_count() -> None:
-    """SUMMARY 形式は ``get()`` を呼んで 2000 件チェックが回る（ comken が
-    サマリー形式も明細の行を返すようになったため ）。 正常終了なら ``超えていない``
+    """SUMMARY 形式は ``get()`` を呼んで 2000 件チェックが回る（comken が
+    サマリー形式も明細の行を返すようになったため）。 正常終了なら ``超えていない``
     と行数。
     """
     summary_metadata = _metadata("SUMMARY")

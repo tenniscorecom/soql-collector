@@ -5,13 +5,13 @@ Excel 用の字下げツリーと Mermaid の ``flowchart LR`` を出力する�
 
 - 同じ主オブジェクトのレコードが複数あれば、 ``relations`` を ``(親, 項目,
   リレーション名, 子)`` で **マージ** する。 同じ辺が複数回現れても 1 本に。
-- 深さ優先、 同じ親の中では **参照項目の出現順** （ ``describe`` の ``fields``
-  の順 ） を優先する。 マージした ``fields`` の順は、 出現順を保つ
+- 深さ優先、 同じ親の中では **参照項目の出現順** （``describe`` の ``fields``
+  の順） を優先する。 マージした ``fields`` の順は、 出現順を保つ
 - 同じオブジェクトに 2 度目に着いたときは、 その先を展開せず
   ``（上に出ています）`` と書く。 循環・重複で木が無限にならないように。
   自己参照 （``Account.Parent`` → ``Account``） も同じ扱い
-- ポリモーフィック参照は ``referenceTo`` のエントリごとに 1 行 （ 既存
-  の ``RelationRecord`` 表現と同じ ）
+- ポリモーフィック参照は ``referenceTo`` のエントリごとに 1 行 （既存
+  の ``RelationRecord`` 表現と同じ）
 - 段は ``RELATED_DEPTH=2`` で掘る。 経路上の describe は ``record.objects``
   に既載のものしか使わない （API を取り直さない）。 これで木の組み立ては
   ``records`` を渡せば決定的になる
@@ -24,8 +24,8 @@ Excel 用の字下げツリーと Mermaid の ``flowchart LR`` を出力する�
   主オブジェクト名ごとに ``Diagram`` を組み立てる。 ``records`` が空か、
   主オブジェクトが取れていない record が無いときは空 dict
 - ``Diagram.render_tree_lines() -> list[str]``
-  Excel のセルに貼る字下げツリー （ 例: ``Task`` / ``├ What → Account`` /
-  ``│ └ Owner → User`` / ``└ Owner → User`` ）
+  Excel のセルに貼る字下げツリー （例: ``Task`` / ``├ What → Account`` /
+  ``│ └ Owner → User`` / ``└ Owner → User``）
 - ``Diagram.render_mermaid_lines() -> list[str]``
   Mermaid ``flowchart LR`` の本文 （先頭に ``flowchart LR`` 、 末尾に空行）
 - ``write_main_object_diagrams(output_dir, records) -> tuple[Path, ...]``
@@ -210,7 +210,7 @@ def _build_node(
 ) -> DiagramNode:
     """再帰で ``DiagramNode`` を組み立てる。 ``visited`` は循環を防ぐための
     既に辿ったオブジェクト名の集合。 ``max_depth`` を超えると子を展開しない
-    （ ``label`` は 「（上に出ています）」 に置換 ） 。"""
+    （``label`` は 「（上に出ています）」 に置換） 。"""
     if max_depth <= 1:
         # 1 段だけ掘る指定なら、 ここでは子を出さない
         return DiagramNode(

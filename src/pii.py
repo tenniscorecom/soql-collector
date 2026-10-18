@@ -1,7 +1,7 @@
 """個人情報（PII） の判定ロジック（純粋関数）。
 
-レポートの **出力に出る列** （ detailColumns / groupingsDown / groupingsAcross /
-集計対象列 ） だけを対象にし、 絞り込みにだけ使う列は対象外。 判定はあくまで
+レポートの **出力に出る列** （detailColumns / groupingsDown / groupingsAcross /
+集計対象列） だけを対象にし、 絞り込みにだけ使う列は対象外。 判定はあくまで
 機械的な目安で、 最終判断は人が行う。 曖昧なものは 「要確認」 に倒す
 （「なし」 に倒さない）。
 
@@ -21,11 +21,11 @@
 - **1 文字の日本語キーワード** （``姓`` / ``名``）: 表示名が **完全一致**
   するときだけ一致 （前後の空白は除く）。 API 名には適用しない。
   ``商談名`` は ``名`` に **当たらない**
-- **ASCII キーワード** （ ``email`` / ``phone`` / ``city`` / ``state`` /
+- **ASCII キーワード** （``email`` / ``phone`` / ``city`` / ``state`` /
   ``zip`` / ``fax`` / ``birth`` / ``gender`` / ``mobile`` / ``street`` /
-  ``postal`` ）: API 名・表示名を **トークン** に分解 （ ``_`` / ``__c`` /
+  ``postal``）: API 名・表示名を **トークン** に分解 （``_`` / ``__c`` /
   空白 / camelCase の切れ目 `BillingCity` → `Billing` `City` /
-  数字との切れ目 ） して、 トークンがキーワードに **一致** するとき一致する。
+  数字との切れ目） して、 トークンがキーワードに **一致** するとき一致する。
   ``birth`` だけはトークンの **先頭一致** も許す
 - **2 文字以上の日本語キーワード** （``氏名`` / ``名前`` / ``メール`` など）
   は従来どおり **部分一致** （大文字小文字を無視）
@@ -44,8 +44,8 @@ from typing import Any
 # 個人情報とみなす Salesforce 項目の型
 PII_TYPES: frozenset[str] = frozenset({"email", "phone", "address", "location"})
 
-# 既定のキーワード（ 1 文字日本語は表示名完全一致、 ASCII は API 名・表示名を
-# トークン分解してトークン一致、 2 文字以上日本語は部分一致 ）
+# 既定のキーワード（1 文字日本語は表示名完全一致、 ASCII は API 名・表示名を
+# トークン分解してトークン一致、 2 文字以上日本語は部分一致）
 DEFAULT_KEYWORDS: tuple[str, ...] = (
     "氏名",
     "名前",
@@ -228,12 +228,12 @@ def _match_keyword(field_name: str, label: str, keywords: Iterable[str]) -> str 
     - 1 文字の日本語キーワード（``姓`` / ``名`` など）: 表示名が
       **キーワードと完全一致** するときだけ一致とする （前後の空白は除く）。
       API 名には適用しない
-    - ASCII キーワード（ ``email`` / ``phone`` / ``city`` / ``state`` /
+    - ASCII キーワード（``email`` / ``phone`` / ``city`` / ``state`` /
       ``zip`` / ``fax`` / ``birth`` / ``gender`` / ``mobile`` / ``street`` /
-      ``postal`` など ）: API 名・表示名を **トークン** に分解し、 いずれかの
+      ``postal`` など）: API 名・表示名を **トークン** に分解し、 いずれかの
       トークンがキーワードに **一致** するとき一致とする。 ``birth`` だけは
-      トークンの **先頭一致** も許す （ ``Birthdate`` / ``BirthDate`` /
-      ``Birth_Date`` などにヒット ）
+      トークンの **先頭一致** も許す （``Birthdate`` / ``BirthDate`` /
+      ``Birth_Date`` などにヒット）
     - 上記以外のキーワード（2 文字以上の日本語）: 表示名または API 名に
       **部分一致** するかを従来どおり見る
 
@@ -292,8 +292,8 @@ def _tokenize_identifier(value: object) -> list[str]:
     - Salesforce のカスタム接尾辞 ``__c`` は落とす
     - ``_`` と空白で先に切る （``Mailing_State`` → ``Mailing`` / ``State``）
     - camelCase の切れ目で切る （``BillingCity`` → ``Billing`` / ``City``）
-    - ASCII レターと数字の切れ目で切る （ ``PersonEmail2`` → ``Person`` /
-      ``Email`` / ``2`` ）
+    - ASCII レターと数字の切れ目で切る （``PersonEmail2`` → ``Person`` /
+      ``Email`` / ``2``）
     - 結果のトークン列から、 数字だけ ・ 非 ASCII のものを除く
 
     戻り値の例:
@@ -320,8 +320,8 @@ def _tokenize_identifier(value: object) -> list[str]:
         for token in piece.split():
             if token.isdigit():
                 continue
-            # ASCII レターを含むトークンだけ残す （ 日本語ラベルに混ざった
-            # 英字だけ拾うイメージ ）。 非 ASCII の文字が含まれていたら捨てる。
+            # ASCII レターを含むトークンだけ残す （日本語ラベルに混ざった
+            # 英字だけ拾うイメージ）。 非 ASCII の文字が含まれていたら捨てる。
             if not token.isascii():
                 continue
             if any(ch.isalpha() for ch in token):

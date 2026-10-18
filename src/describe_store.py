@@ -196,9 +196,9 @@ def describe_to_csv_rows(
 def csv_rows_to_describe(rows: list[dict[str, str]]) -> dict[str, Any]:
     """CSV の行 dict から ``describe_object`` 戻り値と同じ形の dict を組み立てる。
 
-    ``_slim_object`` が読むキー（ ``name`` / ``label`` / ``custom`` / ``fields`` と、
+    ``_slim_object`` が読むキー（``name`` / ``label`` / ``custom`` / ``fields`` と、
     各 field の ``name`` / ``label`` / ``type`` / ``custom`` / ``referenceTo`` /
-    ``relationshipName`` / ``picklistValues`` ）を持たせる。 これで CSV から読んだ値を
+    ``relationshipName`` / ``picklistValues``）を持たせる。 これで CSV から読んだ値を
     ``_slim_object`` に通しても API 直呼びと同じ出力が得られる。 ``rows`` は comken の
     ``CSV`` で読んだ行（見出しを確かめてあり、 値はすべて str）。
     """
@@ -390,8 +390,8 @@ class DescribeStore:
     def record_api_success(self, org: str, object_name: str, describe: dict[str, Any]) -> None:
         """API で取得した describe をメモリと CSV に書く。
 
-        CSV への書き出しが失敗してもメモリには載せる （ 1 回の実行の中では
-        同じオブジェクトを取り直さないため ） 。
+        CSV への書き出しが失敗してもメモリには載せる （1 回の実行の中では
+        同じオブジェクトを取り直さないため） 。
         """
         key = _key(org, object_name)
         self.memory_cache[key] = {

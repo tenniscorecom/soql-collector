@@ -1,7 +1,7 @@
 """通し（e2e） テスト: ``run_fetch`` → ``run_tables`` → ``SOQL調査.xlsx``
 と ``列名の対応.csv`` の検証。
 
-脳内スクラッチパッドの再現シナリオ （ Task / Account / User の偽 describe
+脳内スクラッチパッドの再現シナリオ （Task / Account / User の偽 describe
 と、 列 SUBJECT / ACCOUNT.NAME / OWNER.NAME、 絞り込み 2 件、 組立式
 "1 OR 2"、 並び順、 topRows を持つレポート） を ``run_fetch`` から
 ``run_tables`` まで通して動かし、 xlsx のシートと csv の中身を厳密に確かめる。

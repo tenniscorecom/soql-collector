@@ -20,16 +20,16 @@
    合計を打ち切り、 超えた名前は ``warnings`` に残す
 6. ``mapping.build_column_map(metadata, main_describe, reason, ...)`` で列対応表
    を組み立てる。 主オブジェクトの describe は **ID ごとに 1 回** だけ取得する
-   （ ``_fetch_object_cached`` のキャッシュを経由するため、 複数 ID が同じ
-   主オブジェクトを参照しても HTTP は 1 回 ）
+   （``_fetch_object_cached`` のキャッシュを経由するため、 複数 ID が同じ
+   主オブジェクトを参照しても HTTP は 1 回）
 
 **出力は CSV だけ**。 ``ReportRecord`` （frozen dataclass） に詰めて
 ``FetchOutcome.record`` で返す。 ``run_tables`` がこの record を受け取って
 CSV を組み立てる。 許可リストでレポート describe から落としたキー名は
 ``_fetch_one`` の ``warnings`` に
 「レポート定義の中で使わなかったキー: ...」 の形でも 1 行入れる
-（ SOQL の組み立てはしない方針。 落としたキー名は引き続き
-可視化のための参考情報として残す ）。
+（SOQL の組み立てはしない方針。 落としたキー名は引き続き
+可視化のための参考情報として残す）。
 """
 
 from __future__ import annotations
@@ -142,8 +142,8 @@ REPORT_METADATA_KEYS: tuple[str, ...] = (
 )
 
 # ``_slim_report`` で残す ``reportExtendedMetadata`` のキー。
-# 3 つだけ（ ``detailColumnInfo`` / ``groupingColumnInfo`` /
-# ``aggregateColumnInfo`` ）。
+# 3 つだけ（``detailColumnInfo`` / ``groupingColumnInfo`` /
+# ``aggregateColumnInfo``）。
 REPORT_EXTENDED_METADATA_KEYS: tuple[str, ...] = (
     "detailColumnInfo",
     "groupingColumnInfo",
@@ -156,8 +156,8 @@ class RelatedNode:
     """幅優先で掘った関連オブジェクト 1 件。
 
     ``describe`` は ``fetcher`` で埋めた状態（``describe_object`` が失敗した
-    ときは ``None``）。 ``depth`` は主オブジェクトから数えた段数（ 主 = 0、
-    1 段目から ``RELATED_DEPTH`` まで ）。
+    ときは ``None``）。 ``depth`` は主オブジェクトから数えた段数（主 = 0、
+    1 段目から ``RELATED_DEPTH`` まで）。
     """
 
     name: str
@@ -229,8 +229,8 @@ class ReportRecord:
     pii: pii.ReportPIIResult = dc_field(
         default_factory=lambda: pii.ReportPIIResult(status="なし", matching_columns=())
     )
-    #: SOQL の下書き。 ``tables`` が組み立てて持たせ、 次段 （ AI に渡す
-    #: Markdown / xlsx ） で読む。 ``None`` のときは下書き未組み立て
+    #: SOQL の下書き。 ``tables`` が組み立てて持たせ、 次段 （AI に渡す
+    #: Markdown / xlsx） で読む。 ``None`` のときは下書き未組み立て
     #: （主オブジェクト不明など、 組み立てそのものが走らなかったケース）
     soql_draft: Any = dc_field(
         default=None,
@@ -377,8 +377,8 @@ def run_fetch(
 # ── ログ ──────────────────────────────────────────────────────────────────
 # 1 レポート分の処理の各節目で INFO を 1 行ずつ出す。 INFO は節目と分岐の
 # 理由だけにとどめ、 値そのもの（個人情報の値など） は絶対に出さない。
-# 失敗時の ERROR は ``run_fetch`` 側で出す。 フォールバック（ except で
-# 続行した箇所 ） の WARNING は ``_fetch_object_cached`` 側で出す。
+# 失敗時の ERROR は ``run_fetch`` 側で出す。 フォールバック（except で
+# 続行した箇所） の WARNING は ``_fetch_object_cached`` 側で出す。
 # ログメッセージは既存スタイル（``管理番号=%s 概要=%s 警告=%d 件``） に
 # そろえる。
 
@@ -446,8 +446,8 @@ def _log_pii(pii_result: pii.ReportPIIResult) -> None:
 # 項目は 8 キーだけに絞る。 許可リストで落としたキー名は別関数
 # ``_collect_dropped_keys()`` で取り出し、 warnings に 1 行入れる。
 #
-# 関連オブジェクト収集は ``_collect_related_objects`` （ slim 前の
-# ``fields[].referenceTo`` / ``relationshipName`` を使う ） に任せて、
+# 関連オブジェクト収集は ``_collect_related_objects`` （slim 前の
+# ``fields[].referenceTo`` / ``relationshipName`` を使う） に任せて、
 # slim は ``_fetch_one`` の最後、 record に詰める直前だけ行う。
 
 
@@ -467,9 +467,9 @@ def _slim_report(metadata: object) -> SlimReport:
     - 戻り値は **必ず** ``reportMetadata`` と ``reportExtendedMetadata`` の 2 つの
       dict を持つ（入力が壊れていれば空の dict）
     - ``reportMetadata``: ``REPORT_METADATA_KEYS`` にあるキーだけ残す。 リストとして
-      読むキーは中身の型をそろえる（ ``detailColumns`` / ``aggregates`` は空でない
+      読むキーは中身の型をそろえる（``detailColumns`` / ``aggregates`` は空でない
       str だけ、 ``reportFilters`` / ``groupingsDown`` / ``groupingsAcross`` /
-      ``sortBy`` は dict だけ、 ``reportType`` は dict ）。 型がそろっている値は元の
+      ``sortBy`` は dict だけ、 ``reportType`` は dict）。 型がそろっている値は元の
       参照のまま
     - ``reportExtendedMetadata``: ``REPORT_EXTENDED_METADATA_KEYS`` の 3 キーだけを、
       ``{列キー: dict}`` の形で残す
@@ -517,8 +517,8 @@ def _slim_report(metadata: object) -> SlimReport:
             "rowLimit": _positive_int(top_rows.get("rowLimit")),
         }
 
-    # ``standardDateFilter`` が 「実質指定なし」 （ start / end が空で
-    # durationValue が空か ``CUSTOM`` ） なら、 下流に空の日付フィルターが
+    # ``standardDateFilter`` が 「実質指定なし」 （start / end が空で
+    # durationValue が空か ``CUSTOM``） なら、 下流に空の日付フィルターが
     # 流れないようにここでキーごと落とす。 内側では「無い」 ものとして
     # 扱う前提で組まれているので、 個別ガードは足さない
     if _is_undated_filter(slimmed_metadata.get("standardDateFilter")):
@@ -539,9 +539,9 @@ def _slim_report(metadata: object) -> SlimReport:
 def _is_undated_filter(date_filter: object) -> bool:
     """``standardDateFilter`` が 「実質指定なし」 なら True。
 
-    定義: ``startDate`` と ``endDate`` がどちらも空 （ ``None`` / 空文字 /
-    空白のみ ） で、 かつ ``durationValue`` が空か ``CUSTOM`` （ 大文字小文字
-    無視 ） 。 相対期間 （``THIS_YEAR`` / ``LAST_N_DAYS:30`` 等） は
+    定義: ``startDate`` と ``endDate`` がどちらも空 （``None`` / 空文字 /
+    空白のみ） で、 かつ ``durationValue`` が空か ``CUSTOM`` （大文字小文字
+    無視） 。 相対期間 （``THIS_YEAR`` / ``LAST_N_DAYS:30`` 等） は
     「指定あり」 なので False。 ``date_filter`` が dict で無いときも
     True （「無かった」 ものとして扱う）
     """
@@ -580,8 +580,8 @@ _TEXT_KEYS_IN_LIST_ITEMS: dict[str, tuple[str, ...]] = {
     "sortBy": ("sortColumn", "sortOrder"),
 }
 
-# dict の値の中で、 文字列として読む値のキー（ dict でなければ None。 Salesforce は
-# 使わない項目を null で返す ）
+# dict の値の中で、 文字列として読む値のキー（dict でなければ None。 Salesforce は
+# 使わない項目を null で返す）
 _TEXT_KEYS_IN_DICT_VALUES: dict[str, tuple[str, ...]] = {
     "reportType": ("type",),
     "standardDateFilter": ("column", "durationValue", "startDate", "endDate"),
@@ -662,12 +662,12 @@ def _collect_dropped_keys(metadata: object) -> tuple[str, ...]:
 def _slim_object(describe: object) -> SlimObject:
     """``describe_object()`` の戻り値を、 内側で検証せずに読める形に整える（境界）。
 
-    - 残す: ``name`` / ``label`` / ``custom`` / ``fields``（ ``childRelationships`` /
-      ``recordTypeInfos`` などは落とす ）
+    - 残す: ``name`` / ``label`` / ``custom`` / ``fields``（``childRelationships`` /
+      ``recordTypeInfos`` などは落とす）
     - ``fields`` の各項目は次の 9 キーに**必ず**この型でそろえる: ``name`` /
       ``label`` / ``type`` / ``relationshipName``（str。 無ければ空文字）、
-      ``custom`` / ``nameField``（bool）、 ``referenceTo``（ 空でない str の
-      リスト ）、 ``picklist``（active な ``value`` を最大 30 件）、
+      ``custom`` / ``nameField``（bool）、 ``referenceTo``（空でない str の
+      リスト）、 ``picklist``（active な ``value`` を最大 30 件）、
       ``picklistTotal``（active な選択肢の総数）
     - 入力が壊れていれば空の値で返す。 入力の dict は書き換えない
     """
@@ -727,8 +727,8 @@ def _check_row_count(client: Any, report_id: str) -> RowCheck:
     - 正常終了 → ``超えていない`` （``rows=len(table)``）
     - 形式エラー （結合レポート・明細の列が無いレポートなど） → ``判定不可`` で
       「この形式のレポートは取得できないため判定できません（結合レポート・明細の列が無いレポートなど）」
-    - 401 / 403 由来の ``SalesforceError`` は呼び出し元に再送出（ レポート全体を
-      失敗扱いにする ）
+    - 401 / 403 由来の ``SalesforceError`` は呼び出し元に再送出（レポート全体を
+      失敗扱いにする）
     - その他の例外 → ``判定不可`` で 例外名＋短い説明
     """
     try:
@@ -793,8 +793,8 @@ def _collect_output_column_refs(
     slim_report: SlimReport,
     column_map: list[dict[str, str]],
 ) -> list[pii.ColumnRef]:
-    """レポートの出力列（ detailColumns / groupingsDown / groupingsAcross /
-    集計対象 ） について PII 評価の入力 ``ColumnRef`` を作る。
+    """レポートの出力列（detailColumns / groupingsDown / groupingsAcross /
+    集計対象） について PII 評価の入力 ``ColumnRef`` を作る。
 
     絞り込みにだけ使う列は対象外。 ``column_map`` が見つからない列は未解決として
     扱う。
@@ -1324,12 +1324,12 @@ def _collect_related_objects(
     ``relations`` は BFS が **終わったあと** に別の処理で作る。 主オブジェクト
     と ``nodes`` の ``fields`` を主→ ``nodes`` の順（``nodes`` は段順） に
     たどり、 参照先が「取れたオブジェクト（主を含む）」 であれば全部
-    1 行にする。 行の ``段`` は **子の段** （主 = 0）。 並びは「 浅い親
-    （主→段順） → 同じ親内では項目の出現順 」。 ポリモーフィック参照は
+    1 行にする。 行の ``段`` は **子の段** （主 = 0）。 並びは「浅い親
+    （主→段順） → 同じ親内では項目の出現順」。 ポリモーフィック参照は
     ``referenceTo`` のエントリごとに 1 行。 同じ ``(親, 項目, 子)`` は 1 行。
     取り損ねた子（上限で打ち切られた子・ describe に失敗した子） は
-    親にも子にも行に出ない。 主オブジェクトへの参照（ 例: Account.TaskId
-    → Task ） や自己参照（例: Account.ParentId → Account） も **出る** 。
+    親にも子にも行に出ない。 主オブジェクトへの参照（例: Account.TaskId
+    → Task） や自己参照（例: Account.ParentId → Account） も **出る** 。
 
     戻り値の ``skipped`` は **重複を除いた** 出現順のリスト。 同じ名前が
     複数候補として出ても 1 回しか数えない。 警告文の「N 件」 もこの
@@ -1347,11 +1347,11 @@ def _collect_related_objects(
 
     Returns:
         ``(nodes, relations, skipped)``
-        ``nodes``: 深さごとに並んだ ``RelatedNode`` のリスト（ **主オブジェクト
-            自身は含まない** ）。 出現順は「浅い親から先」 。 ``describe``
-            は ``fetcher`` で埋めた状態 （ ``fetcher`` が ``None`` を返した
+        ``nodes``: 深さごとに並んだ ``RelatedNode`` のリスト（**主オブジェクト
+            自身は含まない**）。 出現順は「浅い親から先」 。 ``describe``
+            は ``fetcher`` で埋めた状態 （``fetcher`` が ``None`` を返した
             ものは ``nodes`` に含めない — 上限内に収まったが describe 取得
-            に失敗した分 ）。
+            に失敗した分）。
         ``relations``: **取れたオブジェクト同士** で張られた親→子の参照
             リスト。 主＋関連オブジェクトが「お互いに参照している」 行を
             全部含む（主オブジェクトへの参照、 自己参照も出る）。 並びは
@@ -1504,8 +1504,8 @@ def _collect_relations(
 ) -> list[RelationRecord]:
     """主＋関連オブジェクト同士の参照 ``RelationRecord`` 一覧を作る。
 
-    主→ nodes の順 (nodes は段順) で ``fields`` をたどり、 参照先が「 取れた
-    オブジェクト (主を含む) 」 なら 1 行ずつ出す。 同じ ``(親, 項目, 子)``
+    主→ nodes の順 (nodes は段順) で ``fields`` をたどり、 参照先が「取れた
+    オブジェクト (主を含む)」 なら 1 行ずつ出す。 同じ ``(親, 項目, 子)``
     は 1 行。 取り損ねた子は親にも子にも行に出ない。
     """
     obtained: set[str] = {main_name} | {n.name for n in nodes}
@@ -1582,8 +1582,8 @@ def _make_overrides_fetcher(
 
     引数 ``name`` のオブジェクトを取りに行くが、 自前の WARNING は出さない
     （``apply_overrides`` が 「たどれません」 文に整形して出す）。 401
-    と 403 はそのまま上位へ送出 （ ``apply_overrides`` を経由して
-    ``_fetch_one`` の ``except`` で拾われ、 レポート全体が失敗扱いになる ） 。
+    と 403 はそのまま上位へ送出 （``apply_overrides`` を経由して
+    ``_fetch_one`` の ``except`` で拾われ、 レポート全体が失敗扱いになる） 。
 
     取得順序は ``_fetch_object_cached`` と同じ:
 
@@ -1642,8 +1642,8 @@ def _fetch_object_cached(
     """オブジェクトの describe をストア（メモリ → CSV）か API から取り、 整えて返す。
 
     戻り値:
-        成功時は ``_slim_object`` で整えた describe。 失敗時（ HTTP エラー /
-        ``ValueError`` ）は ``None``。 401 / 403 は ``SalesforceRequestError`` を
+        成功時は ``_slim_object`` で整えた describe。 失敗時（HTTP エラー /
+        ``ValueError``）は ``None``。 401 / 403 は ``SalesforceRequestError`` を
         そのまま上位へ送出する（呼び出し側で ID 全体を失敗扱い）。 ストアには
         生の describe を書く（項目定義.csv の列のため）。
 
@@ -1696,8 +1696,8 @@ def _has_unresolved_columns(
 
 
 def _object_key(org: str, object_name: str) -> tuple[str, str]:
-    """``(org, object)`` をストレージ用の正規化キーにする （ ``DescribeStore._key``
-    と同じ正規化 ）。"""
+    """``(org, object)`` をストレージ用の正規化キーにする （``DescribeStore._key``
+    と同じ正規化）。"""
     return (org.strip().lower(), object_name.strip().lower())
 
 
@@ -1719,15 +1719,15 @@ def _choose_main(
 ) -> tuple[str | None, dict[str, Any] | None, str | None, set[tuple[str, str]]]:
     """``metadata`` から主オブジェクトを決める （2 段: レポートタイプ → 列キー先頭）。
 
-    ``reportType.type`` から候補が取れなかったとき （ カスタムレポート
-    タイプのレポートタイプ自体が主オブジェクトの API 名でないケース ） に
+    ``reportType.type`` から候補が取れなかったとき （カスタムレポート
+    タイプのレポートタイプ自体が主オブジェクトの API 名でないケース） に
     備え、 **列キーの先頭** を代替の候補として試す。 次の順で
     ``_fetch_object_cached()`` を呼んで、 最初に describe が取れた候補を
     採用する:
 
     (a) ``mapping.report_type_candidates(reportType.type)`` の候補
-    (b) (a) が全滅したとき、 列キーの先頭 （ ``.`` を含む列キーの最初の
-        ``.`` より前 ） を多い順、 同数は最初に出た順で最大
+    (b) (a) が全滅したとき、 列キーの先頭 （``.`` を含む列キーの最初の
+        ``.`` より前） を多い順、 同数は最初に出た順で最大
         ``_MAIN_OBJECT_PREFIX_LIMIT`` 個
 
     (a) で決まれば従来通り、 (b) で決まれば警告を出さずに正常な経路として
@@ -1749,7 +1749,7 @@ def _choose_main(
           なかったときは ``None``
         - ``main_describe``: 主オブジェクトの describe dict。 特定・取得に失敗
           したときは ``None``
-        - ``reason``: ``main_describe`` が ``None`` のときの理由（ ``None``
+        - ``reason``: ``main_describe`` が ``None`` のときの理由（``None``
           なら取得成功）
         - ``csv_used_keys``: このレポートで参照されたオブジェクトのうち、
           **CSV から読んだもの** （今回 API で取ったものではない） の
@@ -1795,10 +1795,10 @@ def _extract_column_key_prefix_candidates(
     り前を集計し、 多い順（同数は最初に出た順） で ``limit`` 個返す。
 
     列キーは ``mapping.collect_describable_columns`` が集める全ソース
-    （ ``detailColumns`` / ``reportFilters`` / ``groupingsDown`` /
+    （``detailColumns`` / ``reportFilters`` / ``groupingsDown`` /
     ``groupingsAcross`` / ``aggregates`` / ``standardDateFilter`` /
-    ``sortBy`` ） を使う。 ``.`` を含まない列キーは対象外（ 主オブジェクトと
-    同じ名前 1 つのキーや、 ``OPPORTUNITY_NAME`` のような値 ）。
+    ``sortBy``） を使う。 ``.`` を含まない列キーは対象外（主オブジェクトと
+    同じ名前 1 つのキーや、 ``OPPORTUNITY_NAME`` のような値）。
 
     ``FK_`` で始まる列キーの先頭は主オブジェクトではなく主からの参照先を
     指しているので、 候補からは外す。

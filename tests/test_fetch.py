@@ -547,8 +547,8 @@ def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
 
 def test_objects_dict_does_not_mutate_original_describe(tmp_path: Path) -> None:
     """``_slim_object`` が走っても、 ``describe_object`` の戻り値（cache）は
-    変わらない（ 関連オブジェクト収集が原本の ``referenceTo`` /
-    ``relationshipName`` を使うため ）。
+    変わらない（関連オブジェクト収集が原本の ``referenceTo`` /
+    ``relationshipName`` を使うため）。
     """
     import copy
 
@@ -1610,7 +1610,7 @@ def test_fetch_object_cached_calls_only_once(tmp_path: Path) -> None:
 
 def test_main_object_describe_called_once_per_id(tmp_path: Path) -> None:
     """主オブジェクトの ``describe_object`` は ID ごとに **ちょうど 1 回** しか
-    呼ばれない（ 主オブジェクト解決と列対応表の組み立てが同じ describe を
+    呼ばれない（主オブジェクト解決と列対応表の組み立てが同じ describe を
     流用していることを確かめる）。
     """
     entry = MasterEntry(
@@ -2190,7 +2190,7 @@ def test_slim_object_only_required_top_level_keys() -> None:
 
 
 def test_slim_object_drops_heavy_keys() -> None:
-    """``_slim_object`` は重いキー（ ``childRelationships`` / ``recordTypeInfos`` /
+    """``_slim_object`` は重いキー（``childRelationships`` / ``recordTypeInfos`` /
     ``urls`` / ``supportedScopes`` / ``layoutable`` など）を出力に残さない。"""
     result = _slim_object(_make_full_describe())
     for forbidden in (
@@ -2334,7 +2334,7 @@ def test_slim_object_handles_non_dict_input() -> None:
 def test_record_report_has_no_heavy_keys(tmp_path: Path) -> None:
     """``ReportRecord.report`` のどこにも ``reportTypeMetadata`` /
     ``childRelationships`` / ``recordTypeInfos`` / ``picklistValues`` が
-    **キーとして** 出現しない（ ``json.dumps`` した文字列に
+    **キーとして** 出現しない（``json.dumps`` した文字列に
     ``"重いキー":`` の形が出ない）。
     なぜ: 機微な情報や、 巨大な原本が record の中に漏れていないことを保証する。
     """
@@ -2376,8 +2376,8 @@ def test_record_report_has_no_heavy_keys(tmp_path: Path) -> None:
     assert record is not None
     raw_text = _json.dumps({"report": record.report, "objects": record.objects}, ensure_ascii=False)
 
-    # ``"重いキー":`` という**キー形**が出現しない（ 出力 record の中に
-    # 「キー名そのもの」 が文字列として現れるのは無い ）
+    # ``"重いキー":`` という**キー形**が出現しない（出力 record の中に
+    # 「キー名そのもの」 が文字列として現れるのは無い）
     for forbidden in (
         "reportTypeMetadata",
         "childRelationships",
@@ -2396,7 +2396,7 @@ def test_related_objects_collected_from_original_describe_not_slimmed(
     tmp_path: Path,
 ) -> None:
     """関連オブジェクトの収集は slim 前の原本の ``referenceTo`` /
-    ``relationshipName`` を使う（ slim 後の ``fields`` からだと、 例えば
+    ``relationshipName`` を使う（slim 後の ``fields`` からだと、 例えば
     ``referenceTo`` が無い項目は拾えなくなる）。
     なぜ: JSON 出力で ``objects`` の関連先が欠けないように。
     """
@@ -2592,8 +2592,8 @@ def test_fetch_detects_related_collection_from_slimmed_fields(
     slim 後は ``referenceTo`` が空になるため、 関連が 1 つも取れなくなる。
 
     検出方法: 関連オブジェクト収集が slim 後に走る「悪い実装」 に
-    ``_related_ref_pairs`` を差し替える （ ``_slim_object`` を先に呼んで元
-    dict を破壊してから原本を読む ）。 本物の実装は slim の前に走るので
+    ``_related_ref_pairs`` を差し替える （``_slim_object`` を先に呼んで元
+    dict を破壊してから原本を読む）。 本物の実装は slim の前に走るので
     ``Account`` が取れる。
     """
     from src import fetch as fetch_module
@@ -2795,8 +2795,8 @@ def _path_owner_metadata() -> dict:
     ``detailColumns = ["Opp.Account.Owner"]`` を使い、 自動では解決できず
     ``(不明)`` のままになる。 そこに人が ``Account.Owner.Name`` を書いて、
     経路の補完の振る舞いを見る。 ``detailColumnInfo`` の label は
-    ``column_key`` をそのまま表示名として流して使う （ 列キー→表示名の解決に
-    影響しないように ） 。
+    ``column_key`` をそのまま表示名として流して使う （列キー→表示名の解決に
+    影響しないように） 。
     """
     return {
         "reportMetadata": {
@@ -2831,7 +2831,7 @@ def _path_owner_overrides() -> dict[tuple[str, str], ColumnMapRow]:
 def test_run_fetch_fetches_missing_object_along_user_path(tmp_path: Path) -> None:
     """主オブジェクト Opportunity、 取得済みは Opportunity と Account だけ、 人が
     ``Account.Owner.Name`` を書く → User を取りに行き （``describe_object`` が
-    User で 1 回だけ呼ばれる ） 、 型が付き、 WARNING なし、 record の
+    User で 1 回だけ呼ばれる） 、 型が付き、 WARNING なし、 record の
     ``objects`` に User が入る
     """
     user_describe = _main_describe("User", [{"name": "Name", "type": "string"}])
@@ -2953,7 +2953,7 @@ def test_run_fetch_uses_describe_csv_cache_for_user(tmp_path: Path) -> None:
 
 
 def test_run_fetch_typo_in_path_warns_with_candidates(tmp_path: Path) -> None:
-    """``Account.Ownr.Name`` （打ち間違い） → 「 Ownr が Account に見つかり
+    """``Account.Ownr.Name`` （打ち間違い） → 「Ownr が Account に見つかり
     ません」 と候補 （Owner など） が WARNING に出る、 値は残る
     """
     account_describe = {
@@ -3022,8 +3022,8 @@ def test_run_fetch_typo_in_path_warns_with_candidates(tmp_path: Path) -> None:
 
 
 def test_run_fetch_path_fetch_404_warns_and_record_ok(tmp_path: Path) -> None:
-    """経路上の参照先 （User） が ``describe_object`` で 404 → 「 参照先 User
-    の項目定義を取得できません 」 の WARNING、 値は残る、 そのレポートは成功
+    """経路上の参照先 （User） が ``describe_object`` で 404 → 「参照先 User
+    の項目定義を取得できません」 の WARNING、 値は残る、 そのレポートは成功
     """
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
@@ -3503,8 +3503,8 @@ def test_column_key_path_falls_back_to_label_when_first_segment_404(
 
 
 def test_column_key_path_falls_back_when_label_also_fails(tmp_path: Path) -> None:
-    """列キー ``Contact.Acount.Name`` で経路も表示名もダメ → 「 対応表示で
-    はありません 」 の代わりに 経路の補完失敗の理由が備考に入る
+    """列キー ``Contact.Acount.Name`` で経路も表示名もダメ → 「対応表示で
+    はありません」 の代わりに 経路の補完失敗の理由が備考に入る
     """
     metadata = {
         "reportMetadata": {

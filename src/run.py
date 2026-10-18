@@ -18,8 +18,8 @@ describe を取って ``ReportRecord`` に詰める。 その record の一覧�
 レポート分の経過ログ（取得開始・節目・取得完了/失敗） は ``run_fetch`` 側
 （``src/fetch.py``） が持つ。 同じ事実を重ねて出さない。
 
-設定は comken の ``Config`` から直接読む（ ``from comken import config``
-で ``config.FILES.MASTER_XLSX_PATH`` のように ）。 comken が自動で
+設定は comken の ``Config`` から直接読む（``from comken import config``
+で ``config.FILES.MASTER_XLSX_PATH`` のように）。 comken が自動で
 やってくれない変換は 2 行だけ:
 
 - ``[SURVEY] ROW_LIMIT_CHECK`` が ○/× で書かれているので ``== "○"`` で bool にする
@@ -185,8 +185,8 @@ def _write_output(
 ) -> bool:
     """``run_tables`` と ``column_fix_xlsx.merge_and_write_after_run`` を順に呼ぶ。
 
-    ``run_tables`` が例外を出したら ``True`` を返す （ ``run()`` の終了コードが
-    1 になる判定材料 ）。 ``column_fix_xlsx.merge_and_write_after_run`` 内の
+    ``run_tables`` が例外を出したら ``True`` を返す （``run()`` の終了コードが
+    1 になる判定材料）。 ``column_fix_xlsx.merge_and_write_after_run`` 内の
     ``PermissionError`` は WARNING に縮退する。
     """
     output_failed = False
@@ -256,7 +256,7 @@ def run(
         total_count = len(all_entries)
 
         # 設定は ``config.SURVEY.*`` / ``config.PII.*`` を直接読む （
-        # キー欠落ならこの下で ``ConfigError`` ）
+        # キー欠落ならこの下で ``ConfigError``）
         logger.info(
             "取得開始: 管理表=%s 全行数=%d 有効=%d 調査対象=%d 出力先=%s "
             "RELATED_DEPTH=%d RELATED_MAX=%d ROW_LIMIT=%s SIMILAR=%.2f",

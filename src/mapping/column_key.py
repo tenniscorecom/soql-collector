@@ -45,8 +45,8 @@ def _resolve_name_field_for_reference(
 ) -> tuple[str, str]:
     """参照項目で末端を置換するときの、 参照先の名前項目 ``(name, type)`` を返す。
 
-    レポートの列表示は参照項目の名前項目 （ Account なら ``Name``、 Case なら
-    ``CaseNumber`` ） と同じなので、 SOQL も ID ではなく名前項目で取らないと
+    レポートの列表示は参照項目の名前項目 （Account なら ``Name``、 Case なら
+    ``CaseNumber``） と同じなので、 SOQL も ID ではなく名前項目で取らないと
     表示値と合わない。 決め方:
 
     - ``referenceTo`` がちょうど 1 つのときだけ、 参照先の describe を
@@ -58,9 +58,9 @@ def _resolve_name_field_for_reference(
     - ``fetch_object`` が 401 / 403 を投げたら **ここでは握りつぶさず**
       上位へ送出する （既存と同じ）
 
-    戻り値の ``type`` は ``"string"`` 固定にする （ 名前項目が ``text`` /
+    戻り値の ``type`` は ``"string"`` 固定にする （名前項目が ``text`` /
     ``string`` どちらの組織でもレポート表示は文字列なので、 ``text`` を
-    返されると SOQL 組立側で迷うため ） 。
+    返されると SOQL 組立側で迷うため） 。
     """
     if len(reference_to) != 1:
         return "Name", "string"
@@ -92,7 +92,7 @@ def resolve_column_key_to_soql(
     成功時 ``(soql_name, field_type, None, id_column)`` 。
     失敗時 ``(None, None, note, None)`` 。
     ``note`` は表示名の照合にフォールバックしたときに備考に足す一行分
-    （ 「列キーで『 X 』が Y に見つかりません （リレーション名の候補: …）」 ）。
+    （「列キーで『X』が Y に見つかりません （リレーション名の候補: …）」）。
     呼び出し側で表示名の照合が決まったときはこの note は **使わない**
     （「決まったほうを優先」 のため） 。
 
@@ -112,16 +112,16 @@ def resolve_column_key_to_soql(
 
     途中の段がマッチしたとき （最後の段以外） は、 **SOQL 上は** その項目
     の ``relationshipName`` （例: ``AccountId`` 参照 → ``Account``） に
-    置き換える。 最後の段は項目の ``name`` （ ``Account.Owner.Name`` の
-    末端 ``Name`` ） が基本だが、 **末端が ``type == "reference"`` かつ
+    置き換える。 最後の段は項目の ``name`` （``Account.Owner.Name`` の
+    末端 ``Name``） が基本だが、 **末端が ``type == "reference"`` かつ
     ``relationshipName`` が空でない参照項目のときは、 参照先の名前項目に
     置き換える** （レポート表示が名前項目で、 ID 列では値が違うため） 。
 
     経路上のオブジェクトが ``main_describe`` 起点の ``objects`` に無い
     ときは ``fetch_object`` で取りに行く。 取得は ``fetch_object`` の内部で
     既存のキャッシュ → API の順で行われる前提。 401 / 403 は
-    ``fetch_object`` からそのまま上位へ送出される （ ``_make_overrides_fetcher``
-    と同じ挙動 ） 。
+    ``fetch_object`` からそのまま上位へ送出される （``_make_overrides_fetcher``
+    と同じ挙動） 。
     """
     if not starts_with_main_object(column_key, main_object):
         return None, None, None, None

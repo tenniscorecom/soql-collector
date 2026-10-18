@@ -118,8 +118,8 @@ def test_cycle_via_indirection_is_collapsed() -> None:
 
 def test_polymorphic_each_reference_to_gets_one_line() -> None:
     """ポリモーフィック参照 （``What → Account`` と ``What → Opportunity``） は
-    ``referenceTo`` のエントリごとに 1 行ずつ出る（ 既存 ``RelationRecord`` と
-    同じ ） 。"""
+    ``referenceTo`` のエントリごとに 1 行ずつ出る（既存 ``RelationRecord`` と
+    同じ） 。"""
     record = _make_record(
         key="1",
         main_object="Task",

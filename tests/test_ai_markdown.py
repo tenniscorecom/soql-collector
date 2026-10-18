@@ -1,7 +1,7 @@
 """``ai_markdown`` のテスト。
 
-``ReportRecord`` を直接作って Markdown 文字列の全文を期待値と比べる （ 偽
-record だけでネットワークには繋がない ） 。 仕様の見出し順・表・エスケープ
+``ReportRecord`` を直接作って Markdown 文字列の全文を期待値と比べる （偽
+record だけでネットワークには繋がない） 。 仕様の見出し順・表・エスケープ
 ・注意の箇条書きを 1 つずつ確かめる
 """
 
@@ -221,8 +221,8 @@ def _make_record(
 
 
 def test_ai_markdown_tabular_full_text() -> None:
-    """TABULAR の record （ 列 3 本のうち 1 本が複数候補、 絞り込み 2 件+組立式、
-    並び順、 関連 1 段 ） の Markdown が期待値と完全に一致する。
+    """TABULAR の record （列 3 本のうち 1 本が複数候補、 絞り込み 2 件+組立式、
+    並び順、 関連 1 段） の Markdown が期待値と完全に一致する。
     """
     column_map = [
         {

@@ -383,8 +383,8 @@ def _format_filter(
 
 
 def _is_value_only_diff(a: _Condition, b: _Condition) -> bool:
-    """2 つの条件の差分が 「値だけ」 （ 同じ列キー・同じ演算子で値が違う、
-    または日付の範囲だけ違う ） かを判定する。
+    """2 つの条件の差分が 「値だけ」 （同じ列キー・同じ演算子で値が違う、
+    または日付の範囲だけ違う） かを判定する。
     """
     if a.boolean_filter != b.boolean_filter:
         return False

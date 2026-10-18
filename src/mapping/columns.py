@@ -62,8 +62,8 @@ def collect_describable_columns(report_metadata: dict[str, Any]) -> list[str]:
     """``build_column_map()`` が解決を試みる列キーの一覧を組み立てる （重複除去済み） 。
 
     出力に出る列 （``detailColumns``） に加え、 SELECT には出ないが
-    ``reportFilters`` だけで使う列、 グルーピング列 （ ``groupingsDown`` /
-    ``groupingsAcross`` ） 、 集計対象列、 ``standardDateFilter`` の列、
+    ``reportFilters`` だけで使う列、 グルーピング列 （``groupingsDown`` /
+    ``groupingsAcross``） 、 集計対象列、 ``standardDateFilter`` の列、
     ``sortBy`` の列も含める。 順序と重複除去の規則は
     ``build_column_map()`` 互換。
     """

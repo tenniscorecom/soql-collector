@@ -131,8 +131,8 @@ def _patch_read_file_paths(
 ) -> None:
     """``src.run.read_file_paths`` を差し替え、 ``run()`` が comken の
     デフォルト config から ``[SURVEY]`` / ``[PII]`` を読む先を ``tmp_path``
-    の ``config.ini`` に向ける （ ``reset_cached_config`` でキャッシュも
-    破棄 ）。
+    の ``config.ini`` に向ける （``reset_cached_config`` でキャッシュも
+    破棄）。
     """
     import sys
 

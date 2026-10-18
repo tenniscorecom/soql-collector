@@ -116,9 +116,9 @@ def build_markdown(
 ) -> str:
     """1 record ぶんの Markdown 文字列を組み立てる （純粋関数） 。
 
-    ``record`` は ``ReportRecord`` 互換 （ ``key`` / ``summary`` /
+    ``record`` は ``ReportRecord`` 互換 （``key`` / ``summary`` /
     ``report_id`` / ``report`` / ``main_object`` / ``column_map`` /
-    ``relations`` / ``warnings`` / ``row_check`` / ``pii`` を持つ ） 。
+    ``relations`` / ``warnings`` / ``row_check`` / ``pii`` を持つ） 。
     属性が無いものは空として扱うので、 壊れた record でも ``AttributeError``
     で落ちない。 個人情報やレポート行データは **列の定義・条件の値だけ** で、
     レポートの行データは載せない
@@ -426,7 +426,7 @@ def _build_filter_extras(metadata: dict[str, Any]) -> list[str]:
     """絞り込みのうちテーブル外の日付・標準フィルタ・クロス・上位N を箇条書きで出す。
 
     該当が無い項目は出さない （1 行も書かない）。 呼び出し側で
-    「何も無いときは 『 なし 』」 を決める
+    「何も無いときは 『なし』」 を決める
     """
     lines: list[str] = []
 

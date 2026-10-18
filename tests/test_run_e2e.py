@@ -3,13 +3,13 @@
 ``tests/test_run.py`` のように ``run_fetch`` / ``run_tables`` を差し替えず、
 本物の ``run()`` から ``run_fetch`` / ``run_tables`` / 列の直しの書き戻しまで
 全部通す。 Salesforce には繋がない。 ``_FakeClient`` / ``_site_for`` （
-``tests/test_e2e.py`` から再利用 ） を ``site_for`` に渡すだけ
+``tests/test_e2e.py`` から再利用） を ``site_for`` に渡すだけ
 
 検証:
 
 - 1 回目の ``run()`` で exit code 0、 出力一式
-  （ ``SOQL調査.xlsx`` / ``SOQL資料/{key}.md`` / ``関係図`` / ``列名の対応.csv``
-  / ``input/列の直し.xlsx`` ） ができる
+  （``SOQL調査.xlsx`` / ``SOQL資料/{key}.md`` / ``関係図`` / ``列名の対応.csv``
+  / ``input/列の直し.xlsx``） ができる
 - 2 回目の実行前に ``input/列の直し.xlsx`` の 「直したSOQL列名」 と 「メモ」
   に値を入れ、 2 回目で
 
