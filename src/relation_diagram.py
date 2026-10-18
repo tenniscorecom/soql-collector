@@ -397,14 +397,18 @@ def _render_mermaid_children(
 def write_main_object_diagrams(
     output_dir: Any,
     diagrams: dict[str, Diagram],
+    *,
+    subdir: str = DIAGRAM_SUBDIR,
 ) -> tuple[Any, ...]:
-    """``diagrams`` の各 ``Diagram`` を ``output_dir/関係図/{主オブジェクト}.md``
+    """``diagrams`` の各 ``Diagram`` を ``output_dir/{subdir}/{主オブジェクト}.md``
     に書く。 既存はそのまま残し、 今回渡された主オブジェクト分だけ上書きする。
     ``diagrams`` が空のときは何も書かない （ディレクトリも作らない）
+
+    ``subdir`` は ``config.ini [FILES] DIAGRAM_DIR``（既定 ``関係図``）。
     """
     if not diagrams:
         return ()
-    target_dir = output_dir / DIAGRAM_SUBDIR
+    target_dir = output_dir / subdir
     target_dir.mkdir(parents=True, exist_ok=True)
     wrote: list[Any] = []
     for main_object, diagram in diagrams.items():

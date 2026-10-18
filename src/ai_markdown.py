@@ -52,9 +52,14 @@ def write_ai_markdowns(
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
     diagrams: dict[str, relation_diagram.Diagram] | None = None,
+    subdir: str = MARKDOWN_SUBDIR,
+    diagram_subdir: str = relation_diagram.DIAGRAM_SUBDIR,
 ) -> tuple[Any, ...]:
     """``records`` の各 ``ReportRecord`` について
-    ``output_dir/SOQL資料/{key}.md`` を書く。
+    ``output_dir/{subdir}/{key}.md`` を書く（``subdir`` は ``config.ini [FILES] MARKDOWN_DIR``）。
+
+    ``diagram_subdir`` は各資料に埋め込む関係図ファイルへのリンク先のフォルダ名
+    （``config.ini [FILES] DIAGRAM_DIR``。``subdir`` と同じ階層に置く前提）。
 
     ``diagrams`` は ``{主オブジェクト: Diagram}``（表を作るときに 1 回組んだもの）。
     渡せばレポートごとに関係図を組み直さない。
@@ -63,12 +68,18 @@ def write_ai_markdowns(
     ファイル （今回取れなかった管理番号のファイルや、 古い失敗ファイル） は
     そのまま残す。 書き出し先ディレクトリが無ければ作る
     """
-    target_dir = output_dir / MARKDOWN_SUBDIR
+    target_dir = output_dir / subdir
     target_dir.mkdir(parents=True, exist_ok=True)
     wrote: list[Any] = []
     for record in records:
         diagram = (diagrams or {}).get(record.main_object or "")
-        path = write_ai_markdown(target_dir, record, similar_lookup=similar_lookup, diagram=diagram)
+        path = write_ai_markdown(
+            target_dir,
+            record,
+            similar_lookup=similar_lookup,
+            diagram=diagram,
+            diagram_subdir=diagram_subdir,
+        )
         if path is not None:
             wrote.append(path)
     if wrote:
@@ -82,13 +93,16 @@ def write_ai_markdown(
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
     diagram: relation_diagram.Diagram | None = None,
+    diagram_subdir: str = relation_diagram.DIAGRAM_SUBDIR,
 ) -> Any | None:
     """1 record ぶんの Markdown を ``target_dir/{key}.md`` に書く。"""
     key = record.key
     if not key:
         return None
     path = target_dir / f"{key}.md"
-    content = build_markdown(record, similar_lookup=similar_lookup, diagram=diagram)
+    content = build_markdown(
+        record, similar_lookup=similar_lookup, diagram=diagram, diagram_subdir=diagram_subdir
+    )
     path.write_text(content, encoding=_ENCODING, newline=_NEWLINE)
     return path
 
@@ -98,6 +112,7 @@ def build_markdown(
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
     diagram: relation_diagram.Diagram | None = None,
+    diagram_subdir: str = relation_diagram.DIAGRAM_SUBDIR,
 ) -> str:
     """1 record ぶんの Markdown 文字列を組み立てる （純粋関数） 。
 
@@ -209,7 +224,7 @@ def build_markdown(
         parts.append("関係図 （Mermaid）: ")
         main_object = record.main_object or ""
         if main_object:
-            parts.append(f"../関係図/{main_object}.md")
+            parts.append(f"../{diagram_subdir}/{main_object}.md")
         parts.append("")
         parts.append("```")
         parts.extend(diagram_tree)

@@ -149,3 +149,14 @@
   件数に依存する判定（2000 件超）は参考値になる。
 - comken の ``site_for(sandbox=...)`` と ``comken.toolbox.salesforce.hosts`` が前提（comken の同じ変更が先に必要）。
 
+## 2026-10-18 … 関係図の Markdown を書き出し、 ``MARKDOWN_DIR`` / ``DIAGRAM_DIR`` を実際に使う
+
+- 以前の状態: ``relation_diagram.write_main_object_diagrams()`` は作られていたが、 ``run_tables()`` から
+  呼ばれず、 ``関係図/{主オブジェクト}.md`` は一度も書かれなかった。 ``SOQL資料/{管理番号}.md`` には
+  存在しないファイルへのリンク（``../関係図/{主オブジェクト}.md``）が埋め込まれていた。 また
+  ``config.ini [FILES] MARKDOWN_DIR`` / ``DIAGRAM_DIR`` は読まれるだけで、 出力先は ``"SOQL資料"`` /
+  ``"関係図"`` の直書きだった。
+- いまの状態: ``run_tables()`` が関係図の Markdown も書く。 ``MARKDOWN_DIR`` / ``DIAGRAM_DIR`` の値は
+  出力先、 資料から関係図へのリンク、 一覧シートの「SOQL資料」列に反映される。
+- 主オブジェクトが分からない record だけのときは、 ``関係図/`` を作らない。
+- 資料と関係図は、 ``OUTPUT_DIR`` の直下に並べて置く前提（資料からのリンクが ``../{DIAGRAM_DIR}/`` のため）。

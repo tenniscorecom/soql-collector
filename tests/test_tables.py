@@ -529,6 +529,73 @@ def test_relation_diagram_sheet_writes_tree_with_polymorphic(tmp_path: Path) -> 
     assert targets == {"Account", "Opportunity"}
 
 
+def _task_record_with_account_relation() -> ReportRecord:
+    """Task → Account の関係を 1 本持つ record（関係図の Markdown が出る最小の入力）。"""
+    return dataclasses.replace(
+        _make_record("1001"),
+        main_object="Task",
+        relations=(
+            RelationRecord(
+                parent="Task", field="WhatId", relationship_name="What", child="Account", depth=1
+            ),
+        ),
+    )
+
+
+def test_run_tables_writes_relation_diagram_markdown(tmp_path: Path) -> None:
+    """関係図の Markdown が ``関係図/{主オブジェクト}.md`` に書かれ、 資料からリンクされる。"""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    outcome = run_tables(output, [_task_record_with_account_relation()])
+
+    diagram_path = output / "関係図" / "Task.md"
+    assert diagram_path in outcome.wrote
+    assert "flowchart LR" in diagram_path.read_text(encoding="utf-8")
+    # 資料から関係図への相対リンクが、 実際にあるファイルを指す
+    material = (output / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
+    assert "../関係図/Task.md" in material
+    assert (output / "SOQL資料" / "../関係図/Task.md").resolve().exists()
+
+
+def test_run_tables_without_main_object_writes_no_diagram_directory(tmp_path: Path) -> None:
+    """主オブジェクトが分からない record だけのときは、 関係図のフォルダを作らない。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = dataclasses.replace(_make_record("1001"), main_object=None)
+
+    run_tables(output, [record])
+
+    assert not (output / "関係図").exists()
+
+
+def test_run_tables_uses_configured_markdown_and_diagram_dirs(tmp_path: Path) -> None:
+    """``MARKDOWN_DIR`` / ``DIAGRAM_DIR`` の値が、 出力先・リンク・一覧の列に反映される。"""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    run_tables(
+        output,
+        [_task_record_with_account_relation()],
+        markdown_dir="資料",
+        diagram_dir="図",
+    )
+
+    assert (output / "図" / "Task.md").exists()
+    material = (output / "資料" / "1001.md").read_text(encoding="utf-8")
+    assert "../図/Task.md" in material
+    # 既定のフォルダ名では書かない
+    assert not (output / "関係図").exists()
+    assert not (output / "SOQL資料").exists()
+    # 一覧シートの「SOQL資料」列も、 設定したフォルダ名の相対パスになる
+    workbook = load_workbook(output / XLSX_NAME)
+    sheet = workbook[SHEET_OVERVIEW]
+    headers = [c.value for c in sheet[3]]  # 見出しは 3 行目（1〜2 行目は注記）
+    values = [c.value for c in sheet[4]]
+    workbook.close()
+    assert dict(zip(headers, values, strict=False))["SOQL資料"] == "資料/1001.md"
+
+
 # ── Excel テーブル・列幅・固定行 ──────────────────────────────────────
 
 

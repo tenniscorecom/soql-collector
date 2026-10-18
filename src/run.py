@@ -197,6 +197,8 @@ def _write_output(
             only_keys=ok_keys,
             similar_threshold=config.SURVEY.SIMILAR_COLUMN_THRESHOLD,
             xlsx_name=file_paths.xlsx_name,
+            markdown_dir=file_paths.markdown_dir,
+            diagram_dir=file_paths.diagram_dir,
         )
     except Exception as exc:
         # xlsx / CSV のどちらも作れていないので、 終了コードは 1 にする
