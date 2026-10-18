@@ -1271,14 +1271,14 @@ def test_standard_date_filter_value_with_slash_is_normalized() -> None:
 
 
 def test_build_soql_drops_undated_standard_date_filter() -> None:
-    """``_slim_report`` で 「実質指定なし」 と判定された ``standardDateFilter`` は
+    """``make_slim_report`` で 「実質指定なし」 と判定された ``standardDateFilter`` は
     SOQL の WHERE に出ず、 ``STATUS_PARTIAL`` にもならない。
 
     レポート describe と同じ形 （``startDate`` / ``endDate`` が ``None``） で
-    ``_slim_report`` に通し、 その結果を ``ReportRecord`` に詰めて ``build_soql``
+    ``make_slim_report`` に通し、 その結果を ``ReportRecord`` に詰めて ``build_soql``
     を呼ぶ
     """
-    from src.fetch import _slim_report
+    from src.fetch.report_slim import make_slim_report
 
     column_map = _column_map_with_types(
         [
@@ -1300,7 +1300,7 @@ def test_build_soql_drops_undated_standard_date_filter() -> None:
         },
         "reportExtendedMetadata": {},
     }
-    slim = _slim_report(raw_metadata)
+    slim = make_slim_report(raw_metadata)
     assert "standardDateFilter" not in slim["reportMetadata"]
 
     record = _make_record(

@@ -10,7 +10,7 @@
   ホスト名 （小文字）。
 - 失敗 （HTTP / ValueError） は CSV に書かない。 1 回の実行のメモリにだけ
   残るので、 次回は API を呼び直す
-- 既存の ``describe_object`` 直呼びと「CSV 経由で読んだあと ``_slim_object``」
+- 既存の ``describe_object`` 直呼びと「CSV 経由で読んだあと ``make_slim_object``」
   は同じ slim 出力を返す
 """
 
@@ -31,7 +31,8 @@ from src.describe_store import (
     org_from_url,
     upsert_object_rows,
 )
-from src.fetch import _slim_object, run_fetch
+from src.fetch import run_fetch
+from src.fetch.report_slim import make_slim_object
 from src.master import MasterEntry
 
 # 既存テストと揃える
@@ -189,7 +190,7 @@ def test_org_from_url_distinguishes_orgs() -> None:
 
 
 def test_describe_csv_roundtrip_preserves_slim_output() -> None:
-    """CSV に書いて読み戻した describe を ``_slim_object`` に通すと、 API 直呼びと
+    """CSV に書いて読み戻した describe を ``make_slim_object`` に通すと、 API 直呼びと
     同じ slim 結果になる。 これが「CSV を読んで mapping / pii 関連の挙動を
     変えない」要件の中心。
     """
@@ -200,7 +201,7 @@ def test_describe_csv_roundtrip_preserves_slim_output() -> None:
     # 1 オブジェクト 2 項目で 2 行
     assert len(rows) == 2
     restored = csv_rows_to_describe(rows)
-    assert _slim_object(restored) == _slim_object(original)
+    assert make_slim_object(restored) == make_slim_object(original)
 
 
 def test_describe_csv_roundtrip_with_reference_field(tmp_path: Path) -> None:
@@ -237,7 +238,7 @@ def test_describe_csv_roundtrip_with_reference_field(tmp_path: Path) -> None:
             writer.writerow(row)
     index = load_describe_index(path)
     restored = index[("example.my.salesforce.com", "task")]
-    assert _slim_object(restored) == _slim_object(original)
+    assert make_slim_object(restored) == make_slim_object(original)
 
 
 # ── 読み込みのフォールバック ─────────────────────────────────────────────

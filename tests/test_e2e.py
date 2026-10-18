@@ -75,7 +75,7 @@ def _f(
     ref: list[str] | None = None,
     rel: str | None = None,
 ) -> dict:
-    """``_slim_object`` を通す前の describe 用 ``field`` dict を作る。"""
+    """``make_slim_object`` を通す前の describe 用 ``field`` dict を作る。"""
     return {
         "name": name,
         "label": label,

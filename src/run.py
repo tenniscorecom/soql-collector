@@ -16,7 +16,7 @@ describe を取って ``ReportRecord`` に詰める。 その record の一覧�
 
 ログ方針: 実行の開始と終了、 dry-run の一覧はここで 1 回ずつ出す。 1
 レポート分の経過ログ（取得開始・節目・取得完了/失敗） は ``run_fetch`` 側
-（``src/fetch.py``） が持つ。 同じ事実を重ねて出さない。
+（``src/fetch/``） が持つ。 同じ事実を重ねて出さない。
 
 設定は comken の ``Config`` から直接読む（``from comken import config``
 で ``config.FILES.MASTER_XLSX_PATH`` のように）。 comken が自動で

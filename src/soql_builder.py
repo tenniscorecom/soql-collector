@@ -809,7 +809,7 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
 
     規則は依頼仕様 (ルール詳細) に従う。 ``record`` は ``ReportRecord``
     互換 (``key`` / ``summary`` / ``main_object`` / ``report`` / ``column_map``
-    ) であれば良い。 ``report`` は ``_slim_report`` で絞った形式
+    ) であれば良い。 ``report`` は ``make_slim_report`` で絞った形式
     (``reportMetadata`` / ``reportExtendedMetadata`` のみ) を想定。
 
     status の判定ルール:
@@ -830,7 +830,7 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
             checks=(),
         )
 
-    # ``record.report`` は入口（``_slim_report``）で形をそろえてある
+    # ``record.report`` は入口（``make_slim_report``）で形をそろえてある
     metadata = record.report["reportMetadata"]
     column_lookup = _build_column_lookup(record.column_map)
 

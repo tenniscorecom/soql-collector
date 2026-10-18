@@ -1,4 +1,4 @@
-"""行数チェック（``_check_row_count`` 経由） のテスト。
+"""行数チェック（``check_row_count`` 経由） のテスト。
 
 偽物の Salesforce クライアントで 1 レポートずつ検証する。 実 Salesforce には
 繋がない。 レポートの行データ（個人情報を含みうる） はメモリ上でも
@@ -21,7 +21,8 @@ from comken.exceptions import (
 )
 
 from src.describe_store import DescribeStore
-from src.fetch import _check_row_count, _fetch_one
+from src.fetch.flow import _fetch_one
+from src.fetch.row_check import check_row_count
 from src.master import MasterEntry
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
@@ -158,7 +159,7 @@ def test_truncated_marks_over() -> None:
         describe=_metadata(),
         get_error=SalesforceReportTruncatedError("00O", 2000),
     )
-    result = _check_row_count(client, "00O")
+    result = check_row_count(client, "00O")
     assert result.status == "超えている"
     assert result.rows is None
 
@@ -169,7 +170,7 @@ def test_normal_get_marks_under_with_count() -> None:
         describe=_metadata(),
         get_table=_Row(1234),
     )
-    result = _check_row_count(client, "00O")
+    result = check_row_count(client, "00O")
     assert result.status == "超えていない"
     assert result.rows == 1234
 
@@ -181,7 +182,7 @@ def test_summary_format_calls_get_and_marks_under_with_count() -> None:
     """
     summary_metadata = _metadata("SUMMARY")
     client = _FakeClient(describe=summary_metadata, get_table=_Row(42))
-    out = _check_row_count(client, "00O")
+    out = check_row_count(client, "00O")
     assert out.status == "超えていない"
     assert out.rows == 42
     assert client.report.get_calls == ["00O"]
@@ -194,7 +195,7 @@ def test_matrix_format_calls_get_and_marks_over_when_truncated() -> None:
         describe=matrix_metadata,
         get_error=SalesforceReportTruncatedError("00O", 2000),
     )
-    out = _check_row_count(client, "00O")
+    out = check_row_count(client, "00O")
     assert out.status == "超えている"
     assert client.report.get_calls == ["00O"]
 
@@ -206,7 +207,7 @@ def test_format_error_from_get_marks_unknown() -> None:
     err = SalesforceReportFormatError("00O", "MULTI_BLOCK")
     tabular_metadata = _metadata("TABULAR")
     client = _FakeClient(describe=tabular_metadata, get_error=err)
-    result = _check_row_count(client, "00O")
+    result = check_row_count(client, "00O")
     assert result.status == "判定不可"
     assert "この形式のレポートは取得できないため判定できません" in (result.reason or "")
     assert "結合レポート" in (result.reason or "")
@@ -218,7 +219,7 @@ def test_format_error_for_no_detail_columns_marks_unknown() -> None:
     err = SalesforceReportFormatError("00O", "明細の列が無い")
     summary_metadata = _metadata("SUMMARY")
     client = _FakeClient(describe=summary_metadata, get_error=err)
-    result = _check_row_count(client, "00O")
+    result = check_row_count(client, "00O")
     assert result.status == "判定不可"
     assert "この形式のレポートは取得できないため判定できません" in (result.reason or "")
 
@@ -227,7 +228,7 @@ def test_other_salesforce_error_marks_unknown_with_type_and_message() -> None:
     """その他の ``SalesforceError`` → 判定不可。 例外名と短い説明が出る。"""
     err = SalesforceError("何か問題がありました")
     client = _FakeClient(describe=_metadata(), get_error=err)
-    result = _check_row_count(client, "00O")
+    result = check_row_count(client, "00O")
     assert result.status == "判定不可"
     assert "SalesforceError" in (result.reason or "")
     assert "何か問題" in (result.reason or "")
@@ -238,7 +239,7 @@ def test_auth_error_propagates_so_report_fails() -> None:
     access_denied = SalesforceReportAccessDeniedError("00O", 401, "Unauthorized")
     client = _FakeClient(describe=_metadata(), get_error=access_denied)
     with pytest.raises(SalesforceError):
-        _check_row_count(client, "00O")
+        check_row_count(client, "00O")
 
 
 def test_generic_exception_marks_unknown() -> None:
@@ -247,7 +248,7 @@ def test_generic_exception_marks_unknown() -> None:
         describe=_metadata(),
         get_error=TimeoutError("connect timeout"),
     )
-    result = _check_row_count(client, "00O")
+    result = check_row_count(client, "00O")
     assert result.status == "判定不可"
     assert "TimeoutError" in (result.reason or "")
 
@@ -296,9 +297,9 @@ def test_row_data_never_leaks_to_output(tmp_path: Path, caplog: pytest.LogCaptur
             # 機微な値（値そのもの） を返さない
             return 2
 
-    # _check_row_count 単体でログ / 例外に漏れない
+    # check_row_count 単体でログ / 例外に漏れない
     client = _FakeClient(describe=_metadata(), get_table=_TableWithSecret())
-    result = _check_row_count(client, "00O")
+    result = check_row_count(client, "00O")
     assert result.status == "超えていない"
     assert result.rows == 2
     assert SECRET_ROW_VALUE not in str(result.reason or "")
@@ -340,6 +341,6 @@ def test_salesforce_request_error_marks_unknown() -> None:
     """``SalesforceRequestError`` （401 / 403 以外） は 判定不可。"""
     err = SalesforceRequestError("GET", "/analytics/reports/00O", 500, "Server Error")
     client = _FakeClient(describe=_metadata(), get_error=err)
-    result = _check_row_count(client, "00O")
+    result = check_row_count(client, "00O")
     assert result.status == "判定不可"
     assert "500" in (result.reason or "")

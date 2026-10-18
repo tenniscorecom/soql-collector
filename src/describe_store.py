@@ -14,7 +14,7 @@
   カスタム項目 / 絞り込み可 / 並べ替え可 / 選択肢 / 取得日時
 - 1 オブジェクトの行は同じ取得日時
 - 真偽値は ``○`` / 空文字、 参照先と選択肢は ``|`` 区切り
-- CSV から読んだ describe は **そのまま** ``_slim_object`` に渡せる形に
+- CSV から読んだ describe は **そのまま** ``make_slim_object`` に渡せる形に
   組み立て直して返す （既存の mapping / pii / 関連の掘り込みは変えない）
 - 失敗 （HTTP エラー / ``ValueError``） は CSV に書かない。 1 回の実行の
   メモリだけに留める （401 / 403 はそのまま上位へ送出）
@@ -196,10 +196,10 @@ def describe_to_csv_rows(
 def csv_rows_to_describe(rows: list[dict[str, str]]) -> dict[str, Any]:
     """CSV の行 dict から ``describe_object`` 戻り値と同じ形の dict を組み立てる。
 
-    ``_slim_object`` が読むキー（``name`` / ``label`` / ``custom`` / ``fields`` と、
+    ``make_slim_object`` が読むキー（``name`` / ``label`` / ``custom`` / ``fields`` と、
     各 field の ``name`` / ``label`` / ``type`` / ``custom`` / ``referenceTo`` /
     ``relationshipName`` / ``picklistValues``）を持たせる。 これで CSV から読んだ値を
-    ``_slim_object`` に通しても API 直呼びと同じ出力が得られる。 ``rows`` は comken の
+    ``make_slim_object`` に通しても API 直呼びと同じ出力が得られる。 ``rows`` は comken の
     ``CSV`` で読んだ行（見出しを確かめてあり、 値はすべて str）。
     """
     if not rows:
@@ -329,7 +329,7 @@ def now_iso() -> str:
 class DescribeStore:
     """メモリ辞書と CSV を束ねたストア。
 
-    1 回の実行の中で ``_fetch_object_cached`` から何度も参照される。 メモリ
+    1 回の実行の中で ``fetch_object_cached`` から何度も参照される。 メモリ
     にヒットすれば即返し、 無ければ CSV を見てヒットすればメモリに載せて返す。
     どちらも無ければ API を呼ぶ （呼び元が行う） 。
 
