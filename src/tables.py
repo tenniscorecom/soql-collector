@@ -159,8 +159,10 @@ def run_tables(
     only_keys: Iterable[str] | None = None,
     similar_threshold: float = 0.8,
     xlsx_name: str = XLSX_NAME,
+    markdown_dir: str = ai_markdown.MARKDOWN_SUBDIR,
+    diagram_dir: str = relation_diagram.DIAGRAM_SUBDIR,
 ) -> TableOutcome:
-    """``records`` から ``SOQL調査.xlsx`` と ``列名の対応.csv`` を組み立てる。
+    """``records`` から ``SOQL調査.xlsx`` と ``列名の対応.csv`` と Markdown を組み立てる。
 
     Args:
         output_dir: 出力フォルダ。 無ければ作る。
@@ -168,6 +170,10 @@ def run_tables(
         only_keys: 互換性のために受け取るが今回は使われない。
         similar_threshold: 似たレポート判定の Jaccard 下限。
         xlsx_name: 出力する xlsx のファイル名。 既定 ``SOQL調査.xlsx``。
+        markdown_dir: ``SOQL資料/{管理番号}.md`` を置くフォルダ名
+            （``config.ini [FILES] MARKDOWN_DIR``）。
+        diagram_dir: ``関係図/{主オブジェクト}.md`` を置くフォルダ名
+            （``config.ini [FILES] DIAGRAM_DIR``）。
 
     Returns:
         ``TableOutcome``: 書いたファイル一覧。 ``skipped`` は常に空。
@@ -220,6 +226,7 @@ def run_tables(
         similar_lookup=key_to_group,
         unresolved_counts=unresolved_counts,
         warnings=warning_rows,
+        markdown_dir=markdown_dir,
     )
     columns_rows = _build_columns_sheet_rows_from_records(
         sorted_records,
@@ -263,15 +270,26 @@ def run_tables(
     if column_names_path.exists():
         wrote.append(column_names_path)
 
-    # 1 レポート 1 つの Markdown 資料を ``SOQL資料/{管理番号}.md`` に書く。
+    # 1 レポート 1 つの Markdown 資料を ``{markdown_dir}/{管理番号}.md`` に書く。
     # AI に SOQL を組ませるときにそのまま渡す用途。 既存のファイルはそのまま
     # 残し、 今回取れた record の分だけ上書きする。 似たレポートの情報を
     # ``similar_lookup`` で渡すと、 Markdown の 「似たレポート」 セクションに
     # 反映される
     wrote.extend(
         ai_markdown.write_ai_markdowns(
-            output_dir, sorted_records, similar_lookup=key_to_group, diagrams=diagrams
+            output_dir,
+            sorted_records,
+            similar_lookup=key_to_group,
+            diagrams=diagrams,
+            subdir=markdown_dir,
+            diagram_subdir=diagram_dir,
         )
+    )
+
+    # 主オブジェクトごとの関係図（Mermaid）を ``{diagram_dir}/{主オブジェクト}.md`` に書く。
+    # 各 ``{markdown_dir}/{管理番号}.md`` からこのファイルへリンクしているので、 一緒に出す
+    wrote.extend(
+        relation_diagram.write_main_object_diagrams(output_dir, diagrams, subdir=diagram_dir)
     )
 
     return TableOutcome(wrote=tuple(wrote), skipped=())
@@ -311,6 +329,7 @@ def _build_survey_table_rows_from_records(
     similar_lookup: dict[str, tuple[int, str, str]],
     unresolved_counts: dict[str, int],
     warnings: list[dict[str, str]],
+    markdown_dir: str = ai_markdown.MARKDOWN_SUBDIR,
 ) -> list[dict[str, str]]:
     """全 record から 一覧 の行を作る。
 
@@ -362,7 +381,7 @@ def _build_survey_table_rows_from_records(
                 "個人情報の該当列": pii_columns,
                 "似たレポート": group_text,
                 "警告": warning_summary,
-                "SOQL資料": f"SOQL資料/{key}.md" if key else "",
+                "SOQL資料": f"{markdown_dir}/{key}.md" if key else "",
             }
         )
     return rows
