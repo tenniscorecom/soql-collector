@@ -659,3 +659,120 @@ def test_xlsx_status_fills_uses_needs_fix_and_check_colors(tmp_path: Path) -> No
     workbook.close()
     assert found_fix
     assert found_check
+
+
+# ── 所有者を User とみなして型を引く ────────────────────────────
+
+
+def _make_case_with_polymorphic_owner() -> dict:
+    """``Owner`` が ``Group`` と ``User`` の両方を指す Case の describe。"""
+    return {
+        "name": "Case",
+        "label": "ケース",
+        "custom": False,
+        "fields": [
+            {
+                "name": "OwnerId",
+                "label": "所有者ID",
+                "type": "reference",
+                "custom": False,
+                "referenceTo": ["Group", "User"],
+                "relationshipName": "Owner",
+                "picklistValues": [],
+            },
+        ],
+    }
+
+
+def _make_user_with_department() -> dict:
+    """``Department`` を持つ User の describe。"""
+    return {
+        "name": "User",
+        "label": "ユーザ",
+        "custom": False,
+        "fields": [
+            {
+                "name": "Name",
+                "label": "ユーザ名",
+                "type": "string",
+                "custom": False,
+                "referenceTo": [],
+                "relationshipName": None,
+                "picklistValues": [],
+            },
+            {
+                "name": "Department",
+                "label": "部署",
+                "type": "string",
+                "custom": False,
+                "referenceTo": [],
+                "relationshipName": None,
+                "picklistValues": [],
+            },
+        ],
+    }
+
+
+def _make_group_describe() -> dict:
+    """``Group`` （キュー） の describe。 ``Department`` は持たない。"""
+    return {
+        "name": "Group",
+        "label": "キュー",
+        "custom": False,
+        "fields": [
+            {
+                "name": "Name",
+                "label": "キュー名",
+                "type": "string",
+                "custom": False,
+                "referenceTo": [],
+                "relationshipName": None,
+                "picklistValues": [],
+            },
+        ],
+    }
+
+
+def test_owner_department_type_comes_from_user_not_group() -> None:
+    """``Owner.Department`` は Group で止まらず、 User の項目として型を引く。"""
+    column_map = [
+        {
+            "列キー": "Case.Owner.Department",
+            "表示名": "所有者: 部署",
+            "所属オブジェクト": "Case",
+            "対応フィールドAPI名": "(不明)",
+            "型": "",
+            "参照先オブジェクト": "",
+            "リレーション名": "",
+            "備考": "",
+        },
+    ]
+    existing = {
+        ("case", "Case.Owner.Department"): ColumnFixRow(
+            status="OK",
+            main_object="Case",
+            display_name="所有者: 部署",
+            column_key="Case.Owner.Department",
+            auto_soql_name="",
+            candidates="",
+            fixed_soql_name="Owner.Department",
+            note="",
+            used_in_reports="",
+            updated_at="",
+        ),
+    }
+    objects = {
+        "Case": _make_case_with_polymorphic_owner(),
+        "User": _make_user_with_department(),
+        "Group": _make_group_describe(),
+    }
+    warnings: list[str] = []
+    new_column_map = apply_overrides(
+        column_map_rows=column_map,
+        existing=existing,
+        main_object="Case",
+        objects=objects,
+        warnings=warnings,
+    )
+    assert new_column_map[0]["型"] == "string"
+    assert not warnings

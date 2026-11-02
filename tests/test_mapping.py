@@ -12,10 +12,14 @@ HTTP や ``ReportAPI`` は使わないので、 モックも context manager も
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from src.mapping import (
+    OWNER_POLYMORPHIC_NOTE,
     build_column_map,
+    build_relation_chains,
     candidate_failure_reason,
     collect_describable_columns,
     report_type_candidates,
@@ -1625,4 +1629,435 @@ def test_build_column_map_resolves_object_colon_label_multiple_candidates() -> N
     )
     row = next(r for r in rows if r["列キー"] == "OPP.ACCOUNT.SUBJECT__C")
     # 候補が複数あるときは 「複数候補あり」 備考
+    assert "複数候補あり" in row["備考"]
+
+
+# ── 所有者を User とみなして解決 ──────────────────────────────────────
+
+
+def _case_with_polymorphic_owner() -> dict:
+    """``Owner`` が ``Group`` と ``User`` の両方を指す主オブジェクトの describe。"""
+    return {
+        "name": "Case",
+        "label": "ケース",
+        "fields": [
+            {
+                "name": "Name",
+                "label": "件名",
+                "type": "string",
+                "referenceTo": [],
+                "relationshipName": None,
+            },
+            {
+                "name": "Type",
+                "label": "ケースタイプ",
+                "type": "picklist",
+                "referenceTo": [],
+                "relationshipName": None,
+            },
+            {
+                "name": "OwnerId",
+                "label": "所有者ID",
+                "type": "reference",
+                "referenceTo": ["Group", "User"],
+                "relationshipName": "Owner",
+            },
+            {
+                "name": "CreatedById",
+                "label": "作成者",
+                "type": "reference",
+                "referenceTo": ["User"],
+                "relationshipName": "CreatedBy",
+            },
+            {
+                "name": "LastModifiedById",
+                "label": "最終更新者",
+                "type": "reference",
+                "referenceTo": ["User"],
+                "relationshipName": "LastModifiedBy",
+            },
+        ],
+    }
+
+
+def _user_describe() -> dict:
+    """``User`` の describe。 所有者から辿れる項目を並べる。"""
+    return {
+        "name": "User",
+        "label": "ユーザ",
+        "fields": [
+            {
+                "name": "Name",
+                "label": "ユーザ名",
+                "type": "string",
+                "referenceTo": [],
+                "relationshipName": None,
+            },
+            {
+                "name": "Title",
+                "label": "役職",
+                "type": "string",
+                "referenceTo": [],
+                "relationshipName": None,
+            },
+            {
+                "name": "Alias",
+                "label": "別名",
+                "type": "string",
+                "referenceTo": [],
+                "relationshipName": None,
+            },
+            {
+                "name": "Type",
+                "label": "ユーザタイプ",
+                "type": "string",
+                "referenceTo": [],
+                "relationshipName": None,
+            },
+            {
+                "name": "Department",
+                "label": "部署",
+                "type": "string",
+                "referenceTo": [],
+                "relationshipName": None,
+            },
+        ],
+    }
+
+
+def _group_describe() -> dict:
+    """``Group`` （キュー） の describe。"""
+    return {
+        "name": "Group",
+        "label": "キュー",
+        "fields": [
+            {
+                "name": "Name",
+                "label": "キュー名",
+                "type": "string",
+                "referenceTo": [],
+                "relationshipName": None,
+            },
+        ],
+    }
+
+
+def _fake_fetch(objects: dict[str, dict]) -> Callable[[str], dict | None]:
+    """``fetch_object`` の代用。 引いたオブジェクトの describe を返す。"""
+
+    def fetch(name: str) -> dict | None:
+        return objects.get(name)
+
+    return fetch
+
+
+def test_build_column_map_resolves_owner_column_key_to_user() -> None:
+    """``Owner`` がポリモーフィックでも、 所有者は User として辿る。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["Case.Owner.Department"],
+        detail_column_labels={"Case.Owner.Department": "所有者: 部署"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_polymorphic_owner(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "Case.Owner.Department")
+    assert row["対応フィールドAPI名"] == "Owner.Department"
+    # User だけの項目なので、 ポリモーフィック注意書きが備考に入る
+    assert OWNER_POLYMORPHIC_NOTE in row["備考"]
+
+
+def test_build_column_map_owner_common_field_has_no_polymorphic_note() -> None:
+    """``Owner.Name`` は User の共通項目なので注意書きは付かない。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["Case.Owner.Name"],
+        detail_column_labels={"Case.Owner.Name": "所有者: ユーザ名"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_polymorphic_owner(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "Case.Owner.Name")
+    assert row["対応フィールドAPI名"] == "Owner.Name"
+    assert OWNER_POLYMORPHIC_NOTE not in row["備考"]
+
+
+def test_build_column_map_owner_column_key_type_is_user_side_type() -> None:
+    """``Owner.Type`` の型は User 側の型 （ 主オブジェクトの型ではない ） 。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["Case.Owner.Type"],
+        detail_column_labels={"Case.Owner.Type": "所有者: ユーザタイプ"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_polymorphic_owner(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "Case.Owner.Type")
+    assert row["対応フィールドAPI名"] == "Owner.Type"
+    # 主オブジェクトの Case.Type は picklist だが、 User.Type は string
+    assert row["型"] == "string"
+
+
+def test_build_relation_chains_prefers_owner_over_created_by() -> None:
+    """User への鎖が複数あるときは、 項目の並びに依存せず ``Owner`` を採る。"""
+    relations = [
+        _fake_relation("Case", "CreatedById", "CreatedBy", "User", 1),
+        _fake_relation("Case", "LastModifiedById", "LastModifiedBy", "User", 1),
+        _fake_relation("Case", "OwnerId", "Owner", "User", 1),
+    ]
+    chains = build_relation_chains(relations, "Case")
+    assert [candidate.chain for candidate in chains["User"]] == ["Owner"]
+
+
+def test_build_relation_chains_prefers_owner_even_when_owner_comes_first() -> None:
+    """``Owner`` が先にあっても、 鎖は ``Owner`` になる。"""
+    relations = [
+        _fake_relation("Case", "OwnerId", "Owner", "User", 1),
+        _fake_relation("Case", "CreatedById", "CreatedBy", "User", 1),
+    ]
+    chains = build_relation_chains(relations, "Case")
+    assert [candidate.chain for candidate in chains["User"]] == ["Owner"]
+
+
+def test_build_column_map_resolves_owner_prefix_label_to_owner_field() -> None:
+    """「所有者: 役職」 の表示名は、 Owner 経由の User の項目になる。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["OWNER_TITLE_FIELD"],
+        detail_column_labels={"OWNER_TITLE_FIELD": "所有者: 役職"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_polymorphic_owner(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "OWNER_TITLE_FIELD")
+    assert row["対応フィールドAPI名"] == "Owner.Title"
+    assert row["所属オブジェクト"] == "User"
+    # Title は User の共通項目なので注意書きは付かない
+    assert OWNER_POLYMORPHIC_NOTE not in row["備考"]
+
+
+def test_build_column_map_resolves_owner_prefix_label_with_english_suffix() -> None:
+    """「Opportunity Owner: Title」 のような英語表記でも Owner 経由になる。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["CASE.OWNER.TITLE"],
+        detail_column_labels={"CASE.OWNER.TITLE": "Opportunity Owner: 役職"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_polymorphic_owner(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "CASE.OWNER.TITLE")
+    assert row["対応フィールドAPI名"] == "Owner.Title"
+
+
+def test_build_column_map_falls_back_to_owner_column_key_when_label_fails() -> None:
+    """表示名 で解けなかった ``OWNER_FULL_NAME`` は ``Owner.Name`` になる。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["OWNER_FULL_NAME"],
+        detail_column_labels={"OWNER_FULL_NAME": "所有者のフルネーム"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_polymorphic_owner(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "OWNER_FULL_NAME")
+    assert row["対応フィールドAPI名"] == "Owner.Name"
+    assert "所有者を User とみなして解決" in row["備考"]
+
+
+def test_build_column_map_resolves_owner_alias_column_key() -> None:
+    """``OWNER.ALIAS`` は User の Alias に引ける。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["OWNER.ALIAS"],
+        detail_column_labels={"OWNER.ALIAS": "所有者の別名"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_polymorphic_owner(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "OWNER.ALIAS")
+    assert row["対応フィールドAPI名"] == "Owner.Alias"
+    assert "所有者を User とみなして解決" in row["備考"]
+
+
+def test_build_column_map_keeps_label_match_for_owner_id_column() -> None:
+    """``OWNER`` + 表示名 ``所有者ID`` は、 従来の表示名照合 （ ``OwnerId`` ） を保つ。
+
+    表示名で解けるときは、 所有者を User とみなす予備 （ ``Owner.Name`` ） を
+    使わない。
+    """
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["OWNER"],
+        detail_column_labels={"OWNER": "所有者ID"},
+    )
+    main_describe = _case_with_polymorphic_owner()
+    rows = build_column_map(
+        metadata,
+        main_describe,
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "OWNER")
+    assert row["対応フィールドAPI名"] == "OwnerId"
+
+
+# ── 表示名の接頭辞が参照項目を指すときの解決 ──────────────────────
+
+
+def test_build_column_map_resolves_creator_prefix_label_to_created_by_field() -> None:
+    """「作成者: 役職」 の表示名は、 CreatedBy 経由の User の項目になる。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["CREATED_BY_TITLE"],
+        detail_column_labels={"CREATED_BY_TITLE": "作成者: 役職"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_polymorphic_owner(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "CREATED_BY_TITLE")
+    assert row["対応フィールドAPI名"] == "CreatedBy.Title"
+    assert row["所属オブジェクト"] == "User"
+
+
+def test_build_column_map_resolves_last_modified_by_prefix_label() -> None:
+    """「最終更新者: 役職」 の表示名は、 LastModifiedBy 経由の項目になる。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["LAST_MODIFIED_BY_TITLE"],
+        detail_column_labels={"LAST_MODIFIED_BY_TITLE": "最終更新者: 役職"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_polymorphic_owner(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "LAST_MODIFIED_BY_TITLE")
+    assert row["対応フィールドAPI名"] == "LastModifiedBy.Title"
+
+
+def test_build_column_map_prefix_label_uses_relationship_of_matched_reference() -> None:
+    """接頭辞が参照項目の表示名で終わるときは、 その relationshipName を使う。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["CREATED_BY_TITLE"],
+        detail_column_labels={"CREATED_BY_TITLE": "ケース作成者: 役職"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_polymorphic_owner(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "CREATED_BY_TITLE")
+    assert row["対応フィールドAPI名"] == "CreatedBy.Title"
+
+
+def test_build_column_map_prefix_resolution_does_not_depend_on_field_order() -> None:
+    """参照項目の並びを入れ替えても、 解決結果は同じ。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["CREATED_BY_TITLE", "OWNER_TITLE", "LAST_MODIFIED_BY_TITLE"],
+        detail_column_labels={
+            "CREATED_BY_TITLE": "作成者: 役職",
+            "OWNER_TITLE": "所有者: 役職",
+            "LAST_MODIFIED_BY_TITLE": "最終更新者: 役職",
+        },
+    )
+    describe = _case_with_polymorphic_owner()
+    reversed_describe = {**describe, "fields": list(reversed(describe["fields"]))}
+    expected = {
+        "CREATED_BY_TITLE": "CreatedBy.Title",
+        "OWNER_TITLE": "Owner.Title",
+        "LAST_MODIFIED_BY_TITLE": "LastModifiedBy.Title",
+    }
+    for main_describe in (describe, reversed_describe):
+        rows = build_column_map(
+            metadata,
+            main_describe,
+            None,
+            main_object="Case",
+            fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+        )
+        for column_key, soql_name in expected.items():
+            row = next(r for r in rows if r["列キー"] == column_key)
+            assert row["対応フィールドAPI名"] == soql_name, column_key
+
+
+def _case_with_two_creator_references() -> dict:
+    """「作成者」 の表示名を持つ参照項目が 2 つある主オブジェクトの describe。"""
+    return {
+        "name": "Case",
+        "label": "ケース",
+        "fields": [
+            {
+                "name": "CreatedById",
+                "label": "作成者ID",
+                "type": "reference",
+                "referenceTo": ["User"],
+                "relationshipName": "CreatedBy",
+            },
+            {
+                "name": "OwnerId",
+                "label": "作成者ID",
+                "type": "reference",
+                "referenceTo": ["User"],
+                "relationshipName": "Owner",
+            },
+        ],
+    }
+
+
+def test_build_column_map_prefix_label_with_two_references_is_multiple_candidates() -> None:
+    """接頭辞が複数の参照項目に当たるときは、 複数候補として残す。"""
+    metadata = _make_metadata(
+        report_type="Case",
+        detail_columns=["CREATED_BY_TITLE"],
+        detail_column_labels={"CREATED_BY_TITLE": "作成者: 役職"},
+    )
+    rows = build_column_map(
+        metadata,
+        _case_with_two_creator_references(),
+        None,
+        main_object="Case",
+        fetch_object=_fake_fetch({"User": _user_describe(), "Group": _group_describe()}),
+    )
+    row = next(r for r in rows if r["列キー"] == "CREATED_BY_TITLE")
+    assert row["対応フィールドAPI名"] == "(不明)"
     assert "複数候補あり" in row["備考"]

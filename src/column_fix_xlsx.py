@@ -674,8 +674,11 @@ def _candidate_next_refs(
     matched_field: dict[str, Any],
     objects: dict[str, dict[str, Any]],
 ) -> list[str]:
-    """次段候補の参照オブジェクト名 (重複なし) を並べる。"""
-    reference_to: list[str] = matched_field.get("referenceTo") or []
+    """次段候補の参照オブジェクト名 (重複なし) を並べる。
+
+    所有者は User とみなすので、 所有者項目では ``User`` を先に試す。
+    """
+    reference_to: list[str] = mapping.owner_first_reference_targets(matched_field)
     relationship = matched_field.get("relationshipName")
     is_polymorphic = len(reference_to) > 1
     candidates: list[str] = []

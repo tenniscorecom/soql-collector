@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from src.mapping.owner import OWNER_RELATIONSHIP_NAME, OWNER_USER_OBJECT
+
 if TYPE_CHECKING:
     from src.fetch import RelationRecord
 
@@ -85,7 +87,7 @@ def build_relation_chains(
     while head < len(queue):
         current, chain, depth = queue[head]
         head += 1
-        for child, rel_name, _ in adjacency.get(current, []):
+        for child, rel_name, _ in _prefer_owner_edge(adjacency.get(current, [])):
             if child in visited:
                 continue
             if not rel_name:
@@ -108,3 +110,40 @@ def build_relation_chains(
     result.pop(main_object, None)
 
     return result
+
+
+def _prefer_owner_edge(
+    edges: list[tuple[str, str | None, str]],
+) -> list[tuple[str, str | None, str]]:
+    """同じ子オブジェクトへの辺が複数あるとき、 ``Owner`` の辺を先にする。
+
+    主オブジェクトから User への鎖が ``CreatedBy`` / ``LastModifiedBy`` /
+    ``Owner`` のように複数あるときは ``Owner`` を採る。 describe の項目順
+    （ ``fields`` の並び） で結果が変わらないよう、 ここで並べ替える。
+
+    Args:
+        edges: ``(子オブジェクト名, リレーション名, 子オブジェクト名)`` の辺のリスト。
+
+    Returns:
+        並べ替えた辺のリスト。 子オブジェクトの並びは元のまま。
+    """
+    if not edges:
+        return edges
+    grouped: dict[str, list[tuple[str, str | None, str]]] = {}
+    child_order: list[str] = []
+    for edge in edges:
+        child = edge[0]
+        if child not in grouped:
+            grouped[child] = []
+            child_order.append(child)
+        grouped[child].append(edge)
+    ordered: list[tuple[str, str | None, str]] = []
+    for child in child_order:
+        group = grouped[child]
+        if child != OWNER_USER_OBJECT:
+            ordered.extend(group)
+            continue
+        owner_edges = [edge for edge in group if edge[1] == OWNER_RELATIONSHIP_NAME]
+        other_edges = [edge for edge in group if edge[1] != OWNER_RELATIONSHIP_NAME]
+        ordered.extend([*owner_edges, *other_edges])
+    return ordered
