@@ -14,6 +14,9 @@ import types
 from pathlib import Path
 from typing import ClassVar
 
+from comken.exceptions import SalesforceReportIDNotFoundError
+from comken.toolbox.salesforce.report import report_id_from_url
+
 from src.fetch import ReportRecord
 from src.report_py import (
     REPORT_PY_DIR,
@@ -23,6 +26,12 @@ from src.report_py import (
 from src.soql_builder import INCOMPLETE_MARKER, build_soql
 
 # ── ヘルパー ──────────────────────────────────────────────────────
+
+# 架空のレポート URL。 レポート ID を含む（ 18 桁 ）
+REPORT_URL = "https://example.my.salesforce.com/lightning/r/Report/00O5g00000ABCDEfgh/view"
+
+# ``REPORT_URL`` にあるレポート ID
+REPORT_ID = "00O5g00000ABCDEfgh"
 
 
 def _column_map(rows: list[tuple[str, str, str]]) -> list[dict[str, str]]:
@@ -50,6 +59,7 @@ def _make_record(
     report_filters: list[dict] | None = None,
     unresolved_columns: list[str] | None = None,
     report_name: object = None,
+    url: str = "https://example.my.salesforce.com/lightning/r/Report/00O000000000001/view",
 ) -> ReportRecord:
     """SOQL の下書きまで済んだ ``ReportRecord`` を作る。
 
@@ -57,6 +67,7 @@ def _make_record(
     （ ``missing`` に入り、 SELECT から落ちる ）。
     ``report_name`` を渡すと、 ``reportMetadata.name`` に入れる。 渡さない
     （ ``None`` ） ときは ``name`` キー自体が無い状態にする。
+    ``url`` は管理表の URL。 レポート ID はこの URL から取り出す。
     """
     detail_columns = list(detail_columns or ["Name"])
     metadata: dict = {
@@ -90,8 +101,8 @@ def _make_record(
     record = ReportRecord(
         key=key,
         summary=summary,
-        report_id="00O000000000001",
-        url="https://example.my.salesforce.com/lightning/r/Report/00O000000000001/view",
+        report_id=_report_id_of(url),
+        url=url,
         main_object="Case",
         report={"reportMetadata": metadata, "reportExtendedMetadata": {}},
         objects={},
@@ -112,6 +123,14 @@ def _make_record(
         warnings=record.warnings,
         soql_draft=build_soql(record),
     )
+
+
+def _report_id_of(url: str) -> str:
+    """URL からレポート ID を取り出す。 取れなければ空文字。"""
+    try:
+        return report_id_from_url(url)
+    except SalesforceReportIDNotFoundError:
+        return ""
 
 
 def _load_generated(source: str) -> dict[str, object]:
@@ -325,6 +344,72 @@ def test_generated_name_keeps_quotes_and_newlines_in_one_line() -> None:
     namespace = _load_generated(source)
     report_class = namespace["Report1001"]
     assert report_class.NAME == 'a\'b"c d"""e'  # type: ignore[attr-defined]
+
+
+# ── REPORT_ID ─────────────────────────────────────────────────────
+
+
+def test_generated_class_has_report_id() -> None:
+    """``REPORT_ID`` は、 管理表の URL にあるレポート ID になる。"""
+    record = _make_record(url=REPORT_URL)
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.REPORT_ID == REPORT_ID  # type: ignore[attr-defined]
+
+
+def test_generated_report_id_line_comes_right_after_name() -> None:
+    """``REPORT_ID`` の行は、 ``NAME`` の次の行に書く。"""
+    record = _make_record(report_name="売上レポート", url=REPORT_URL)
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    lines = source.splitlines()
+    name_index = lines.index("    NAME = '売上レポート'")
+    assert lines[name_index + 1] == f"    REPORT_ID = {REPORT_ID!r}"
+
+
+def test_generated_report_id_line_comes_right_after_key_when_name_is_missing() -> None:
+    """``NAME`` が無いときは、 ``REPORT_ID`` を ``KEY`` の次の行に書く。"""
+    record = _make_record(summary="", report_name="", url=REPORT_URL)
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    lines = source.splitlines()
+    key_index = lines.index("    KEY = '1001'")
+    assert lines[key_index + 1] == f"    REPORT_ID = {REPORT_ID!r}"
+
+
+def test_generated_source_has_no_report_id_line_when_url_is_empty() -> None:
+    """URL が空のときは、 ``REPORT_ID`` の行を出さない（ 生成は続ける ）。"""
+    record = _make_record(url="")
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    assert "REPORT_ID" not in _class_attributes(source, "Report1001")
+    assert not [line for line in source.splitlines() if line.startswith("    REPORT_ID = ")]
+    # 生成は止まらない
+    namespace = _load_generated(source)
+    assert namespace["Report1001"].KEY == "1001"  # type: ignore[attr-defined]
+
+
+def test_generated_source_has_no_report_id_line_when_url_has_no_report_id() -> None:
+    """URL にレポート ID が無いときは、 ``REPORT_ID`` の行を出さない（ 生成は続ける ）。"""
+    record = _make_record(url="https://example.my.salesforce.com/lightning/r/Report/view")
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    assert "REPORT_ID" not in _class_attributes(source, "Report1001")
+    assert not [line for line in source.splitlines() if line.startswith("    REPORT_ID = ")]
+    # 生成は止まらない
+    namespace = _load_generated(source)
+    assert namespace["Report1001"].KEY == "1001"  # type: ignore[attr-defined]
+
+
+def test_generated_source_has_no_salesforce_domain() -> None:
+    """生成したソースに、 組織のドメインも URL も含めない。"""
+    record = _make_record(url=REPORT_URL)
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    assert "salesforce.com" not in source
+    assert REPORT_URL not in source
 
 
 # ── COLUMN_NAMES ─────────────────────────────────────────────────

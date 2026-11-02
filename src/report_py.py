@@ -5,9 +5,12 @@
 ``src/soql_reports/reports/`` に置けば動く。
 
 **文字列はすべて ``repr()`` を通して組み立てる。** レポートから来た値
-（概要・レポート名・missing・checks・表示名） をそのまま書くと、 値が
-コードとして実行される危険があるため。 改行と制御文字は空白に置き換え、
+（概要・レポート名・レポート ID・missing・checks・表示名） をそのまま書くと、
+値がコードとして実行される危険があるため。 改行と制御文字は空白に置き換え、
 ``repr()`` で Python の文字列リテラルにしてから書き出す。
+
+**URL は書き出さない。** レポート ID だけを書き、 組織のドメイン
+（ URL 全体） は ``.py`` に残さない。
 """
 
 from __future__ import annotations
@@ -17,6 +20,9 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from comken.exceptions import SalesforceReportIDNotFoundError
+from comken.toolbox.salesforce.report import report_id_from_url
 
 from src import mapping
 
@@ -111,6 +117,9 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
     name = _report_name(record)
     if name:
         lines.append(f"    NAME = {name!r}")
+    report_id = _report_id(record)
+    if report_id:
+        lines.append(f"    REPORT_ID = {report_id!r}")
     if column_names:
         lines.append("    COLUMN_NAMES: ClassVar[dict[str, str]] = {")
         for soql_name, display_name in column_names:
@@ -146,6 +155,32 @@ def _report_name(record: ReportRecord) -> str:
             return name
     summary = record.summary if isinstance(record.summary, str) else ""
     return _flatten(summary).strip()
+
+
+def _report_id(record: ReportRecord) -> str:
+    """レポート ID を 1 行の文字列にして返す。 取れなければ空文字。
+
+    管理表の URL （ ``record.url`` ） から取り出す。 URL が空・壊れていて
+    レポート ID が無いときは空文字を返す（ 呼び出し側はその行を出さない ）。
+
+    レポート ID だけを書き、 URL 全体は書かない。 生成する ``.py`` は
+    公開リポジトリに置かれるため、 組織のドメインを残したくない。
+    """
+    if not record.url:
+        logger.warning(
+            "レポート URL が空です（REPORT_ID の行は書きません）: 管理番号 %s",
+            record.key,
+        )
+        return ""
+    try:
+        return report_id_from_url(record.url)
+    except SalesforceReportIDNotFoundError:
+        logger.warning(
+            "レポート ID を取り出せません（REPORT_ID の行は書きません）: 管理番号 %s, URL %s",
+            record.key,
+            record.url,
+        )
+        return ""
 
 
 def _unique_stem(key: str, used: set[str]) -> str:
