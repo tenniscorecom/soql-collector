@@ -2277,6 +2277,194 @@ def test_duration_value_not_in_allow_list_goes_to_missing() -> None:
     assert any("durationValue" in m for m in draft.missing)
 
 
+# ── 相対日付の表記ゆれ ────────────────────────────────────────────
+
+# 仕様表の ( 入力の例, 期待するリテラル ) 。 ``LAST_90_DAYS`` は固定語なので
+# そのまま通す （ ``LAST_N_DAYS:90`` と同じ意味 ） 。
+_RELATIVE_DATE_TABLE: list[tuple[str, str]] = [
+    ("LAST_N_DAYS:60", "LAST_N_DAYS:60"),
+    ("LAST N DAYS:60", "LAST_N_DAYS:60"),
+    ("LAST_60_DAYS", "LAST_N_DAYS:60"),
+    ("LAST 60 DAYS", "LAST_N_DAYS:60"),
+    ("過去 60 日間", "LAST_N_DAYS:60"),
+    ("過去60日", "LAST_N_DAYS:60"),
+    ("過去60日間", "LAST_N_DAYS:60"),
+    ("LAST_90_DAYS", "LAST_90_DAYS"),
+    ("LAST 90 DAYS", "LAST_N_DAYS:90"),
+    ("過去 90 日間", "LAST_N_DAYS:90"),
+    ("NEXT 30 DAYS", "NEXT_N_DAYS:30"),
+    ("NEXT_30_DAYS", "NEXT_N_DAYS:30"),
+    ("次の 30 日間", "NEXT_N_DAYS:30"),
+    ("今後 30 日間", "NEXT_N_DAYS:30"),
+    ("60 DAYS AGO", "N_DAYS_AGO:60"),
+    ("N_DAYS_AGO:60", "N_DAYS_AGO:60"),
+    ("60 日前", "N_DAYS_AGO:60"),
+    ("LAST 3 WEEKS", "LAST_N_WEEKS:3"),
+    ("過去 3 週間", "LAST_N_WEEKS:3"),
+    ("NEXT 3 WEEKS", "NEXT_N_WEEKS:3"),
+    ("次の 3 週間", "NEXT_N_WEEKS:3"),
+    ("3 週間前", "N_WEEKS_AGO:3"),
+    ("LAST 6 MONTHS", "LAST_N_MONTHS:6"),
+    ("過去 6 か月", "LAST_N_MONTHS:6"),
+    ("過去 6 ヶ月", "LAST_N_MONTHS:6"),
+    ("過去 6 カ月", "LAST_N_MONTHS:6"),
+    ("NEXT 6 MONTHS", "NEXT_N_MONTHS:6"),
+    ("次の 6 か月", "NEXT_N_MONTHS:6"),
+    ("6 か月前", "N_MONTHS_AGO:6"),
+    ("LAST 2 YEARS", "LAST_N_YEARS:2"),
+    ("過去 2 年間", "LAST_N_YEARS:2"),
+    ("過去 2 年", "LAST_N_YEARS:2"),
+    ("NEXT 2 YEARS", "NEXT_N_YEARS:2"),
+    ("次の 2 年間", "NEXT_N_YEARS:2"),
+    ("2 年前", "N_YEARS_AGO:2"),
+    ("TODAY", "TODAY"),
+    ("今日", "TODAY"),
+    ("YESTERDAY", "YESTERDAY"),
+    ("昨日", "YESTERDAY"),
+    ("TOMORROW", "TOMORROW"),
+    ("明日", "TOMORROW"),
+    ("THIS WEEK", "THIS_WEEK"),
+    ("今週", "THIS_WEEK"),
+    ("LAST WEEK", "LAST_WEEK"),
+    ("先週", "LAST_WEEK"),
+    ("NEXT WEEK", "NEXT_WEEK"),
+    ("来週", "NEXT_WEEK"),
+    ("THIS MONTH", "THIS_MONTH"),
+    ("今月", "THIS_MONTH"),
+    ("LAST MONTH", "LAST_MONTH"),
+    ("先月", "LAST_MONTH"),
+    ("NEXT MONTH", "NEXT_MONTH"),
+    ("来月", "NEXT_MONTH"),
+    ("THIS QUARTER", "THIS_QUARTER"),
+    ("今四半期", "THIS_QUARTER"),
+    ("LAST QUARTER", "LAST_QUARTER"),
+    ("前四半期", "LAST_QUARTER"),
+    ("NEXT QUARTER", "NEXT_QUARTER"),
+    ("次四半期", "NEXT_QUARTER"),
+    ("THIS YEAR", "THIS_YEAR"),
+    ("今年", "THIS_YEAR"),
+    ("LAST YEAR", "LAST_YEAR"),
+    ("昨年", "LAST_YEAR"),
+    ("去年", "LAST_YEAR"),
+    ("NEXT YEAR", "NEXT_YEAR"),
+    ("来年", "NEXT_YEAR"),
+]
+
+
+@pytest.mark.parametrize(("raw", "literal"), _RELATIVE_DATE_TABLE)
+def test_relative_date_notation_is_converted_in_report_filter(raw: str, literal: str) -> None:
+    """相対日付の表記ゆれは、 ``reportFilters`` でも SOQL のリテラルになる。"""
+    column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+    record = _make_record(
+        detail_columns=["CloseDate"],
+        column_map=column_map,
+        report_filters=[{"column": "CloseDate", "operator": "equals", "value": raw}],
+    )
+    draft = build_soql(record)
+    assert f"WHERE CloseDate = {literal}" in draft.soql
+
+
+@pytest.mark.parametrize(("raw", "literal"), _RELATIVE_DATE_TABLE)
+def test_relative_date_notation_is_converted_in_datetime_report_filter(
+    raw: str, literal: str
+) -> None:
+    """相対日付の表記ゆれは、 datetime の ``reportFilters`` でもリテラルになる。"""
+    column_map = _column_map_with_types([("Done__c", "Done__c", "datetime")])
+    record = _make_record(
+        detail_columns=["Done__c"],
+        column_map=column_map,
+        report_filters=[{"column": "Done__c", "operator": "equals", "value": raw}],
+    )
+    draft = build_soql(record)
+    assert f"WHERE Done__c = {literal}" in draft.soql
+
+
+@pytest.mark.parametrize(("raw", "literal"), _RELATIVE_DATE_TABLE)
+def test_relative_date_notation_is_converted_in_standard_date_filter(
+    raw: str, literal: str
+) -> None:
+    """相対日付の表記ゆれは、 ``standardDateFilter`` でもリテラルになる。"""
+    column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+    record = _make_record(
+        detail_columns=["CloseDate"],
+        column_map=column_map,
+        standard_date_filter={
+            "column": "CloseDate",
+            "durationValue": raw,
+            "startDate": "",
+            "endDate": "",
+        },
+    )
+    draft = build_soql(record)
+    assert f"WHERE CloseDate = {literal}" in draft.soql
+
+
+@pytest.mark.parametrize(("raw", "literal"), _RELATIVE_DATE_TABLE)
+def test_relative_date_notation_is_converted_in_datetime_standard_date_filter(
+    raw: str, literal: str
+) -> None:
+    """相対日付の表記ゆれは、 datetime の ``standardDateFilter`` でもリテラルになる。"""
+    column_map = _column_map_with_types([("Done__c", "Done__c", "datetime")])
+    record = _make_record(
+        detail_columns=["Done__c"],
+        column_map=column_map,
+        standard_date_filter={
+            "column": "Done__c",
+            "durationValue": raw,
+            "startDate": "",
+            "endDate": "",
+        },
+    )
+    draft = build_soql(record)
+    assert f"WHERE Done__c = {literal}" in draft.soql
+
+
+@pytest.mark.parametrize(("raw", "literal"), _RELATIVE_DATE_TABLE)
+def test_relative_date_conversion_adds_check_only_when_changed(raw: str, literal: str) -> None:
+    """相対日付を変換したときだけ、 checks に 1 件積む。"""
+    column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+    record = _make_record(
+        detail_columns=["CloseDate"],
+        column_map=column_map,
+        report_filters=[{"column": "CloseDate", "operator": "equals", "value": raw}],
+    )
+    draft = build_soql(record)
+    converted = [check for check in draft.checks if check.startswith("相対日付を変換した")]
+    if raw == literal:
+        assert converted == []
+    else:
+        assert converted == [
+            f"相対日付を変換した: {raw} → {literal}（境界はレポートと SOQL で異なる場合あり）"
+        ]
+
+
+def test_relative_date_notation_that_cannot_be_read_goes_to_missing() -> None:
+    """解釈できない相対日付は missing になり、 SOQL に出ない。"""
+    for raw in ("過去 60 週日", "LAST 0 DAYS", "LAST 1.5 DAYS"):
+        column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+        record = _make_record(
+            detail_columns=["CloseDate"],
+            column_map=column_map,
+            report_filters=[{"column": "CloseDate", "operator": "equals", "value": raw}],
+        )
+        draft = build_soql(record)
+        assert "WHERE" not in draft.soql, raw
+        assert draft.missing, raw
+
+
+def test_relative_date_notation_in_string_field_is_kept_as_string() -> None:
+    """文字列型の項目では、 相対日付の表記も文字列のまま。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "equals", "value": "今日"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE Name = '今日'" in draft.soql
+    assert not any("相対日付" in check for check in draft.checks)
+
+
 # ── 日付の表記 ───────────────────────────────────────────────────
 
 

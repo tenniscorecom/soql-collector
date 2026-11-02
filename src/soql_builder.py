@@ -139,7 +139,95 @@ _RELATIVE_DATE_N_PREFIX_PATTERN = re.compile(
 
 # ``30_DAYS_AGO`` の形 （ N の部分は数字 ） で出してよい相対日付リテラル
 _RELATIVE_DATE_N_SUFFIX_PATTERN = re.compile(
-    r"^\d+_(?:DAYS|WEEKS|MONTHS|QUARTERS|YEARS|FISCAL_QUARTERS|FISCAL_YEARS)_AGO(?::\d+)?$"
+    r"^(?:\d+_(?:DAYS|WEEKS|MONTHS|QUARTERS|YEARS|FISCAL_QUARTERS|FISCAL_YEARS)_AGO(?::\d+)?"
+    r"|N_(?:DAYS|WEEKS|MONTHS|QUARTERS|YEARS|FISCAL_QUARTERS|FISCAL_YEARS)_AGO:\d+)$"
+)
+
+# 相対日付の表記ゆれを吸収する変換表。 全角の ASCII 文字 （ 全角数字や
+# 全角空白を含む） を半角にする
+_RELATIVE_DATE_FULLWIDTH_TABLE = str.maketrans(
+    {chr(code): chr(code - 0xFEE0) for code in range(0xFF01, 0xFF5F)} | {0x3000: " "}
+)
+
+# 日本語の 「か月」 のゆれ （ か月 / ヶ月 / ヵ月 / カ月 / ケ月 ） を
+# 「月」 にそろえる
+_JA_MONTH_VARIANTS: tuple[str, ...] = ("ヶ月", "ヵ月", "カ月", "ケ月", "か月")
+
+# 相対日付の固定語。 キーは照合用の形 （ 小文字・空白なし・``_`` なし ） 。
+# 値は SOQL のリテラル
+_RELATIVE_DATE_FIXED_LITERALS: dict[str, str] = {
+    "today": "TODAY",
+    "今日": "TODAY",
+    "yesterday": "YESTERDAY",
+    "昨日": "YESTERDAY",
+    "tomorrow": "TOMORROW",
+    "明日": "TOMORROW",
+    "thisweek": "THIS_WEEK",
+    "今週": "THIS_WEEK",
+    "lastweek": "LAST_WEEK",
+    "先週": "LAST_WEEK",
+    "nextweek": "NEXT_WEEK",
+    "来週": "NEXT_WEEK",
+    "thismonth": "THIS_MONTH",
+    "今月": "THIS_MONTH",
+    "lastmonth": "LAST_MONTH",
+    "先月": "LAST_MONTH",
+    "nextmonth": "NEXT_MONTH",
+    "来月": "NEXT_MONTH",
+    "thisquarter": "THIS_QUARTER",
+    "今四半期": "THIS_QUARTER",
+    "lastquarter": "LAST_QUARTER",
+    "前四半期": "LAST_QUARTER",
+    "nextquarter": "NEXT_QUARTER",
+    "次四半期": "NEXT_QUARTER",
+    "thisyear": "THIS_YEAR",
+    "今年": "THIS_YEAR",
+    "lastyear": "LAST_YEAR",
+    "昨年": "LAST_YEAR",
+    "去年": "LAST_YEAR",
+    "nextyear": "NEXT_YEAR",
+    "来年": "NEXT_YEAR",
+    "thisfiscalquarter": "THIS_FISCAL_QUARTER",
+    "lastfiscalquarter": "LAST_FISCAL_QUARTER",
+    "nextfiscalquarter": "NEXT_FISCAL_QUARTER",
+    "thisfiscalyear": "THIS_FISCAL_YEAR",
+    "lastfiscalyear": "LAST_FISCAL_YEAR",
+    "nextfiscalyear": "NEXT_FISCAL_YEAR",
+}
+
+# 相対日付の単位。 キーは照合用の形、 値は SOQL のリテラルに使う名前
+_RELATIVE_DATE_UNITS: dict[str, str] = {
+    "days": "DAYS",
+    "weeks": "WEEKS",
+    "months": "MONTHS",
+    "quarters": "QUARTERS",
+    "years": "YEARS",
+    "fiscalquarters": "FISCAL_QUARTERS",
+    "fiscalyears": "FISCAL_YEARS",
+    "日間": "DAYS",
+    "日": "DAYS",
+    "週間": "WEEKS",
+    "週": "WEEKS",
+    "月": "MONTHS",
+    "年間": "YEARS",
+    "年": "YEARS",
+}
+
+# 相対日付の表記パターン。 すべて照合用の形 （ 小文字・空白なし・``_`` なし ）
+# に対して使う。 2 番目は方向 （ "last" / "next" / "ago" ） 。 数量は 1 以上
+_RELATIVE_DATE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # ``lastndays:60`` / ``nextndays:60``
+    (re.compile(r"lastn(?P<unit>[a-z]+):(?P<count>\d+)"), "last"),
+    (re.compile(r"nextn(?P<unit>[a-z]+):(?P<count>\d+)"), "next"),
+    (re.compile(r"n(?P<unit>[a-z]+)ago:(?P<count>\d+)"), "ago"),
+    # ``last60days`` / ``next60days`` / ``60daysago``
+    (re.compile(r"last(?P<count>\d+)(?P<unit>[a-z]+)"), "last"),
+    (re.compile(r"next(?P<count>\d+)(?P<unit>[a-z]+)"), "next"),
+    (re.compile(r"(?P<count>\d+)(?P<unit>[a-z]+)ago"), "ago"),
+    # 日本語: ``過去60日間`` / ``次の30日間`` / ``60日前``
+    (re.compile(r"過去(?P<count>\d+)(?P<unit>[^0-9]+)"), "last"),
+    (re.compile(r"(?:次の|今後)(?P<count>\d+)(?P<unit>[^0-9]+)"), "next"),
+    (re.compile(r"(?P<count>\d+)(?P<unit>[^0-9]+)前"), "ago"),
 )
 
 # LIKE を使える型。 ``id`` / ``reference`` / ``multipicklist`` は LIKE では
@@ -312,6 +400,95 @@ def _is_allowed_relative_date_literal(value: str) -> bool:
     )
 
 
+def _canonical_relative_date_text(value: str) -> str:
+    """相対日付の表記を照合用の形 （ 小文字・空白なし・``_`` なし ） にする。
+
+    全角の英数字と全角空白を半角にし、 日本語の 「か月」 のゆれを
+    「月」 にそろえる。 大文字小文字と空白・``_`` は区別しない。
+    """
+    text = value.translate(_RELATIVE_DATE_FULLWIDTH_TABLE)
+    for variant in _JA_MONTH_VARIANTS:
+        text = text.replace(variant, "月")
+    return re.sub(r"\s+", "", text).lower().replace("_", "")
+
+
+def _build_relative_date_literal(direction: str, unit: str, count: int) -> str | None:
+    """方向と単位と数量から SOQL の相対日付リテラルを作る。
+
+    Args:
+        direction: ``"last"`` / ``"next"`` / ``"ago"`` 。
+        unit: 単位 （ 照合用の形 ） 。
+        count: 数量。 1 未満なら ``None`` 。
+
+    Returns:
+        SOQL のリテラル。 単位が分からなければ ``None`` 。
+    """
+    soql_unit = _RELATIVE_DATE_UNITS.get(unit)
+    if soql_unit is None:
+        return None
+    if count < 1:
+        return None
+    if direction == "last":
+        return f"LAST_N_{soql_unit}:{count}"
+    if direction == "next":
+        return f"NEXT_N_{soql_unit}:{count}"
+    return f"N_{soql_unit}_AGO:{count}"
+
+
+def _match_relative_date_pattern(canonical: str) -> str | None:
+    """照合用の形から相対日付リテラルを作る。 一致しなければ ``None`` 。"""
+    for pattern, direction in _RELATIVE_DATE_PATTERNS:
+        match = pattern.fullmatch(canonical)
+        if match is None:
+            continue
+        literal = _build_relative_date_literal(
+            direction,
+            match.group("unit"),
+            int(match.group("count")),
+        )
+        if literal is not None:
+            return literal
+    return None
+
+
+def _normalize_relative_date(value: str) -> str | None:
+    """相対日付の表記を SOQL のリテラルに正規化する。 解釈できなければ ``None`` 。
+
+    前後の空白・全角空白・全角数字・英字の大文字小文字・空白と ``_`` の
+    ゆれを吸収し、 出力は許可リスト （ ``_is_allowed_relative_date_literal`` ）
+    にあるリテラルだけにする。 既にリテラルならそのまま返す。
+
+    Args:
+        value: レポート上の値 (文字列) 。
+
+    Returns:
+        SOQL のリテラル。 相対日付として解釈できなければ ``None`` 。
+    """
+    stripped = value.strip()
+    if _is_allowed_relative_date_literal(stripped):
+        return stripped
+    canonical = _canonical_relative_date_text(stripped)
+    if not canonical:
+        return None
+    literal = _RELATIVE_DATE_FIXED_LITERALS.get(canonical)
+    if literal is None:
+        literal = _match_relative_date_pattern(canonical)
+    if literal is None:
+        return None
+    if not _is_allowed_relative_date_literal(literal):
+        return None
+    return literal
+
+
+def _relative_date_checks(raw_value: str, literal: str) -> list[str]:
+    """相対日付を変換したときの checks メッセージ。 変換していなければ空。"""
+    if literal == raw_value.strip():
+        return []
+    return [
+        f"相対日付を変換した: {raw_value} → {literal}（境界はレポートと SOQL で異なる場合あり）"
+    ]
+
+
 def _format_value_for_field(
     value: str,
     field_type: str,
@@ -388,10 +565,12 @@ def _format_numeric_value(value: str, field_name: str) -> tuple[str, list[str], 
 
 def _format_date_value(value: str, field_name: str) -> tuple[str, list[str], list[str]]:
     """date 系の値を ``YYYY-MM-DD`` または相対日付リテラルにして返す。 解釈できなければ missing。"""
-    # 相対日付リテラルならそのまま。 許可リストに無い語は missing
+    # 相対日付 （ 表記ゆれを含む ） は SOQL のリテラルに直す
+    literal = _normalize_relative_date(value)
+    if literal is not None:
+        return literal, [], _relative_date_checks(value, literal)
+    # 相対日付リテラル候補 （ 許可リストに無い語 ） は missing
     if _is_relative_date_candidate(value):
-        if _is_allowed_relative_date_literal(value):
-            return value, [], []
         return (
             "",
             [f"値の解釈不可 ({field_name}: 相対日付リテラルが未対応 {value!r}): missing"],
@@ -434,10 +613,12 @@ def _format_datetime_value(
     演算子で決める（ ``<=`` と ``>`` は日の終端、 それ以外は 0 時 ） 。
     解釈できなければ missing。
     """
-    # 相対日付リテラルならそのまま。 許可リストに無い語は missing
+    # 相対日付 （ 表記ゆれを含む ） は SOQL のリテラルに直す
+    literal = _normalize_relative_date(value)
+    if literal is not None:
+        return literal, [], _relative_date_checks(value, literal)
+    # 相対日付リテラル候補 （ 許可リストに無い語 ） は missing
     if _is_relative_date_candidate(value):
-        if _is_allowed_relative_date_literal(value):
-            return value, [], []
         return (
             "",
             [f"値の解釈不可 ({field_name}: 相対日付リテラルが未対応 {value!r}): missing"],
@@ -568,15 +749,16 @@ def _datetime_equality_part(
     field_api: str,
 ) -> tuple[str, list[str], list[str]]:
     """datetime の ``equals`` / ``notEqual`` の 1 値ぶんの式。"""
-    if _is_relative_date_candidate(value):
-        if not _is_allowed_relative_date_literal(value):
-            return (
-                "",
-                [f"値の解釈不可 ({field_api}: 相対日付リテラルが未対応 {value!r}): missing"],
-                [],
-            )
+    literal = _normalize_relative_date(value)
+    if literal is not None:
         symbol = "=" if op == "equals" else "!="
-        return f"{field_api} {symbol} {value}", [], []
+        return f"{field_api} {symbol} {literal}", [], _relative_date_checks(value, literal)
+    if _is_relative_date_candidate(value):
+        return (
+            "",
+            [f"値の解釈不可 ({field_api}: 相対日付リテラルが未対応 {value!r}): missing"],
+            [],
+        )
     normalized, missing_msg = _normalize_date_literal(value)
     if missing_msg:
         return (
@@ -900,7 +1082,7 @@ def _collect_standard_date_lines(
     if duration == "CUSTOM":
         return _custom_date_range_lines(field_api, field_type, start, end, missing, checks)
     if duration:
-        return _relative_date_line(field_api, duration, missing)
+        return _relative_date_line(field_api, duration, missing, checks)
     # 全期間: 何もしない
     return []
 
@@ -948,10 +1130,13 @@ def _relative_date_line(
     field_api: str,
     duration: str,
     missing: list[str],
+    checks: list[str],
 ) -> list[str]:
     """相対日付リテラルを ``field = duration`` の 1 行にする。 解釈できなければ missing。"""
-    if _is_allowed_relative_date_literal(duration):
-        return [f"{field_api} = {duration}"]
+    literal = _normalize_relative_date(duration)
+    if literal is not None:
+        checks.extend(_relative_date_checks(duration, literal))
+        return [f"{field_api} = {literal}"]
     missing.append(f"日付条件の durationValue {duration!r} を解釈できない")
     return []
 
