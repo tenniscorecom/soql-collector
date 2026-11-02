@@ -12,6 +12,9 @@ describe と relations を受け取り、 関連オブジェクトを跨ぐ列�
 主オブジェクトをたどって SOQL 列名を決める。 カスタムレポートタイプで
 人が主オブジェクトを知らなくても SOQL 組立に必要な列名を引ける。
 
+所有者 （ ``Owner`` ） は User とみなす。 判定は ``src/mapping/owner.py`` に
+1 か所にまとめ、 列キー経路と 「列の直し.xlsx」 経路の両方から使う。
+
 ファイルを ``src.mapping`` パッケージに分割 （手順ごとにサブモジュール） 。
 公開 API は再エクスポートしているので、
 ``from src.mapping import X`` の既存の import 先は全てそのまま動く。
@@ -36,6 +39,15 @@ from src.mapping.columns import (
     output_column_keys,
     select_column_keys,
 )
+from src.mapping.owner import (
+    OWNER_COMMON_FIELDS,
+    OWNER_POLYMORPHIC_NOTE,
+    OWNER_RELATIONSHIP_NAME,
+    OWNER_USER_OBJECT,
+    is_owner_label_prefix,
+    is_owner_user_field,
+    owner_first_reference_targets,
+)
 from src.mapping.report_type import candidate_failure_reason, report_type_candidates
 from src.mapping.row_status import column_candidates, column_source, column_status
 
@@ -54,6 +66,14 @@ __all__ = [
     "starts_with_main_object",
     "candidate_relationship_names",
     "COLUMN_KEY_PATH_MAX_DEPTH",
+    # --- owner ---
+    "is_owner_user_field",
+    "is_owner_label_prefix",
+    "owner_first_reference_targets",
+    "OWNER_COMMON_FIELDS",
+    "OWNER_POLYMORPHIC_NOTE",
+    "OWNER_RELATIONSHIP_NAME",
+    "OWNER_USER_OBJECT",
     # --- chains ---
     "build_relation_chains",
     "ChainCandidate",

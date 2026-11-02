@@ -26,6 +26,7 @@ from datetime import date as _date
 from typing import TYPE_CHECKING, Any
 
 from src import mapping
+from src.mapping.owner import OWNER_POLYMORPHIC_NOTE
 from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
@@ -850,6 +851,7 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
     missing.extend(where_missing)
     checks.extend(where_checks)
     _collect_scope_check(metadata, checks)
+    _collect_owner_polymorphic_checks(metadata, column_lookup, checks)
     order_by_clause, order_missing, order_checks = _build_order_by_clause(metadata, column_lookup)
     missing.extend(order_missing)
     checks.extend(order_checks)
@@ -951,6 +953,46 @@ def _collect_scope_check(metadata: dict[str, Any], checks: list[str]) -> None:
         checks.append(
             f"スコープ={scope}: 実行ユーザーで結果が変わる。 OwnerId 等の条件を足すか確認"
         )
+
+
+def _collect_owner_polymorphic_checks(
+    metadata: dict[str, Any],
+    column_lookup: dict[str, dict[str, str]],
+    checks: list[str],
+) -> None:
+    """Owner がポリモーフィックな列の注意書きを checks に 1 列 1 件積む。
+
+    列の備考に ``OWNER_POLYMORPHIC_NOTE`` がある列が、 SELECT・絞り込み・
+    並び順のどれかに使われているときだけ積む。 同じ列が複数の場所で使われて
+    いても 1 件だけにする。
+    """
+    for column_key in _used_column_keys(metadata):
+        column_info = column_lookup.get(column_key)
+        if column_info is None:
+            continue
+        if OWNER_POLYMORPHIC_NOTE not in (column_info.get("備考") or ""):
+            continue
+        field_api = column_info.get("対応フィールドAPI名") or ""
+        checks.append(f"{OWNER_POLYMORPHIC_NOTE}: {field_api}")
+
+
+def _used_column_keys(metadata: dict[str, Any]) -> list[str]:
+    """SELECT・絞り込み・並び順で使う列キーを重複なしで集める。"""
+    keys: list[str] = []
+
+    def add(column_key: str) -> None:
+        if column_key and column_key not in keys:
+            keys.append(column_key)
+
+    for column_key in mapping.select_column_keys(metadata):
+        add(column_key)
+    for report_filter in metadata.get("reportFilters", []):
+        add(report_filter.get("column") or "")
+    date_filter = metadata.get("standardDateFilter") or {}
+    add(date_filter.get("column") or "")
+    for sort_entry in metadata.get("sortBy", []):
+        add(sort_entry.get("sortColumn") or "")
+    return keys
 
 
 def _assemble_soql_text(

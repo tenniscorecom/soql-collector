@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from src.mapping.owner import owner_first_reference_targets
+
 # 列キーから SOQL 列名を取りに行くときのパスの最大段数。 6 段以上なら
 # 経路が長すぎると判断して表示名引き当てにフォールバックする
 COLUMN_KEY_PATH_MAX_DEPTH: int = 5
@@ -277,16 +279,17 @@ def _advance_soql_segment(
     """中間段で ``soql_segments`` を進め、 次の ``current_object`` を返す。
 
     単一参照は ``referenceTo`` の先頭、 ``objects`` にある候補があれば
-    それを優先する。 経路上のオブジェクトが無いときは ``fetch_object`` で
-    取りに行く。 次のオブジェクトが決まらないときは ``None`` を返し、
-    ``_walk_soql_path()`` が失敗結果を作る。
+    それを優先する。 所有者は User とみなすので、 所有者項目では
+    ``User`` を先に試す。 経路上のオブジェクトが無いときは
+    ``fetch_object`` で取りに行く。 次のオブジェクトが決まらないときは
+    ``None`` を返し、 ``_walk_soql_path()`` が失敗結果を作る。
     """
     relationship = matched.get("relationshipName")
     if not relationship:
         return None
     soql_segments.append(relationship)
 
-    reference_to = matched.get("referenceTo") or []
+    reference_to = owner_first_reference_targets(matched)
     next_object: str | None = None
     for cand in reference_to:
         if cand in objects:

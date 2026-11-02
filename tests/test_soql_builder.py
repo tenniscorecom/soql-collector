@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from src.fetch import ReportRecord
+from src.mapping.owner import OWNER_POLYMORPHIC_NOTE
 from src.soql_builder import (
     INCOMPLETE_MARKER,
     STATUS_CREATED,
@@ -1723,3 +1724,35 @@ def test_partial_soql_first_line_starts_with_marker_from_contract() -> None:
 # 仕様: 「壊したコードで一時的に走らせて元に戻す」 。
 # 既存のテストが落ちることを report 用に確認する。 テストファイルには
 # 残さない (下の 「確認ログ」 節で参照する) 。
+
+
+# ── Owner がポリモーフィックな列の注意書き ────────────────────────
+
+
+def test_owner_polymorphic_note_becomes_one_check() -> None:
+    """備考に Owner の注意書きがある列は、 checks に 1 列 1 件だけ積む。"""
+    column_map = _column_map_with_types([("Owner.Department", "Owner.Department", "string")])
+    column_map[0]["備考"] = f"列キーから（{OWNER_POLYMORPHIC_NOTE}）"
+    record = _make_record(
+        detail_columns=["Owner.Department"],
+        column_map=column_map,
+        report_filters=[{"column": "Owner.Department", "operator": "equals", "value": "営業"}],
+    )
+    draft = build_soql(record)
+    owner_checks = [c for c in draft.checks if OWNER_POLYMORPHIC_NOTE in c]
+    assert len(owner_checks) == 1
+    assert "Owner.Department" in owner_checks[0]
+
+
+def test_owner_polymorphic_note_is_not_added_for_unused_column() -> None:
+    """SELECT・絞り込み・並び順で使わない列は、 checks に積まない。"""
+    column_map = _column_map_with_types(
+        [
+            ("Name", "Name", "string"),
+            ("Owner.Department", "Owner.Department", "string"),
+        ]
+    )
+    column_map[1]["備考"] = f"列キーから（{OWNER_POLYMORPHIC_NOTE}）"
+    record = _make_record(detail_columns=["Name"], column_map=column_map)
+    draft = build_soql(record)
+    assert not any(OWNER_POLYMORPHIC_NOTE in c for c in draft.checks)
