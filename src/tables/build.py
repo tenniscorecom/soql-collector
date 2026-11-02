@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from src import ai_markdown, mapping, relation_diagram, similar
+from src import ai_markdown, mapping, relation_diagram, report_py, similar
 from src.tables.column_names_csv import (
     aggregate_resolved_fields,
     merge_column_names_csv,
@@ -49,6 +49,9 @@ def run_tables(
     diagram_dir: str = relation_diagram.DIAGRAM_SUBDIR,
 ) -> TableOutcome:
     """``records`` から ``SOQL調査.xlsx`` と ``列名の対応.csv`` と Markdown を組み立てる。
+
+    ダウンローダー用の SOQL レポート Python ファイル
+    （ ``SOQLレポート/report_<管理番号>.py`` ） も一緒に書く。
 
     Args:
         output_dir: 出力フォルダ。 無ければ作る。
@@ -177,6 +180,10 @@ def run_tables(
     wrote.extend(
         relation_diagram.write_main_object_diagrams(output_dir, diagrams, subdir=diagram_dir)
     )
+
+    # ダウンローダー用の SOQL レポート Python ファイル。 ``SOQLレポート/`` に
+    # 1 レポート 1 ファイルで書く（ SOQL が作れなかったレポートは作らない）
+    wrote.extend(report_py.write_report_py_files(output_dir, sorted_records))
 
     return TableOutcome(wrote=tuple(wrote), skipped=())
 
