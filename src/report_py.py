@@ -54,7 +54,7 @@ def write_report_py_files(
         書いたファイルのパスのタプル。
     """
     written: list[Path] = []
-    used_stems: dict[str, int] = {}
+    used_stems: set[str] = set()
     for record in records:
         draft = record.soql_draft
         if draft is None or not draft.soql:
@@ -114,7 +114,9 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
             lines.append(f"        {soql_name!r}: {display_name!r},")
         lines.append("    }")
     if duplicated:
-        lines.append(f"    # 見出しが重なるので自動の対応に任せた: {', '.join(duplicated)}")
+        lines.append(
+            f"    # 見出しが重なるので自動の対応に任せた: {_flatten(', '.join(duplicated))}"
+        )
     lines.append("")
     lines.append("    def soql(self) -> str:")
     lines.append("        return (")
@@ -126,24 +128,29 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
     return "\n".join(lines) + "\n"
 
 
-def _unique_stem(key: str, used: dict[str, int]) -> str:
-    """管理番号からファイル名・クラス名の要把部（拡張子なし）を作る。
+def _unique_stem(key: str, used: set[str]) -> str:
+    """管理番号からファイル名・クラス名の名前の本体（拡張子なし）を作る。
 
-    置換で同名になる管理番号は、 後の方に連番 ``_2`` を付ける。
+    置換で同名になる管理番号は、 後の方に連番 ``_2`` を付ける。 連番の
+    結果が別の管理番号とぶつかる場合は、 未使用の名前が出るまで連番を進める。
 
     Args:
         key: 管理番号。
-        used: 既に使った要部 → 個数の dict。 この関数の中で更新する。
+        used: 既に使った名前の本体 の集合。 この関数の中で更新する。
 
     Returns:
-        重複しない要部。
+        重複しない名前の本体。
     """
     stem = _INVALID_KEY_CHARS_PATTERN.sub("_", key)
-    count = used.get(stem, 0) + 1
-    used[stem] = count
-    if count == 1:
+    if stem not in used:
+        used.add(stem)
         return stem
-    return f"{stem}_{count}"
+    count = 2
+    while f"{stem}_{count}" in used:
+        count += 1
+    candidate = f"{stem}_{count}"
+    used.add(candidate)
+    return candidate
 
 
 def _collect_column_names(record: ReportRecord) -> tuple[list[tuple[str, str]], list[str]]:
@@ -194,7 +201,7 @@ def _docstring_literal(text: str) -> str:
     """3 重引用符の docstring にする。
 
     ``repr()`` が出力する引用符の取り方 （ ``'`` か ``"`` か ） によって
-    中のエスケープが違があるので、 いったん本文だけを取り出して、 3 重引用符
+    中のエスケープが違うので、 いったん本文だけを取り出して、 3 重引用符
     で壊れない形にそろえる。 バックスラッシュと 3 重引用符は、 そのまま
     コードにならない形にする。
     """

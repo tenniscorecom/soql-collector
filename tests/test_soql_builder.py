@@ -2089,6 +2089,41 @@ def test_like_starts_with_multiple_values_becomes_or_group() -> None:
     assert "WHERE ( Name LIKE 'Acme%' OR Name LIKE 'Zenith%' )" in draft.soql
 
 
+@pytest.mark.parametrize(
+    ("operator", "expected"),
+    [
+        ("contains", "Name LIKE '%a\\nb%'"),
+        ("startsWith", "Name LIKE 'a\\nb%'"),
+        ("notContain", "NOT (Name LIKE '%a\\nb%')"),
+    ],
+)
+def test_like_escapes_newline_in_value(operator: str, expected: str) -> None:
+    """値の中の改行は、 リテラルが壊れないエスケープの形にする。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": operator, "value": "a\nb"}],
+    )
+    draft = build_soql(record)
+    assert expected in draft.soql
+    # 生の改行が値の中に残らない
+    assert "a\nb" not in draft.soql
+
+
+def test_like_escapes_tab_in_value() -> None:
+    """値の中のタブも、 リテラルが壊れないエスケープの形にする。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "contains", "value": "a\tb"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE Name LIKE '%a\\tb%'" in draft.soql
+    assert "\t" not in draft.soql
+
+
 # ── IN が使えない型 ──────────────────────────────────────────────
 
 

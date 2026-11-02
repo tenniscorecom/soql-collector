@@ -348,11 +348,13 @@ def _escape_string_literal(value: str) -> str:
 def _escape_like_value(value: str) -> str:
     """LIKE の中の値をエスケープする。
 
-    先に ``\\`` と ``'`` をエスケープしてから、 ``%`` と ``_`` を ``\\%``
-    ``\\_`` にして文字どおり探す。 順序を逆にすると、 値が ``\\%`` のとき
-    エスケープした ``\\`` が二重になってしまう。
+    先に ``\\`` と ``'`` をエスケープしてから、 改行・復帰・タブを ``\\n``
+    ``\\r`` ``\\t`` に、 ``%`` と ``_`` を ``\\%`` ``\\_`` にして文字どおり
+    探す。 順序を逆にすると、 値が ``\\%`` のときエスケープした ``\\`` が
+    二重になってしまう。
     """
     escaped = _QUOTE_ESCAPE_PATTERN.sub(r"\\\1", value)
+    escaped = _CONTROL_CHAR_PATTERN.sub(lambda match: _CONTROL_CHAR_ESCAPES[match.group()], escaped)
     return escaped.replace("%", "\\%").replace("_", "\\_")
 
 
@@ -823,7 +825,8 @@ def _build_like_condition(
 
     値の中の ``%`` と ``_`` はワイルドカードではなく文字そのものとして
     探すので、 ``\\%`` ``\\_`` にエスケープする。 値に ``%`` があっても
-    ワイルドカードにはしないので、 checks は出さない。
+    ワイルドカードにはしないので、 checks は出さない。 改行・復帰・タブは
+    ``\\n`` ``\\r`` ``\\t`` の形にして、 リテラルが壊れないようにする。
     """
     missing: list[str] = []
     checks: list[str] = []

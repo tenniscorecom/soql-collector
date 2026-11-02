@@ -40,6 +40,8 @@ from src.mapping.owner import (
     OWNER_RELATIONSHIP_NAME,
     OWNER_USER_OBJECT,
     is_owner_label_prefix,
+    is_owner_user_field,
+    owner_first_reference_targets,
 )
 
 # ═════════════════════════════════════════════════════════════════════
@@ -457,13 +459,12 @@ def _build_one_row(
         if prefix_object is not None
         else None
     )
-    has_owner_prefix = prefix_object is not None and is_owner_label_prefix(prefix_object)
     result = _resolve_one_column(
         ctx,
         column_key,
         normalized_label,
         target_object_hint,
-        has_owner_prefix=has_owner_prefix,
+        label_prefix=prefix_object,
     )
     row = _row_dict(column_key, label, ctx.main_object, result)
     _append_owner_polymorphic_note(ctx, row)
@@ -507,7 +508,7 @@ def _resolve_one_column(
     column_key: str,
     normalized_label: str,
     target_object_hint: str | None,
-    has_owner_prefix: bool = False,
+    label_prefix: str | None = None,
 ) -> ResolverResult:
     """1 列を解決して ``ResolverResult`` を返す。
 
@@ -515,7 +516,7 @@ def _resolve_one_column(
 
     1. 列キーからたどる
     2. ``FK_`` からたどる
-    3. 所有者を指す接頭辞なら Owner 経由の User の項目で照合
+    3. 接頭辞が参照項目を指すなら、 その relationshipName 経由で照合
     4. 表示名で照合
     5. 所有者を User とみなす列キーの予備
 
@@ -549,11 +550,11 @@ def _resolve_one_column(
         if fk_result.failure_note:
             path_failure_note = fk_result.failure_note
 
-    # 手順 1: 所有者を指す接頭辞のときは Owner 経由の User の項目で照合する
-    if has_owner_prefix:
-        owner_result = _try_resolve_owner_label(ctx, normalized_label)
-        if owner_result is not None:
-            return owner_result
+    # 手順 1: 接頭辞が参照項目を指すときは、 その relationshipName 経由で照合する
+    if label_prefix is not None:
+        prefix_result = _try_resolve_by_reference_prefix(ctx, label_prefix, normalized_label)
+        if prefix_result is not None:
+            return prefix_result
 
     # 手順 2: 表示名で照合
     label_result = _try_resolve_by_label(
@@ -616,44 +617,150 @@ def _find_field_by_name_ignore_case(
     )
 
 
-def _try_resolve_owner_label(ctx: ResolveContext, normalized_label: str) -> ResolverResult | None:
-    """所有者を指す接頭辞のときの、 Owner 経由の User の項目だけの照合。
+def _try_resolve_by_reference_prefix(
+    ctx: ResolveContext,
+    prefix: str,
+    normalized_label: str,
+) -> ResolverResult | None:
+    """表示名の接頭辞が参照項目を指すときの照合。
 
-    主オブジェクトに Owner 関係が無いときや User の項目定義が取れないときは
-    ``None`` を返し、 呼び出し側で従来の照合に進んでもらう。
+    接頭辞が主オブジェクトの参照項目 （ ``所有者ID`` / ``作成者ID`` など ） を
+    指すとき、 その relationshipName 経由で参照先の項目だけを照合する。
+    一致する参照項目が無いときは ``None`` を返し、 呼び出し側で従来の照合に
+    進む。
 
     Args:
         ctx: 解決コンテキスト。
-        normalized_label: 正規化済みの表示名。
+        prefix: 表示名のコロン前の部分。
+        normalized_label: 正規化済みの表示名 （ コロン後の項目名 ） 。
 
     Returns:
         照合結果。 適用しない場合は ``None`` 。
     """
-    if _find_main_owner_field(ctx.main_describe) is None:
+    reference_fields = _reference_fields_by_prefix(ctx, prefix)
+    if not reference_fields:
         return None
-    user_describe = _owner_user_describe(ctx)
-    if user_describe is None:
-        return None
-    user_index = _build_field_index(user_describe)
-    candidates = user_index.get(normalized_label, [])
+    candidates = _reference_prefix_candidates(ctx, reference_fields, normalized_label)
     if not candidates:
         return ResolverResult(failure_note="対応フィールドなし")
     if len(candidates) == 1:
+        owner, soql_chain, field, terminal_describe = candidates[0]
         return ResolverResult(
             match=ResolvedMatch(
-                note="所有者(User)経由",
-                owner=OWNER_USER_OBJECT,
-                soql_chain=OWNER_RELATIONSHIP_NAME,
-                soql_name=f"{OWNER_RELATIONSHIP_NAME}.{candidates[0]['name']}",
-                field=candidates[0],
-                terminal_describe=user_describe,
+                note=_reference_match_note(soql_chain),
+                owner=owner,
+                soql_chain=soql_chain,
+                soql_name=f"{soql_chain}.{field['name']}",
+                field=field,
+                terminal_describe=terminal_describe,
             )
         )
-    rendered = "複数候補あり: " + " / ".join(
-        f"{OWNER_RELATIONSHIP_NAME}.{field['name']}（{OWNER_USER_OBJECT} {field.get('label', '')}）"
-        for field in candidates[:5]
-    )
-    return ResolverResult(multi_note=rendered)
+    return ResolverResult(multi_note=_render_multiple_candidates(candidates))
+
+
+def _is_reference_field(field: dict[str, Any]) -> bool:
+    """参照項目 （ relationshipName を持つ項目 ） かどうか。"""
+    if str(field.get("type") or "").lower() == "reference":
+        return True
+    return bool(field.get("relationshipName") and field.get("referenceTo"))
+
+
+def _reference_label_key(field: dict[str, Any]) -> str:
+    """参照項目の表示名から、 末尾の `` ID`` / ``ID`` を除いた照合用の形を返す。
+
+    ``所有者ID`` は ``所有者`` になる。 表示名が無いときは空文字。
+    """
+    label = str(field.get("label") or "")
+    if label.endswith(" ID"):
+        label = label[:-3]
+    elif label.endswith("ID"):
+        label = label[:-2]
+    return normalize_label(label)
+
+
+def _prefix_matches_reference_field(prefix: str, field: dict[str, Any]) -> bool:
+    """接頭辞が参照項目を指すか判定する。
+
+    参照項目の表示名 （ 末尾の `` ID`` / ``ID`` を除いたもの ） と一致するか、
+    その表示名で終わるとき （ ``ケース作成者`` → ``作成者`` ）、 その
+    リレーション名で終わるとき （ ``Opportunity Owner`` → ``Owner`` ） に
+    参照項目を指すとする。
+    """
+    label_key = _reference_label_key(field)
+    if label_key and (prefix == label_key or prefix.endswith(label_key)):
+        return True
+    relationship = normalize_label(field.get("relationshipName") or "")
+    return bool(relationship) and prefix.endswith(relationship)
+
+
+def _reference_fields_by_prefix(ctx: ResolveContext, prefix: str) -> list[dict[str, Any]]:
+    """接頭辞が指す主オブジェクトの参照項目を返す。 該当なしなら空リスト。
+
+    所有者を指す接頭辞 （ 正規化後に ``所有者`` / ``owner`` で終わるもの ） は
+    主オブジェクトの Owner 項目を指すとする。 項目の並びには依存しない。
+    """
+    normalized_prefix = normalize_label(prefix)
+    owner_label = is_owner_label_prefix(prefix)
+    matched: list[dict[str, Any]] = []
+    for reference_field in ctx.main_describe.get("fields", []):
+        if not _is_reference_field(reference_field):
+            continue
+        relationship = reference_field.get("relationshipName") or ""
+        if not relationship:
+            continue
+        if owner_label and relationship == OWNER_RELATIONSHIP_NAME:
+            matched.append(reference_field)
+            continue
+        if _prefix_matches_reference_field(normalized_prefix, reference_field):
+            matched.append(reference_field)
+    return matched
+
+
+def _reference_target_objects(field: dict[str, Any]) -> list[str]:
+    """参照項目が指すオブジェクト名。 所有者は User を先に試す。"""
+    targets = owner_first_reference_targets(field)
+    if is_owner_user_field(field):
+        # 所有者は User とみなす
+        return targets[:1]
+    return targets
+
+
+def _describe_for_object(ctx: ResolveContext, object_name: str) -> dict[str, Any] | None:
+    """オブジェクトの describe を返す。 取れなければ ``None`` 。
+
+    ``fetch_object`` を先に探して、 無ければ ``related_describes`` を見る。
+    """
+    if ctx.fetch_object is not None:
+        fetched = ctx.fetch_object(object_name)
+        if fetched is not None:
+            return fetched
+    return ctx.related_describes.get(object_name)
+
+
+def _reference_prefix_candidates(
+    ctx: ResolveContext,
+    reference_fields: list[dict[str, Any]],
+    normalized_label: str,
+) -> list[tuple[str, str, dict[str, Any], dict[str, Any]]]:
+    """参照項目経由で引ける候補 （ 所属オブジェクト, 鎖, 項目, describe ） を集める。"""
+    candidates: list[tuple[str, str, dict[str, Any], dict[str, Any]]] = []
+    for reference_field in reference_fields:
+        relationship = reference_field.get("relationshipName") or ""
+        for target_object in _reference_target_objects(reference_field):
+            describe = _describe_for_object(ctx, target_object)
+            if describe is None:
+                continue
+            index = _get_or_build_related_index(ctx, target_object, describe)
+            for candidate in index.get(normalized_label, []):
+                candidates.append((target_object, relationship, candidate, describe))
+    return candidates
+
+
+def _reference_match_note(relationship_name: str) -> str:
+    """参照項目経由の解決の備考。"""
+    if relationship_name == OWNER_RELATIONSHIP_NAME:
+        return "所有者(User)経由"
+    return f"参照項目{relationship_name}経由"
 
 
 def _try_resolve_owner_column_key(ctx: ResolveContext, column_key: str) -> ResolverResult:

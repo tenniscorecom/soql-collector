@@ -264,6 +264,24 @@ def test_column_names_excludes_duplicated_display_names() -> None:
     assert report_class.COLUMN_NAMES == {}  # type: ignore[attr-defined]
 
 
+def test_duplicated_comment_is_flattened() -> None:
+    """見出しが重なるコメントの SOQL 列名にも、 生の改行を出さない。"""
+    record = _make_record(
+        detail_columns=["Owner.Name", "CreatedBy.Name"],
+        column_map=_column_map(
+            [
+                ("Owner.Name", "Owner.Name\n壊れた", "所有者"),
+                ("CreatedBy.Name", "CreatedBy.Name", "所有者"),
+            ]
+        ),
+    )
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    assert "# 見出しが重なるので自動の対応に任せた: Owner.Name 壊れた, CreatedBy.Name" in source
+    # 改行が混入したコメントでも、 生成した Python は壊れない
+    compile(source, "<generated>", "exec")
+
+
 # ── ファイルを書く ────────────────────────────────────────────────
 
 
@@ -305,6 +323,17 @@ def test_write_report_py_files_numbers_duplicated_keys(tmp_path: Path) -> None:
     second = _make_record(key="A_1")
     written = write_report_py_files(tmp_path, [first, second])
     assert [path.name for path in written] == ["report_A_1.py", "report_A_1_2.py"]
+
+
+def test_write_report_py_files_skips_names_used_by_other_keys(tmp_path: Path) -> None:
+    """連番の結果が別の管理番号とぶつかるときは、 未使用の名前まで連番を進める。"""
+    records = [_make_record(key=key) for key in ("A_1_2", "A-1", "A_1")]
+    written = write_report_py_files(tmp_path, records)
+    assert [path.name for path in written] == [
+        "report_A_1_2.py",
+        "report_A_1.py",
+        "report_A_1_3.py",
+    ]
 
 
 def test_write_report_py_files_replaces_invalid_key_characters(tmp_path: Path) -> None:
