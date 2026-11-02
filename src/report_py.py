@@ -5,9 +5,9 @@
 ``src/soql_reports/reports/`` に置けば動く。
 
 **文字列はすべて ``repr()`` を通して組み立てる。** レポートから来た値
-（概要・missing・checks・表示名） をそのまま書くと、 値がコードとして
-実行される危険があるため。 改行と制御文字は空白に置き換え、 ``repr()`` で
-Python の文字列リテラルにしてから書き出す。
+（概要・レポート名・missing・checks・表示名） をそのまま書くと、 値が
+コードとして実行される危険があるため。 改行と制御文字は空白に置き換え、
+``repr()`` で Python の文字列リテラルにしてから書き出す。
 """
 
 from __future__ import annotations
@@ -108,6 +108,9 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
     lines.append("")
     lines.append(f"class {class_name}(SoqlReport):")
     lines.append(f"    KEY = {record.key!r}")
+    name = _report_name(record)
+    if name:
+        lines.append(f"    NAME = {name!r}")
     if column_names:
         lines.append("    COLUMN_NAMES: ClassVar[dict[str, str]] = {")
         for soql_name, display_name in column_names:
@@ -126,6 +129,23 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
         lines.append(f"            {soql_line}")
     lines.append("        )")
     return "\n".join(lines) + "\n"
+
+
+def _report_name(record: ReportRecord) -> str:
+    """レポート名を 1 行の文字列にして返す。 名前が無ければ空文字。
+
+    ``reportMetadata.name`` を優先し、 無い・空・文字列でないときは概要
+    （ ``record.summary`` ） を使う。 改行と制御文字は空白に置き換えてから
+    前後の空白を落とす。
+    """
+    metadata = record.report.get("reportMetadata", {})
+    raw_name = metadata.get("name") if isinstance(metadata, dict) else None
+    if isinstance(raw_name, str):
+        name = _flatten(raw_name).strip()
+        if name:
+            return name
+    summary = record.summary if isinstance(record.summary, str) else ""
+    return _flatten(summary).strip()
 
 
 def _unique_stem(key: str, used: set[str]) -> str:

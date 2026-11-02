@@ -49,11 +49,14 @@ def _make_record(
     column_map: list[dict[str, str]] | None = None,
     report_filters: list[dict] | None = None,
     unresolved_columns: list[str] | None = None,
+    report_name: object = None,
 ) -> ReportRecord:
     """SOQL の下書きまで済んだ ``ReportRecord`` を作る。
 
     ``unresolved_columns`` に入れた列キーは解決できない列として扱う
     （ ``missing`` に入り、 SELECT から落ちる ）。
+    ``report_name`` を渡すと、 ``reportMetadata.name`` に入れる。 渡さない
+    （ ``None`` ） ときは ``name`` キー自体が無い状態にする。
     """
     detail_columns = list(detail_columns or ["Name"])
     metadata: dict = {
@@ -61,6 +64,8 @@ def _make_record(
         "reportFormat": "TABULAR",
         "detailColumns": detail_columns,
     }
+    if report_name is not None:
+        metadata["name"] = report_name
     if report_filters is not None:
         metadata["reportFilters"] = report_filters
     if column_map is None:
@@ -138,6 +143,21 @@ def _load_generated(source: str) -> dict[str, object]:
             else:
                 sys.modules[name] = previous
     return namespace
+
+
+def _class_attributes(source: str, class_name: str) -> list[str]:
+    """生成したソースのクラスに代入されている属性名（ クラス変数 ） を返す。"""
+    tree = ast.parse(source)
+    class_def = next(
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    return [
+        target.id
+        for node in class_def.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    ]
 
 
 # ── 生成される文件的形 ────────────────────────────────────────────
@@ -227,6 +247,84 @@ def test_generated_source_has_no_extra_statements_for_injected_display_name() ->
     tree = ast.parse(source)
     for node in tree.body:
         assert isinstance(node, (ast.Expr, ast.Import, ast.ImportFrom, ast.ClassDef))
+
+
+# ── NAME ──────────────────────────────────────────────────────────
+
+
+def test_generated_class_has_report_name() -> None:
+    """``reportMetadata.name`` が、 クラス属性 ``NAME`` になる。"""
+    record = _make_record(report_name="売上レポート")
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    compile(source, "<generated>", "exec")
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.NAME == "売上レポート"  # type: ignore[attr-defined]
+
+
+def test_generated_name_line_comes_right_after_key() -> None:
+    """``NAME`` の行は、 ``KEY`` の次の行に書く。"""
+    record = _make_record(report_name="売上レポート")
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    lines = source.splitlines()
+    key_index = lines.index("    KEY = '1001'")
+    assert lines[key_index + 1] == "    NAME = '売上レポート'"
+
+
+def test_generated_name_falls_back_to_summary() -> None:
+    """レポート名が空のときは、 概要を使う。"""
+    record = _make_record(summary="概要から取る名前", report_name="")
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.NAME == "概要から取る名前"  # type: ignore[attr-defined]
+
+
+def test_generated_name_falls_back_to_summary_when_name_is_not_text() -> None:
+    """レポート名が文字列でないときは、 概要を使う。"""
+    record = _make_record(summary="概要から取る名前", report_name=123)
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.NAME == "概要から取る名前"  # type: ignore[attr-defined]
+
+
+def test_generated_name_falls_back_to_summary_when_name_is_missing() -> None:
+    """レポート名のキーが無いときは、 概要を使う。"""
+    record = _make_record(summary="概要から取る名前")
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.NAME == "概要から取る名前"  # type: ignore[attr-defined]
+
+
+def test_generated_source_has_no_name_line_when_both_are_empty() -> None:
+    """レポート名も概要も空のときは、 ``NAME`` の行を出さない。"""
+    record = _make_record(summary="", report_name="")
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    assert "NAME" not in _class_attributes(source, "Report1001")
+    assert not [line for line in source.splitlines() if line.startswith("    NAME = ")]
+
+
+def test_generated_name_keeps_quotes_and_newlines_in_one_line() -> None:
+    """レポート名に引用符・改行・ ``\"\"\"`` が入っても、 壊れず 1 行に収まる。"""
+    record = _make_record(report_name='a\'b"c\nd"""e')
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    compile(source, "<generated>", "exec")
+    # 改行は空白に置き換えて、 1 行に収まる
+    assert [line for line in source.splitlines() if line.startswith("    NAME = ")] == [
+        '    NAME = \'a\\\'b"c d"""e\''
+    ]
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.NAME == 'a\'b"c d"""e'  # type: ignore[attr-defined]
 
 
 # ── COLUMN_NAMES ─────────────────────────────────────────────────
