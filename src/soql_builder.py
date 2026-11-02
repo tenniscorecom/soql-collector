@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import csv
 import logging
 import re
 from collections.abc import Callable
@@ -66,6 +67,7 @@ _STRING_TYPES: frozenset[str] = frozenset(
 _NUMERIC_TYPES: frozenset[str] = frozenset(
     {
         "int",
+        "long",
         "double",
         "currency",
         "percent",
@@ -95,8 +97,107 @@ _BOOLEAN_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# 相対日付リテラル (``THIS_MONTH`` / ``LAST_N_DAYS:30`` など)。 ``^[A-Z_]+(:\d+)?$``
-_RELATIVE_DATE_PATTERN = re.compile(r"^[A-Z_]+(:\d+)?$")
+# 相対日付リテラル候補の形 （ 英大文字・数字・_ と :数字 ）。
+# 候補かどうかだけを判定し、 実際に出してよい語は下の許可リストで見る
+_RELATIVE_DATE_PATTERN = re.compile(r"^[A-Z0-9_]+(:\d+)?$")
+
+# 出してよい相対日付リテラル （ 数値なし ）
+_RELATIVE_DATE_LITERAL_NAMES: frozenset[str] = frozenset(
+    {
+        "YESTERDAY",
+        "TODAY",
+        "TOMORROW",
+        "LAST_WEEK",
+        "THIS_WEEK",
+        "NEXT_WEEK",
+        "LAST_MONTH",
+        "THIS_MONTH",
+        "NEXT_MONTH",
+        "LAST_90_DAYS",
+        "NEXT_90_DAYS",
+        "THIS_QUARTER",
+        "LAST_QUARTER",
+        "NEXT_QUARTER",
+        "THIS_YEAR",
+        "LAST_YEAR",
+        "NEXT_YEAR",
+        "THIS_FISCAL_QUARTER",
+        "LAST_FISCAL_QUARTER",
+        "NEXT_FISCAL_QUARTER",
+        "THIS_FISCAL_YEAR",
+        "LAST_FISCAL_YEAR",
+        "NEXT_FISCAL_YEAR",
+    }
+)
+
+# ``LAST_N_DAYS:30`` の形 （ N の部分是数字 ） で出してよい相対日付リテラル
+_RELATIVE_DATE_N_PREFIX_PATTERN = re.compile(
+    r"^(?:LAST|NEXT)_N_"
+    r"(?:DAYS|WEEKS|MONTHS|QUARTERS|YEARS|FISCAL_QUARTERS|FISCAL_YEARS)"
+    r"(?::\d+)?$"
+)
+
+# ``30_DAYS_AGO`` の形 （ N の部分は数字 ） で出してよい相対日付リテラル
+_RELATIVE_DATE_N_SUFFIX_PATTERN = re.compile(
+    r"^\d+_(?:DAYS|WEEKS|MONTHS|QUARTERS|YEARS|FISCAL_QUARTERS|FISCAL_YEARS)_AGO(?::\d+)?$"
+)
+
+# LIKE を使える型。 ``id`` / ``reference`` / ``multipicklist`` は LIKE では
+# 絞れないので missing にする
+_LIKE_TYPES: frozenset[str] = _STRING_TYPES - {"id", "reference", "multipicklist"}
+
+# ``IN`` / ``NOT IN`` を使えない型。 複数値は ``=`` / ``!=`` を OR / AND で並べる
+_NO_IN_TYPES: frozenset[str] = frozenset({"multipicklist", "boolean", "checkbox"})
+
+# 比較演算子 （ ``<`` ``<=`` ``>`` ``>=`` ） を使えない型。 レポートの
+# 選択リスト順と SOQL の比較は違うため、 数値・日付の項目に限る
+_NO_COMPARISON_TYPES: frozenset[str] = frozenset(
+    {
+        "boolean",
+        "checkbox",
+        "picklist",
+        "multipicklist",
+        "combobox",
+        "textarea",
+    }
+)
+
+# レポート側の演算子名の表記ゆれ。 大文字小文字を無視して正規名へ寄せる
+_OPERATOR_ALIASES: dict[str, str] = {
+    "lessorequal": "lessOrEqual",
+    "lessequal": "lessOrEqual",
+    "lessthanorequal": "lessOrEqual",
+    "greaterorequal": "greaterOrEqual",
+    "greaterequal": "greaterOrEqual",
+    "greaterthanorequal": "greaterOrEqual",
+    "notequal": "notEqual",
+    "notequals": "notEqual",
+    "equal": "equals",
+    "equals": "equals",
+    "notcontain": "notContain",
+    "notcontains": "notContain",
+    "doesnotcontain": "notContain",
+}
+
+# 組立式 (``reportBooleanFilter``) で使える語
+_BOOL_FILTER_KEYWORDS: frozenset[str] = frozenset({"AND", "OR", "NOT"})
+
+# 組立式の語 （ 番号 / キーワード / 括弧 ） を拾う正規表現
+_BOOL_FILTER_TOKEN_PATTERN = re.compile(
+    r"(?P<number>\d+)|(?P<word>[A-Za-z_][A-Za-z_0-9]*)|(?P<open>\()|(?P<close>\))"
+)
+
+# 日付の表記。 ゼロ埋めは任意 （ ``2024/1/5`` も受け取る ）
+_DATE_PATTERN = re.compile(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$")
+
+# 文字列リテラルの中の制御文字。 SOQL のリテラルにそのまま入れると
+# 構文が壊れるので、 エスケープした文字列に置き換える
+_CONTROL_CHAR_ESCAPES: dict[str, str] = {
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+}
+_CONTROL_CHAR_PATTERN = re.compile(r"[\n\r\t]")
 
 # 数値リテラルとして許容する形 (``-1.5`` / ``100`` など)。 カンマは含まない
 # (桁区切りは SOQL 側で分割事故になるので missing に送る) 。
@@ -147,43 +248,75 @@ class SoqlDraft:
 def _escape_string_literal(value: str) -> str:
     """SOQL 文字列リテラル用に ``'`` と ``\\`` をエスケープして ``'...'`` で囲む。
 
-    内部の ``'`` は ``\\'`` に、 ``\\`` は ``\\\\`` に置換する。 ``\\\\n`` 等の
-    制御文字はここでは触らない (値に入っていない前提) 。
+    内部の ``'`` は ``\\'`` に、 ``\\`` は ``\\\\`` に置換する。 改行・復帰・
+    タブは SOQL のリテラルにそのまま入れると構文が壊れるので、 ``\\n``
+    ``\\r`` ``\\t`` の形に置き換える。
     """
     escaped = _QUOTE_ESCAPE_PATTERN.sub(r"\\\1", value)
+    escaped = _CONTROL_CHAR_PATTERN.sub(lambda match: _CONTROL_CHAR_ESCAPES[match.group()], escaped)
     return "'" + escaped + "'"
+
+
+def _escape_like_value(value: str) -> str:
+    """LIKE の中の値をエスケープする。
+
+    先に ``\\`` と ``'`` をエスケープしてから、 ``%`` と ``_`` を ``\\%``
+    ``\\_`` にして文字どおり探す。 順序を逆にすると、 値が ``\\%`` のとき
+    エスケープした ``\\`` が二重になってしまう。
+    """
+    escaped = _QUOTE_ESCAPE_PATTERN.sub(r"\\\1", value)
+    return escaped.replace("%", "\\%").replace("_", "\\_")
 
 
 def _looks_like_date(value: str) -> bool:
     """``YYYY-MM-DD`` / ``YYYY/MM/DD`` っぽい形なら True。 厳密には検査しない。"""
-    return bool(re.fullmatch(r"\d{4}[-/]\d{2}[-/]\d{2}", value))
+    return bool(_DATE_PATTERN.fullmatch(value))
 
 
 def _normalize_date_literal(value: str) -> tuple[str, str | None]:
     """日付リテラルを ``YYYY-MM-DD`` に正規化する。
 
-    ``YYYY/MM/DD`` を ``YYYY-MM-DD`` に直し、 ``datetime.date.fromisoformat``
-    で実在性を検査する。
+    ``YYYY/MM/DD`` と ゼロ埋めなし （ ``2024/1/5`` ） を ``YYYY-MM-DD`` に
+    直し、 ``datetime.date`` で実在性を検査する。
 
     Returns:
         ``(normalized, missing_reason or None)`` 。
         表記または実在性が不正なときは ``(value, reason)`` 、 正常時は
         ``(normalized, None)`` 。
     """
-    if not isinstance(value, str) or not re.fullmatch(r"\d{4}[-/]\d{2}[-/]\d{2}", value):
+    match = _DATE_PATTERN.fullmatch(value) if isinstance(value, str) else None
+    if match is None:
         return value, f"日付の表記が不正: {value!r}"
-    normalized = value.replace("/", "-")
+    year, month, day = (int(part) for part in match.groups())
     try:
-        _date.fromisoformat(normalized)
+        normalized = _date(year, month, day).isoformat()
     except ValueError:
         return value, f"実在しない日付: {value!r}"
     return normalized, None
+
+
+def _is_relative_date_candidate(value: str) -> bool:
+    """相対日付リテラル候補 （ 英大文字・数字・_ と :数字 ） かどうか。"""
+    return bool(_RELATIVE_DATE_PATTERN.fullmatch(value))
+
+
+def _is_allowed_relative_date_literal(value: str) -> bool:
+    """許可リストにある相対日付リテラルかどうか。"""
+    if not _is_relative_date_candidate(value):
+        return False
+    if value in _RELATIVE_DATE_LITERAL_NAMES:
+        return True
+    return bool(
+        _RELATIVE_DATE_N_PREFIX_PATTERN.fullmatch(value)
+        or _RELATIVE_DATE_N_SUFFIX_PATTERN.fullmatch(value)
+    )
 
 
 def _format_value_for_field(
     value: str,
     field_type: str,
     field_name: str,
+    operator: str = "",
 ) -> tuple[str, list[str], list[str]]:
     """``column_map`` の ``型`` に応じて SOQL の値リテラルを書く。
 
@@ -191,6 +324,7 @@ def _format_value_for_field(
         value: レポート上の値 (文字列) 。
         field_type: ``column_map.型`` の値 (小文字化なし、 そのまま) 。
         field_name: SOQL 上の項目名 (エラーメッセージ用) 。
+        operator: 演算子名。 日時項目の境界 （ 0 時 / 終端 ） を決めるのに使う。
 
     Returns:
         ``(リテラル文字列, 追加 missing, 追加 checks)`` のタプル。
@@ -214,7 +348,7 @@ def _format_value_for_field(
     if field_type_lower in _DATE_TYPES:
         return _format_date_value(value, field_name)
     if field_type_lower in _DATETIME_TYPES:
-        return _format_datetime_value(value, field_name)
+        return _format_datetime_value(value, field_name, operator)
 
     # 型が分からない
     return "", [f"値の解釈不可 ({field_name}: 型 {field_type!r} が未知): missing"], []
@@ -254,9 +388,15 @@ def _format_numeric_value(value: str, field_name: str) -> tuple[str, list[str], 
 
 def _format_date_value(value: str, field_name: str) -> tuple[str, list[str], list[str]]:
     """date 系の値を ``YYYY-MM-DD`` または相対日付リテラルにして返す。 解釈できなければ missing。"""
-    # 既に相対日付リテラルならそのまま
-    if _RELATIVE_DATE_PATTERN.fullmatch(value):
-        return value, [], []
+    # 相対日付リテラルならそのまま。 許可リストに無い語は missing
+    if _is_relative_date_candidate(value):
+        if _is_allowed_relative_date_literal(value):
+            return value, [], []
+        return (
+            "",
+            [f"値の解釈不可 ({field_name}: 相対日付リテラルが未対応 {value!r}): missing"],
+            [],
+        )
     # 日付として解釈できる形なら、 ``YYYY-MM-DD`` に正規化して返す
     # (実在しない日付・ ``YYYY/MM/DD`` 表記揺れを吸収)
     if _looks_like_date(value):
@@ -275,16 +415,36 @@ def _format_date_value(value: str, field_name: str) -> tuple[str, list[str], lis
     )
 
 
-def _format_datetime_value(value: str, field_name: str) -> tuple[str, list[str], list[str]]:
+def _datetime_utc_check(field_name: str, raw_value: str, literal: str, boundary: str) -> str:
+    """日時の値を UTC 境界に置き換えたときの checks メッセージ。"""
+    return (
+        f"日時の条件をタイムゾーン無しの {boundary}で置き換えた: "
+        f"{field_name} の {raw_value!r} を {literal} に"
+    )
+
+
+def _format_datetime_value(
+    value: str,
+    field_name: str,
+    operator: str = "",
+) -> tuple[str, list[str], list[str]]:
     """datetime 系の値を ``YYYY-MM-DDT00:00:00Z`` または相対日付リテラルにして返す。
 
-    日付だけの値は UTC 0 時に拡張して checks にメッセージを足す。 解釈できなければ missing。
+    日付だけの値は UTC 境界に拡張して checks にメッセージを足す。 境界は
+    演算子で決める（ ``<=`` と ``>`` は日の終端、 それ以外は 0 時 ） 。
+    解釈できなければ missing。
     """
-    # 相対日付リテラルならそのまま
-    if _RELATIVE_DATE_PATTERN.fullmatch(value):
-        return value, [], []
-    # 日付だけの値なら ``YYYY-MM-DDT00:00:00Z`` に拡張して checks 追加
-    # (``YYYY/MM/DD`` 表記も ``-`` に正規化してから ``T00:00:00Z`` を付与)
+    # 相対日付リテラルならそのまま。 許可リストに無い語は missing
+    if _is_relative_date_candidate(value):
+        if _is_allowed_relative_date_literal(value):
+            return value, [], []
+        return (
+            "",
+            [f"値の解釈不可 ({field_name}: 相対日付リテラルが未対応 {value!r}): missing"],
+            [],
+        )
+    # 日付だけの値なら UTC 境界に拡張して checks 追加
+    # (``YYYY/MM/DD`` 表記も ``-`` に正規化してから時刻を付ける)
     if _looks_like_date(value):
         normalized, missing_msg = _normalize_date_literal(value)
         if missing_msg:
@@ -293,14 +453,13 @@ def _format_datetime_value(value: str, field_name: str) -> tuple[str, list[str],
                 [f"値の解釈不可 ({field_name}: datetime として解釈できない {value!r}): missing"],
                 [],
             )
-        return (
-            f"{normalized}T00:00:00Z",
-            [],
-            [
-                f"日時の条件をタイムゾーン無しの UTC 0 時で置き換えた: "
-                f"{field_name} の {value!r} を {normalized}T00:00:00Z に"
-            ],
-        )
+        if operator in ("lessOrEqual", "greaterThan"):
+            literal = f"{normalized}T23:59:59Z"
+            boundary = "UTC 終端"
+        else:
+            literal = f"{normalized}T00:00:00Z"
+            boundary = "UTC 0 時"
+        return literal, [], [_datetime_utc_check(field_name, value, literal, boundary)]
     return (
         "",
         [f"値の解釈不可 ({field_name}: datetime として解釈できない {value!r}): missing"],
@@ -312,12 +471,20 @@ def _split_values(raw: object) -> list[str]:
     """``reportFilters[].value`` をカンマで分割する。
 
     レポートの値表現は数値でも ``"1,2"`` のように文字列で来ることがあるため、
-    まずは文字列化して扱う。
+    まずは文字列化して扱う。 引用符で囲んだ値の中にカンマがある
+    （ ``"a,b",c`` ） ときは 2 値として扱う。
     """
     text = _coerce_str(raw)
     if not text:
         return []
-    return [part.strip() for part in text.split(",")]
+    try:
+        rows = list(csv.reader([text], skipinitialspace=True))
+    except csv.Error:
+        # 引用符が閉じていない等の壊れた値は、 従来どおりカンマで切る
+        return [part.strip() for part in text.split(",")]
+    if not rows:
+        return []
+    return [part.strip() for part in rows[0]]
 
 
 def _build_column_lookup(column_map: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -335,6 +502,8 @@ def _build_equality_condition(
     field_type: str,
 ) -> tuple[str, list[str], list[str]]:
     """``equals`` / ``notEqual`` を ``=`` / ``!=`` または ``IN`` / ``NOT IN`` に組み立てる。"""
+    if field_type.strip().lower() in _DATETIME_TYPES:
+        return _build_datetime_equality_condition(op, values, field_api)
     missing: list[str] = []
     checks: list[str] = []
     parts: list[str] = []
@@ -351,10 +520,76 @@ def _build_equality_condition(
     if op == "equals":
         if len(parts) == 1:
             return f"{field_api} = {parts[0]}", missing, checks
+        if field_type.strip().lower() in _NO_IN_TYPES:
+            joined = " OR ".join(f"{field_api} = {part}" for part in parts)
+            return f"( {joined} )", missing, checks
         return f"{field_api} IN ({', '.join(parts)})", missing, checks
     if len(parts) == 1:
         return f"{field_api} != {parts[0]}", missing, checks
+    if field_type.strip().lower() in _NO_IN_TYPES:
+        joined = " AND ".join(f"{field_api} != {part}" for part in parts)
+        return f"( {joined} )", missing, checks
     return f"{field_api} NOT IN ({', '.join(parts)})", missing, checks
+
+
+def _build_datetime_equality_condition(
+    op: str,
+    values: list[str],
+    field_api: str,
+) -> tuple[str, list[str], list[str]]:
+    """datetime 項目の ``equals`` / ``notEqual`` を組み立てる。
+
+    日付だけの値は 1 日の区間として扱う（ 開始は 0 時、 終了は 23:59:59 ） 。
+    複数値は equals なら OR、 notEqual なら AND でつなぐ。 相対日付リテラルは
+    そのまま書く。
+    """
+    missing: list[str] = []
+    checks: list[str] = []
+    parts: list[str] = []
+    for value in values:
+        part, extra_missing, extra_checks = _datetime_equality_part(op, value, field_api)
+        if extra_missing:
+            missing.extend(extra_missing)
+        if extra_checks:
+            checks.extend(extra_checks)
+        if part:
+            parts.append(part)
+    if not parts:
+        return "", missing, checks
+    if len(parts) == 1:
+        return parts[0], missing, checks
+    joiner = " OR " if op == "equals" else " AND "
+    return f"( {joiner.join(parts)} )", missing, checks
+
+
+def _datetime_equality_part(
+    op: str,
+    value: str,
+    field_api: str,
+) -> tuple[str, list[str], list[str]]:
+    """datetime の ``equals`` / ``notEqual`` の 1 値ぶんの式。"""
+    if _is_relative_date_candidate(value):
+        if not _is_allowed_relative_date_literal(value):
+            return (
+                "",
+                [f"値の解釈不可 ({field_api}: 相対日付リテラルが未対応 {value!r}): missing"],
+                [],
+            )
+        symbol = "=" if op == "equals" else "!="
+        return f"{field_api} {symbol} {value}", [], []
+    normalized, missing_msg = _normalize_date_literal(value)
+    if missing_msg:
+        return (
+            "",
+            [f"値の解釈不可 ({field_api}: datetime として解釈できない {value!r}): missing"],
+            [],
+        )
+    start = f"{normalized}T00:00:00Z"
+    end = f"{normalized}T23:59:59Z"
+    checks = [_datetime_utc_check(field_api, value, f"{start} 〜 {end}", "UTC 0 時と終端")]
+    if op == "equals":
+        return f"( {field_api} >= {start} AND {field_api} <= {end} )", [], checks
+    return f"( {field_api} < {start} OR {field_api} > {end} )", [], checks
 
 
 def _build_comparison_condition(
@@ -369,7 +604,12 @@ def _build_comparison_condition(
     if len(values) != 1:
         missing.append(f"演算子 {op} は単一値のみ対応 (値: {values!r})")
         return "", missing, checks
-    literal, extra_missing, extra_checks = _format_value_for_field(values[0], field_type, field_api)
+    if field_type.strip().lower() in _NO_COMPARISON_TYPES:
+        missing.append(f"演算子 {op} は数値・日付の項目でのみ使用可 (型: {field_type!r})")
+        return "", missing, checks
+    literal, extra_missing, extra_checks = _format_value_for_field(
+        values[0], field_type, field_api, op
+    )
     if not literal:
         missing.append(f"演算子 {op} の値が解釈できません: {values[0]!r}")
         missing.extend(extra_missing)
@@ -393,26 +633,27 @@ def _build_like_condition(
     field_api: str,
     field_type: str,
 ) -> tuple[str, list[str], list[str]]:
-    """``contains`` / ``notContain`` / ``startsWith`` / ``doesNotContain`` を組み立てる。
+    """``contains`` / ``notContain`` / ``startsWith`` を組み立てる。
 
-    全て LIKE 系で、文字列系の項目でのみ使える。 値が無い、 または型が文字列系で
-    無いときは missing。 LIKE 内の ``%`` ``_`` はワイルドカードとしてそのまま機能
-    するので、 checks に注意だけ出す。
+    全て LIKE 系で、 文字列系の項目でのみ使える。 ``id`` / ``reference`` /
+    ``multipicklist`` は LIKE では絞れないので missing にする。 値が無い、
+    または型が LIKE で絞れないときは missing。
+
+    値の中の ``%`` と ``_`` はワイルドカードではなく文字そのものとして
+    探すので、 ``\\%`` ``\\_`` にエスケープする。 値に ``%`` があっても
+    ワイルドカードにはしないので、 checks は出さない。
     """
     missing: list[str] = []
     checks: list[str] = []
     if not values:
         missing.append(f"演算子 {op} の値が無い")
         return "", missing, checks
-    if field_type.strip().lower() not in _STRING_TYPES:
+    if field_type.strip().lower() not in _LIKE_TYPES:
         missing.append(f"演算子 {op} は文字列系の項目でのみ使用可 (型: {field_type!r})")
         return "", missing, checks
-    pieces: list[tuple[str, str]] = []  # (value, literal)
+    pieces: list[tuple[str, str]] = []  # (元の値, エスケープ済みの値)
     for value in values:
-        if "%" in value or "_" in value:
-            checks.append(f"LIKE のワイルドカード '%' '_' が値に含まれる: {value!r}")
-        literal = _escape_string_literal(f"%{value}%")
-        pieces.append((value, literal))
+        pieces.append((value, _escape_like_value(value)))
     return _format_like_expression(op, pieces, field_api, missing, checks)
 
 
@@ -423,26 +664,22 @@ def _format_like_expression(
     missing: list[str],
     checks: list[str],
 ) -> tuple[str, list[str], list[str]]:
-    """組み立て済みの ``(value, '%v%' literal)`` 群から SOQL の LIKE 式にする。"""
+    """組み立て済みの ``(元の値, エスケープ済みの値)`` 群から SOQL の LIKE 式にする。"""
     if op == "startsWith":
-        if len(pieces) != 1:
-            missing.append(f"演算子 startsWith は単一値のみ対応 (値: {[p[0] for p in pieces]!r})")
-            return "", missing, checks
-        value, _ = pieces[0]
-        if "%" in value or "_" in value:
-            checks.append(f"LIKE のワイルドカード '%' '_' が値に含まれる: {value!r}")
-        # pieces の literal は '%value%' 形式。 startsWith なので '%value' に直す
-        starts_literal = _escape_string_literal(f"{value}%")
-        return f"{field_api} LIKE {starts_literal}", missing, checks
+        # 前方一致なので、 値の後ろにだけワイルドカードを置く
+        parts = [f"{field_api} LIKE '{escaped}%'" for _value, escaped in pieces]
+        if len(parts) == 1:
+            return parts[0], missing, checks
+        return f"( {' OR '.join(parts)} )", missing, checks
     if op == "contains":
-        # 複数なら (A OR B)、 単数ならそのまま
-        parts_str = " OR ".join(f"{field_api} LIKE {piece[1]}" for piece in pieces)
-        if len(pieces) == 1:
-            return parts_str, missing, checks
-        return f"( {parts_str} )", missing, checks
-    # notContain / doesNotContain は同じ形 ( ``NOT (X LIKE '%v%')`` を AND で並べる )
-    parts_str = " AND ".join(f"NOT ({field_api} LIKE {piece[1]})" for piece in pieces)
-    return f"( {parts_str} )", missing, checks
+        # 前後にワイルドカードを置く
+        parts = [f"{field_api} LIKE '%{escaped}%'" for _value, escaped in pieces]
+        if len(parts) == 1:
+            return parts[0], missing, checks
+        return f"( {' OR '.join(parts)} )", missing, checks
+    # notContain は NOT (X LIKE '%v%') を AND で並べる
+    parts = [f"NOT ({field_api} LIKE '%{escaped}%')" for _value, escaped in pieces]
+    return f"( {' AND '.join(parts)} )", missing, checks
 
 
 def _build_picklist_inclusion_condition(
@@ -451,19 +688,32 @@ def _build_picklist_inclusion_condition(
     field_api: str,
     field_type: str,
 ) -> tuple[str, list[str], list[str]]:
-    """``includes`` / ``excludes`` を ``INCLUDES`` / ``EXCLUDES`` に組み立てる。"""
+    """``includes`` / ``excludes`` を組み立てる。
+
+    multipicklist は ``INCLUDES`` / ``EXCLUDES`` のまま。 picklist は
+    ``IN`` / ``NOT IN`` （ 単一値は ``=`` / ``!=`` ） にする。
+    """
     missing: list[str] = []
     checks: list[str] = []
-    if field_type.strip().lower() not in ("multipicklist", "picklist"):
+    field_type_lower = field_type.strip().lower()
+    if field_type_lower not in ("multipicklist", "picklist"):
         missing.append(f"演算子 {op} は multipicklist / picklist のみで使用可 (型: {field_type!r})")
         return "", missing, checks
     if not values:
         missing.append(f"演算子 {op} の値が無い")
         return "", missing, checks
     value_literals = ", ".join(_escape_string_literal(v) for v in values)
+    if field_type_lower == "multipicklist":
+        if op == "includes":
+            return f"{field_api} INCLUDES ({value_literals})", missing, checks
+        return f"{field_api} EXCLUDES ({value_literals})", missing, checks
     if op == "includes":
-        return f"{field_api} INCLUDES ({value_literals})", missing, checks
-    return f"{field_api} EXCLUDES ({value_literals})", missing, checks
+        if len(values) == 1:
+            return f"{field_api} = {value_literals}", missing, checks
+        return f"{field_api} IN ({value_literals})", missing, checks
+    if len(values) == 1:
+        return f"{field_api} != {value_literals}", missing, checks
+    return f"{field_api} NOT IN ({value_literals})", missing, checks
 
 
 # 演算子ごとのディスパッチ表。 ``_build_filter_condition`` から 1 度だけ
@@ -483,7 +733,6 @@ _FILTER_OP_HANDLERS: dict[
     "contains": _build_like_condition,
     "notContain": _build_like_condition,
     "startsWith": _build_like_condition,
-    "doesNotContain": _build_like_condition,
     "includes": _build_picklist_inclusion_condition,
     "excludes": _build_picklist_inclusion_condition,
 }
@@ -502,7 +751,7 @@ def _build_filter_condition(
         演算子が未対応 / 値が解釈不可のときは条件式は空文字で missing に
         入った要素を返す。
     """
-    op = operator.strip()
+    op = _normalize_operator(operator)
     # 空値のときは ``equals`` / ``notEqual`` だけ ``null`` 比較に変換する
     if not values and op in ("equals", "notEqual"):
         symbol = "=" if op == "equals" else "!="
@@ -511,7 +760,21 @@ def _build_filter_condition(
     handler = _FILTER_OP_HANDLERS.get(op)
     if handler is None:
         return "", [f"未対応の演算子: {op!r}"], []
-    return handler(op, values, field_api, field_type)
+    condition, extra_missing, extra_checks = handler(op, values, field_api, field_type)
+    if condition and field_type.strip().lower() == "textarea":
+        extra_checks.append(f"ロングテキストは絞り込めない場合がある: {field_api}")
+    return condition, extra_missing, extra_checks
+
+
+def _normalize_operator(operator: str) -> str:
+    """演算子名を正規名へ寄せる。 大文字小文字は区別しない。
+
+    レポート側の表記ゆれ （ ``lessorequal`` と ``lessOrEqual`` など ） を
+    同じ扱いにする。 対応表に無い演算子はそのまま返す（ 未対応として
+    missing に入る）。
+    """
+    stripped = operator.strip()
+    return _OPERATOR_ALIASES.get(stripped.lower(), stripped)
 
 
 def _build_where_clause(
@@ -543,7 +806,7 @@ def _build_where_clause(
     date_lines = _collect_standard_date_lines(metadata, column_lookup, missing, checks)
     _collect_standard_filter_checks(metadata, checks)
     _collect_cross_filter_missing(metadata, missing)
-    lines, ok = _combine_filter_conditions(metadata, filter_conditions, missing)
+    lines, ok = _combine_filter_conditions(metadata, filter_conditions, missing, bool(date_lines))
     if not ok:
         return [], missing, checks
     lines.extend(date_lines)
@@ -687,7 +950,7 @@ def _relative_date_line(
     missing: list[str],
 ) -> list[str]:
     """相対日付リテラルを ``field = duration`` の 1 行にする。 解釈できなければ missing。"""
-    if _RELATIVE_DATE_PATTERN.fullmatch(duration):
+    if _is_allowed_relative_date_literal(duration):
         return [f"{field_api} = {duration}"]
     missing.append(f"日付条件の durationValue {duration!r} を解釈できない")
     return []
@@ -721,8 +984,13 @@ def _combine_filter_conditions(
     metadata: dict[str, Any],
     filter_conditions: dict[int, str],
     missing: list[str],
+    has_date_lines: bool = False,
 ) -> tuple[list[str], bool]:
     """組立式 ``reportBooleanFilter`` があれば番号置換、 無ければ番号順で並べる。
+
+    日付条件があるときは組立式全体を ``( ... )`` で囲む。 囲まないと
+    ``( a ) OR ( b ) AND 日付`` になり、 OR と AND の優先順位で日付条件が
+    1 つの条件にだけかかる形になってしまう。
 
     戻り値の ``ok`` は組立式の解釈に成功したかどうか。 ``False`` のときは呼び出し側で
     WHERE 全体を空にする (``missing`` には理由が既に入っている) 。
@@ -739,6 +1007,8 @@ def _combine_filter_conditions(
             "組立式の条件を作れない (条件を省くと式が壊れるため WHERE 全体を出さない)",
         )
         return [], False
+    if has_date_lines:
+        combined = f"( {combined} )"
     return [combined], True
 
 
@@ -751,7 +1021,18 @@ def _replace_boolean_filter_numbers(
     ``1`` と ``10`` がぶつからないように ``(?<!\\d)(\\d+)(?!\\d)`` で
     数字の塊を 1 個ずつ取り出して置換する。 同じ番号が 2 回出現した場合も
     同じ条件式で置き換える (2 回目を数字のまま残さない) 。
+
+    置換の前に組立式を検査する。 使える語は番号と ``AND`` / ``OR`` / ``NOT``
+    と括弧だけで、 それ以外は ``ValueError`` を上げる。 検査は **置換前の
+    組立式** に対して行うので、 条件の中身 （ 値 ） に巻き込まれない。
+
+    Raises:
+        ValueError: 組立式に使えない語がある / 括弧が合っていない /
+            同じ深さで ``AND`` と ``OR`` が混在しているとき。
     """
+    tokens = _tokenize_bool_filter(bool_filter)
+    _validate_bool_filter(tokens)
+    normalized = _uppercase_bool_filter_keywords(bool_filter, tokens)
 
     def replace_one(match: re.Match[str]) -> str:
         number = int(match.group(1))
@@ -759,7 +1040,75 @@ def _replace_boolean_filter_numbers(
             raise ValueError(f"組立式に含まれる番号 {number} は条件一覧に無い")
         return f"( {conditions[number]} )"
 
-    return _BOOLEAN_FILTER_NUMBER_PATTERN.sub(replace_one, bool_filter)
+    return _BOOLEAN_FILTER_NUMBER_PATTERN.sub(replace_one, normalized)
+
+
+def _tokenize_bool_filter(bool_filter: str) -> list[tuple[str, str, int, int]]:
+    """組立式を語 （ 番号 / キーワード / 括弧 ） に分解する。
+
+    Returns:
+        ``(種類, 語, 開始位置, 終了位置)`` のリスト。
+    Raises:
+        ValueError: 使える語以外が混ざっているとき。
+    """
+    tokens: list[tuple[str, str, int, int]] = []
+    position = 0
+    for match in _BOOL_FILTER_TOKEN_PATTERN.finditer(bool_filter):
+        gap = bool_filter[position : match.start()]
+        if gap.strip():
+            raise ValueError(f"組立式に使えない文字があります: {gap.strip()!r}")
+        tokens.append((match.lastgroup or "", match.group(), match.start(), match.end()))
+        position = match.end()
+    tail = bool_filter[position:]
+    if tail.strip():
+        raise ValueError(f"組立式に使えない文字があります: {tail.strip()!r}")
+    return tokens
+
+
+def _validate_bool_filter(tokens: list[tuple[str, str, int, int]]) -> None:
+    """組立式の語と括弧を検査する。
+
+    Raises:
+        ValueError: 使える語以外が混ざっている / 括弧が合っていない /
+            同じ深さで ``AND`` と ``OR`` が混在しているとき。
+    """
+    depth = 0
+    operators_by_depth: dict[int, set[str]] = {}
+    for kind, text, _start, _end in tokens:
+        if kind == "open":
+            depth += 1
+            operators_by_depth.setdefault(depth, set())
+            continue
+        if kind == "close":
+            if depth == 0:
+                raise ValueError("組立式の括弧が合いません（ 閉じすぎ ）")
+            depth -= 1
+            continue
+        if kind == "number":
+            continue
+        keyword = text.upper()
+        if keyword not in _BOOL_FILTER_KEYWORDS:
+            raise ValueError(f"組立式に使えない語があります: {text!r}")
+        if keyword == "NOT":
+            continue
+        used = operators_by_depth.setdefault(depth, set())
+        if used and keyword not in used:
+            raise ValueError(f"組立式と同じ深さで AND と OR が混在しています: {keyword}")
+        used.add(keyword)
+    if depth != 0:
+        raise ValueError("組立式の括弧が合いません（ 閉じられていない ）")
+
+
+def _uppercase_bool_filter_keywords(
+    bool_filter: str,
+    tokens: list[tuple[str, str, int, int]],
+) -> str:
+    """組立式の語 （ ``AND`` / ``OR`` / ``NOT`` ） を大文字にそろえる。"""
+    result = bool_filter
+    for kind, text, start, end in reversed(tokens):
+        if kind == "word":
+            result = result[:start] + text.upper() + result[end:]
+    return result
 
 
 def _build_order_by_clause(
@@ -962,8 +1311,8 @@ def _collect_owner_polymorphic_checks(
 ) -> None:
     """Owner がポリモーフィックな列の注意書きを checks に 1 列 1 件積む。
 
-    列の備考に ``OWNER_POLYMORPHIC_NOTE`` がある列が、 SELECT・絞り込み・
-    並び順のどれかに使われているときだけ積む。 同じ列が複数の場所で使われて
+     列の備考に ``OWNER_POLYMORPHIC_NOTE`` がある列が、 SELECT・絞り込み・
+     並び順のどれかに使われているときだけ積む。 同じ列が複数の場所で使われて
     いても 1 件だけにする。
     """
     for column_key in _used_column_keys(metadata):

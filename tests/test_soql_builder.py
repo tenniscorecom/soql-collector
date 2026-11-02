@@ -605,8 +605,8 @@ def test_value_datetime_relative_literal_keeps_as_is() -> None:
     assert "WHERE CloseDateTime__c = THIS_MONTH" in draft.soql
 
 
-def test_like_value_with_wildcard_characters_adds_check() -> None:
-    """contains の値に ``%`` '_' が含まれていたら checks に追加。"""
+def test_like_value_with_wildcard_characters_is_escaped() -> None:
+    """contains の値に ``%`` '_' が含まれていたら、 リテラルの中でエスケープする。"""
     column_map = _column_map_with_types([("Name", "Name", "string")])
     record = _make_record(
         detail_columns=["Name"],
@@ -614,7 +614,9 @@ def test_like_value_with_wildcard_characters_adds_check() -> None:
         report_filters=[{"column": "Name", "operator": "contains", "value": "100%"}],
     )
     draft = build_soql(record)
-    assert any("ワイルドカード" in c for c in draft.checks)
+    assert "WHERE Name LIKE '%100\\%%'" in draft.soql
+    # ワイルドカードにはしないので、 注意書きは出さない
+    assert not any("ワイルドカード" in c for c in draft.checks)
 
 
 def test_value_unknown_type_goes_to_missing() -> None:
@@ -1756,3 +1758,535 @@ def test_owner_polymorphic_note_is_not_added_for_unused_column() -> None:
     record = _make_record(detail_columns=["Name"], column_map=column_map)
     draft = build_soql(record)
     assert not any(OWNER_POLYMORPHIC_NOTE in c for c in draft.checks)
+
+
+# ── 組立式と日付条件の括弧付け ────────────────────────────────────
+
+
+def test_boolean_filter_with_date_filter_wraps_whole_expression() -> None:
+    """組立式と日付条件が並ぶときは、 組立式全体を ``( ... )`` で囲む。
+
+    囲まないと ``( a ) OR ( b ) AND 日付`` になり、 日付条件が 1 つの条件に
+    だけかかる形になってしまう。
+    """
+    column_map = _column_map_with_types(
+        [
+            ("Name", "Name", "string"),
+            ("StageName", "StageName", "picklist"),
+            ("CloseDate", "CloseDate", "date"),
+        ]
+    )
+    record = _make_record(
+        detail_columns=["Name", "StageName", "CloseDate"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Name", "operator": "equals", "value": "Acme"},
+            {"column": "StageName", "operator": "equals", "value": "Closed"},
+        ],
+        standard_date_filter={
+            "column": "CloseDate",
+            "durationValue": "CUSTOM",
+            "startDate": "2025-01-01",
+            "endDate": "2025-12-31",
+        },
+        report_boolean_filter="1 OR 2",
+    )
+    draft = build_soql(record)
+    assert draft.soql == (
+        "SELECT Name,\n"
+        "  StageName,\n"
+        "  CloseDate\n"
+        "FROM Opportunity\n"
+        "WHERE ( ( Name = 'Acme' ) OR ( StageName = 'Closed' ) )\n"
+        "  AND\n"
+        "  CloseDate >= 2025-01-01 AND CloseDate <= 2025-12-31"
+    )
+
+
+# ── 組立式の検査 ─────────────────────────────────────────────────
+
+
+def _boolean_filter_record(expression: str) -> ReportRecord:
+    """組立式だけを持つ record を作る。"""
+    column_map = _column_map_with_types(
+        [
+            ("Name", "Name", "string"),
+            ("StageName", "StageName", "picklist"),
+            ("Amount", "Amount", "currency"),
+        ]
+    )
+    return _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Name", "operator": "equals", "value": "Acme"},
+            {"column": "StageName", "operator": "equals", "value": "Closed"},
+            {"column": "Amount", "operator": "greaterThan", "value": "100"},
+        ],
+        report_boolean_filter=expression,
+    )
+
+
+def test_boolean_filter_rejects_unknown_word() -> None:
+    """使える語以外の語は、 組立式の条件を作れない 経路に入る。"""
+    draft = build_soql(_boolean_filter_record("1 XOR 2"))
+    assert draft.status == STATUS_PARTIAL
+    assert any("組立式の条件を作れない" in m for m in draft.missing)
+    assert "WHERE" not in draft.soql
+
+
+def test_boolean_filter_rejects_unbalanced_parentheses() -> None:
+    """括弧が合わない組立式は、 組立式の条件を作れない 経路に入る。"""
+    draft = build_soql(_boolean_filter_record("1 AND (2"))
+    assert draft.status == STATUS_PARTIAL
+    assert any("組立式の条件を作れない" in m for m in draft.missing)
+    assert "WHERE" not in draft.soql
+
+
+def test_boolean_filter_rejects_mixed_and_or_at_same_depth() -> None:
+    """同じ深さで ``AND`` と ``OR`` が混在する組立式は作れない。"""
+    draft = build_soql(_boolean_filter_record("1 AND 2 OR 3"))
+    assert draft.status == STATUS_PARTIAL
+    assert any("組立式の条件を作れない" in m for m in draft.missing)
+    assert "WHERE" not in draft.soql
+
+
+def test_boolean_filter_allows_not() -> None:
+    """``1 AND NOT 2`` は通す。"""
+    draft = build_soql(_boolean_filter_record("1 AND NOT 2"))
+    assert draft.status == STATUS_CREATED
+    assert "WHERE" in draft.soql
+
+
+def test_boolean_filter_keywords_are_upper_cased() -> None:
+    """組立式の語は、 大文字小文字を無視して大文字にそろえる。"""
+    draft = build_soql(_boolean_filter_record("1 and (2 or 3)"))
+    soql_normalized = draft.soql.replace("\n  AND\n  ", " AND ")
+    assert "( Name = 'Acme' ) AND (( StageName = 'Closed' ) OR ( Amount > 100 ))" in soql_normalized
+
+
+# ── 演算子名の表記ゆれ ───────────────────────────────────────────
+
+
+def test_operator_alias_is_normalized() -> None:
+    """演算子名の表記ゆれは、 正規名へ寄せて組み立てる。"""
+    cases = [
+        ("lessorequal", "Amount <= 100"),
+        ("lessequal", "Amount <= 100"),
+        ("lessthanorequal", "Amount <= 100"),
+        ("greaterorequal", "Amount >= 100"),
+        ("greaterequal", "Amount >= 100"),
+        ("greaterthanorequal", "Amount >= 100"),
+        ("equal", "Amount = 100"),
+        ("equals", "Amount = 100"),
+    ]
+    for operator, expected in cases:
+        column_map = _column_map_with_types([("Amount", "Amount", "currency")])
+        record = _make_record(
+            detail_columns=["Amount"],
+            column_map=column_map,
+            report_filters=[{"column": "Amount", "operator": operator, "value": "100"}],
+        )
+        draft = build_soql(record)
+        assert f"WHERE {expected}" in draft.soql, operator
+
+
+def test_not_equal_alias_is_normalized() -> None:
+    """``notequal`` / ``notequals`` は ``!=`` になる。"""
+    for operator in ("notequal", "notequals"):
+        column_map = _column_map_with_types([("Name", "Name", "string")])
+        record = _make_record(
+            detail_columns=["Name"],
+            column_map=column_map,
+            report_filters=[{"column": "Name", "operator": operator, "value": "Acme"}],
+        )
+        draft = build_soql(record)
+        assert "WHERE Name != 'Acme'" in draft.soql, operator
+
+
+def test_not_contain_alias_is_normalized() -> None:
+    """``notcontains`` / ``doesnotcontain`` は ``notContain`` と同じ形。"""
+    for operator in ("notcontain", "notcontains", "doesnotcontain"):
+        column_map = _column_map_with_types([("Name", "Name", "string")])
+        record = _make_record(
+            detail_columns=["Name"],
+            column_map=column_map,
+            report_filters=[{"column": "Name", "operator": operator, "value": "ac"}],
+        )
+        draft = build_soql(record)
+        assert "NOT (Name LIKE '%ac%')" in draft.soql, operator
+
+
+def test_unsupported_operator_is_still_missing() -> None:
+    """``within`` など未対応の演算子は、 従来どおり missing。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "within", "value": ""}],
+    )
+    draft = build_soql(record)
+    assert any("within" in m for m in draft.missing)
+
+
+# ── 比較演算子の型制限 ───────────────────────────────────────────
+
+
+def test_comparison_on_picklist_goes_to_missing() -> None:
+    """``>`` などの比較は、 選択リスト型の項目では missing。"""
+    for field_type in ("picklist", "multipicklist", "boolean", "checkbox", "combobox", "textarea"):
+        column_map = _column_map_with_types([("Field", "Field", field_type)])
+        record = _make_record(
+            detail_columns=["Field"],
+            column_map=column_map,
+            report_filters=[{"column": "Field", "operator": "greaterThan", "value": "1"}],
+        )
+        draft = build_soql(record)
+        assert "WHERE" not in draft.soql, field_type
+        assert any("数値・日付の項目でのみ使用可" in m for m in draft.missing), field_type
+
+
+def test_comparison_on_number_is_allowed() -> None:
+    """数値・日付の項目では、 比較演算子が使える。"""
+    column_map = _column_map_with_types([("Amount", "Amount", "long")])
+    record = _make_record(
+        detail_columns=["Amount"],
+        column_map=column_map,
+        report_filters=[{"column": "Amount", "operator": "greaterThan", "value": "100"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE Amount > 100" in draft.soql
+
+
+def test_long_type_is_numeric() -> None:
+    """``long`` は数値系として扱う。"""
+    column_map = _column_map_with_types([("Count__c", "Count__c", "long")])
+    record = _make_record(
+        detail_columns=["Count__c"],
+        column_map=column_map,
+        report_filters=[{"column": "Count__c", "operator": "equals", "value": "12"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE Count__c = 12" in draft.soql
+
+
+# ── datetime の境界 ──────────────────────────────────────────────
+
+
+def _datetime_record(operator: str, value: str) -> ReportRecord:
+    column_map = _column_map_with_types([("Done__c", "Done__c", "datetime")])
+    return _make_record(
+        detail_columns=["Done__c"],
+        column_map=column_map,
+        report_filters=[{"column": "Done__c", "operator": operator, "value": value}],
+    )
+
+
+def test_datetime_comparison_uses_start_or_end_of_day() -> None:
+    """日付だけの値は、 演算子に応じて 0 時 / 終端 を使う。"""
+    cases = [
+        ("greaterOrEqual", "WHERE Done__c >= 2025-01-01T00:00:00Z"),
+        ("lessThan", "WHERE Done__c < 2025-01-01T00:00:00Z"),
+        ("lessOrEqual", "WHERE Done__c <= 2025-01-01T23:59:59Z"),
+        ("greaterThan", "WHERE Done__c > 2025-01-01T23:59:59Z"),
+    ]
+    for operator, expected in cases:
+        draft = build_soql(_datetime_record(operator, "2025-01-01"))
+        assert expected in draft.soql, operator
+
+
+def test_datetime_equals_becomes_day_range() -> None:
+    """``equals`` は、 その日の 0 時〜終端の範囲になる。"""
+    draft = build_soql(_datetime_record("equals", "2025-01-01"))
+    assert "WHERE ( Done__c >= 2025-01-01T00:00:00Z AND Done__c <= 2025-01-01T23:59:59Z )" in (
+        draft.soql
+    )
+
+
+def test_datetime_not_equal_becomes_outside_range() -> None:
+    """``notEqual`` は、 その日の 0 時〜終端の外側になる。"""
+    draft = build_soql(_datetime_record("notEqual", "2025-01-01"))
+    assert "WHERE ( Done__c < 2025-01-01T00:00:00Z OR Done__c > 2025-01-01T23:59:59Z )" in (
+        draft.soql
+    )
+
+
+def test_datetime_multiple_values_are_joined_with_or() -> None:
+    """``equals`` の複数値は OR でつなぐ。"""
+    draft = build_soql(_datetime_record("equals", "2025-01-01,2025-02-02"))
+    assert (
+        "WHERE ( ( Done__c >= 2025-01-01T00:00:00Z AND Done__c <= 2025-01-01T23:59:59Z )"
+        " OR ( Done__c >= 2025-02-02T00:00:00Z AND Done__c <= 2025-02-02T23:59:59Z ) )"
+        in draft.soql
+    )
+
+
+def test_datetime_not_equal_multiple_values_are_joined_with_and() -> None:
+    """``notEqual`` の複数値は AND でつなぐ。"""
+    draft = build_soql(_datetime_record("notEqual", "2025-01-01,2025-02-02"))
+    assert (
+        "WHERE ( ( Done__c < 2025-01-01T00:00:00Z OR Done__c > 2025-01-01T23:59:59Z )"
+        " AND ( Done__c < 2025-02-02T00:00:00Z OR Done__c > 2025-02-02T23:59:59Z ) )" in draft.soql
+    )
+
+
+def test_datetime_relative_literal_is_kept_as_is() -> None:
+    """相対日付リテラルは、 そのまま書く。"""
+    draft = build_soql(_datetime_record("equals", "THIS_MONTH"))
+    assert "WHERE Done__c = THIS_MONTH" in draft.soql
+
+
+# ── LIKE ─────────────────────────────────────────────────────────
+
+
+def test_like_on_id_or_reference_or_multipicklist_goes_to_missing() -> None:
+    """``id`` / ``reference`` / ``multipicklist`` では LIKE を使えない。"""
+    for field_type in ("id", "reference", "multipicklist"):
+        column_map = _column_map_with_types([("Field", "Field", field_type)])
+        record = _make_record(
+            detail_columns=["Field"],
+            column_map=column_map,
+            report_filters=[{"column": "Field", "operator": "contains", "value": "x"}],
+        )
+        draft = build_soql(record)
+        assert "WHERE" not in draft.soql, field_type
+        assert any("文字列系の項目でのみ使用可" in m for m in draft.missing), field_type
+
+
+def test_like_escapes_underscore() -> None:
+    """値の中の ``_`` は、 ワイルドカードではなく文字として探す。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "contains", "value": "a_b"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE Name LIKE '%a\\_b%'" in draft.soql
+
+
+def test_like_escapes_backslash_before_wildcard() -> None:
+    """先に ``\\`` をエスケープしてから ``%`` を処理する。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "contains", "value": "a\\%b"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE Name LIKE '%a\\\\\\%b%'" in draft.soql
+
+
+def test_like_starts_with_multiple_values_becomes_or_group() -> None:
+    """``startsWith`` の複数値は OR で並べる。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "startsWith", "value": "Acme,Zenith"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE ( Name LIKE 'Acme%' OR Name LIKE 'Zenith%' )" in draft.soql
+
+
+# ── IN が使えない型 ──────────────────────────────────────────────
+
+
+def test_multipicklist_equals_multiple_values_does_not_use_in() -> None:
+    """multipicklist の複数値は、 ``=`` を OR で並べる。"""
+    column_map = _column_map_with_types([("Hobbies__c", "Hobbies__c", "multipicklist")])
+    record = _make_record(
+        detail_columns=["Hobbies__c"],
+        column_map=column_map,
+        report_filters=[{"column": "Hobbies__c", "operator": "equals", "value": "Soccer,Baseball"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE ( Hobbies__c = 'Soccer' OR Hobbies__c = 'Baseball' )" in draft.soql
+
+
+def test_multipicklist_not_equal_multiple_values_does_not_use_not_in() -> None:
+    """multipicklist の複数値否定は、 ``!=`` を AND で並べる。"""
+    column_map = _column_map_with_types([("Hobbies__c", "Hobbies__c", "multipicklist")])
+    record = _make_record(
+        detail_columns=["Hobbies__c"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Hobbies__c", "operator": "notEqual", "value": "Soccer,Baseball"}
+        ],
+    )
+    draft = build_soql(record)
+    assert "WHERE ( Hobbies__c != 'Soccer' AND Hobbies__c != 'Baseball' )" in draft.soql
+
+
+def test_boolean_equals_multiple_values_does_not_use_in() -> None:
+    """boolean の複数値は、 ``=`` を OR で並べる。"""
+    column_map = _column_map_with_types([("IsClosed", "IsClosed", "boolean")])
+    record = _make_record(
+        detail_columns=["IsClosed"],
+        column_map=column_map,
+        report_filters=[{"column": "IsClosed", "operator": "equals", "value": "true,false"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE ( IsClosed = true OR IsClosed = false )" in draft.soql
+
+
+# ── includes / excludes ──────────────────────────────────────────
+
+
+def test_picklist_includes_becomes_in() -> None:
+    """picklist の ``includes`` は ``IN`` になる。"""
+    column_map = _column_map_with_types([("StageName", "StageName", "picklist")])
+    record = _make_record(
+        detail_columns=["StageName"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "StageName", "operator": "includes", "value": "Closed Won,Closed Lost"}
+        ],
+    )
+    draft = build_soql(record)
+    assert "WHERE StageName IN ('Closed Won', 'Closed Lost')" in draft.soql
+
+
+def test_picklist_includes_single_value_becomes_equal() -> None:
+    """picklist の ``includes`` が 1 値なら ``=`` になる。"""
+    column_map = _column_map_with_types([("StageName", "StageName", "picklist")])
+    record = _make_record(
+        detail_columns=["StageName"],
+        column_map=column_map,
+        report_filters=[{"column": "StageName", "operator": "includes", "value": "Closed Won"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE StageName = 'Closed Won'" in draft.soql
+
+
+def test_picklist_excludes_becomes_not_in() -> None:
+    """picklist の ``excludes`` は ``NOT IN`` になる。"""
+    column_map = _column_map_with_types([("StageName", "StageName", "picklist")])
+    record = _make_record(
+        detail_columns=["StageName"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "StageName", "operator": "excludes", "value": "Closed Won,Closed Lost"}
+        ],
+    )
+    draft = build_soql(record)
+    assert "WHERE StageName NOT IN ('Closed Won', 'Closed Lost')" in draft.soql
+
+
+def test_multipicklist_includes_stays_includes() -> None:
+    """multipicklist の ``includes`` は ``INCLUDES`` のまま。"""
+    column_map = _column_map_with_types([("Hobbies__c", "Hobbies__c", "multipicklist")])
+    record = _make_record(
+        detail_columns=["Hobbies__c"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Hobbies__c", "operator": "includes", "value": "Soccer,Baseball"}
+        ],
+    )
+    draft = build_soql(record)
+    assert "WHERE Hobbies__c INCLUDES ('Soccer', 'Baseball')" in draft.soql
+
+
+# ── textarea ─────────────────────────────────────────────────────
+
+
+def test_textarea_filter_adds_check() -> None:
+    """textarea の絞り込みは、 ロングテキストの注意を checks に足す。"""
+    column_map = _column_map_with_types([("Description__c", "Description__c", "textarea")])
+    record = _make_record(
+        detail_columns=["Description__c"],
+        column_map=column_map,
+        report_filters=[{"column": "Description__c", "operator": "contains", "value": "abc"}],
+    )
+    draft = build_soql(record)
+    assert any("ロングテキストは絞り込めない場合がある" in c for c in draft.checks)
+
+
+# ── 値の分割・エスケープ ──────────────────────────────────────────
+
+
+def test_split_values_keeps_quoted_comma_as_one_value() -> None:
+    """``"a,b",c`` は 2 値に分ける。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "equals", "value": '"a,b",c'}],
+    )
+    draft = build_soql(record)
+    assert "WHERE Name IN ('a,b', 'c')" in draft.soql
+
+
+def test_string_literal_escapes_newline_and_tab() -> None:
+    """文字列リテラルの改行とタブは、 エスケープした形にする。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "equals", "value": "a\nb\tc"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE Name = 'a\\nb\\tc'" in draft.soql
+
+
+# ── 相対日付リテラル ─────────────────────────────────────────────
+
+
+def test_relative_date_literal_in_allow_list_is_kept() -> None:
+    """許可リストにある相対日付リテラルは、 そのまま書く。"""
+    for literal in ("THIS_MONTH", "LAST_N_DAYS:30", "30_DAYS_AGO", "NEXT_N_WEEKS:2"):
+        column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+        record = _make_record(
+            detail_columns=["CloseDate"],
+            column_map=column_map,
+            report_filters=[{"column": "CloseDate", "operator": "equals", "value": literal}],
+        )
+        draft = build_soql(record)
+        assert f"WHERE CloseDate = {literal}" in draft.soql, literal
+
+
+def test_relative_date_literal_not_in_allow_list_goes_to_missing() -> None:
+    """許可リストに無い相対日付リテラルは、 missing。"""
+    for literal in ("LAST_MONTHS", "THIS_FORTNIGHT", "LAST_N_DAY:30"):
+        column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+        record = _make_record(
+            detail_columns=["CloseDate"],
+            column_map=column_map,
+            report_filters=[{"column": "CloseDate", "operator": "equals", "value": literal}],
+        )
+        draft = build_soql(record)
+        assert "WHERE" not in draft.soql, literal
+        assert any("相対日付リテラルが未対応" in m for m in draft.missing), literal
+
+
+def test_duration_value_not_in_allow_list_goes_to_missing() -> None:
+    """``durationValue`` も許可リストで判定する。"""
+    column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+    record = _make_record(
+        detail_columns=["CloseDate"],
+        column_map=column_map,
+        standard_date_filter={
+            "column": "CloseDate",
+            "durationValue": "THIS_FORTNIGHT",
+            "startDate": "",
+            "endDate": "",
+        },
+    )
+    draft = build_soql(record)
+    assert "WHERE" not in draft.soql
+    assert any("durationValue" in m for m in draft.missing)
+
+
+# ── 日付の表記 ───────────────────────────────────────────────────
+
+
+def test_date_value_without_zero_padding_is_normalized() -> None:
+    """ゼロ埋め無しの日付も、 ``YYYY-MM-DD`` に直す。"""
+    column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+    record = _make_record(
+        detail_columns=["CloseDate"],
+        column_map=column_map,
+        report_filters=[{"column": "CloseDate", "operator": "equals", "value": "2024/1/5"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE CloseDate = 2024-01-05" in draft.soql
