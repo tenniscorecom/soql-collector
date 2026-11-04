@@ -9,11 +9,13 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import sys
 import types
 from pathlib import Path
 from typing import ClassVar
 
+import pytest
 from comken.exceptions import SalesforceReportIDNotFoundError
 from comken.toolbox.salesforce.report import report_id_from_url
 
@@ -266,6 +268,91 @@ def test_generated_source_has_no_extra_statements_for_injected_display_name() ->
     tree = ast.parse(source)
     for node in tree.body:
         assert isinstance(node, (ast.Expr, ast.Import, ast.ImportFrom, ast.ClassDef))
+
+
+# ── SOQL を 3 重引用符で書く ──────────────────────────────────────
+
+
+def _with_soql(record: ReportRecord, soql: str) -> ReportRecord:
+    """SOQL の下書きを差し替えた record を返す。"""
+    return dataclasses.replace(
+        record,
+        soql_draft=dataclasses.replace(record.soql_draft, soql=soql),
+    )
+
+
+def _source_of_soql(soql: str) -> str:
+    """SOQL を差し替えたときの生成ソースを作る。"""
+    record = _with_soql(_make_record(), soql)
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    return source
+
+
+def _soql_of_source(source: str) -> str:
+    """生成ソースを実行して、 ``soql()`` の返り値を取り出す。"""
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    return report_class().soql()  # type: ignore[attr-defined]
+
+
+def test_generated_soql_uses_triple_quote() -> None:
+    """SOQL は 3 重引用符で書く。 改行を ``\\n`` に置き換えない。"""
+    source = _source_of_soql("SELECT Name,\n  StageName\nFROM Case")
+    assert 'return """' in source
+    assert "\\n" not in source
+
+
+def test_generated_soql_writes_second_line_from_line_head() -> None:
+    """SOQL の 2 行目以降は、 字下げせず行頭から書く。"""
+    source = _source_of_soql("SELECT Name\nFROM Case")
+    assert '        return """SELECT Name\nFROM Case"""' in source
+
+
+@pytest.mark.parametrize(
+    "soql",
+    [
+        # 引用符のエスケープ（ \' ）
+        "SELECT Name\nFROM Case\nWHERE Name = 'O\\'Brien'",
+        # LIKE の値の中のバックスラッシュ（ \% ）
+        "SELECT Name\nFROM Case\nWHERE Name LIKE 'a\\%'",
+        # SOQL 側の改行エスケープ（ バックスラッシュ + n の 2 文字 ）
+        "SELECT Note\nFROM Case\nWHERE Note = 'x\\ny'",
+        # " で終わる行
+        'SELECT Name\nFROM Case\nWHERE Name = "abc"',
+        # バックスラッシュで終わる行
+        "SELECT Name\nFROM Case\nWHERE Name = 'abc\\",
+        # 3 重引用符を含む行
+        'SELECT Name\nFROM Case\nWHERE Name = \'a"""b\'',
+        # 制御文字（ 復帰 ） を含む行
+        "SELECT Name\nFROM Case\nWHERE Name = 'a\rb'",
+        # 制御文字（ 垂直タブ ） を含む行
+        "SELECT Name\nFROM Case\nWHERE Name = 'a\x0bb'",
+    ],
+)
+def test_generated_soql_returns_original_text(soql: str) -> None:
+    """引用符・エスケープ・制御文字が入っても、 ``soql()`` は元の文字列と一致する。"""
+    source = _source_of_soql(soql)
+    compile(source, "<generated>", "exec")
+    assert _soql_of_source(source) == soql
+
+
+def test_generated_source_has_no_extra_statements_for_injected_soql() -> None:
+    """SOQL に 3 重引用符とコードを混ぜても、 余計な文が増えない。"""
+    soql = 'x"""\nimport os\ny = """z'
+    source = _source_of_soql(soql)
+    tree = ast.parse(source)
+    # モジュール直下の文は docstring と import とクラス定義だけ
+    for node in tree.body:
+        assert isinstance(node, (ast.Expr, ast.Import, ast.ImportFrom, ast.ClassDef))
+    assert len([node for node in tree.body if isinstance(node, ast.ClassDef)]) == 1
+    # 注入された import がモジュール直下に現れない
+    imported = [
+        alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names
+    ]
+    assert imported == []
+    # 注入された値がコードとして実行されていないこと
+    assert _soql_of_source(source) == soql
 
 
 # ── NAME ──────────────────────────────────────────────────────────

@@ -7,7 +7,8 @@
 **文字列はすべて ``repr()`` を通して組み立てる。** レポートから来た値
 （概要・レポート名・レポート ID・missing・checks・表示名） をそのまま書くと、
 値がコードとして実行される危険があるため。 改行と制御文字は空白に置き換え、
-``repr()`` で Python の文字列リテラルにしてから書き出す。
+``repr()`` で Python の文字列リテラルにしてから書き出す。 SOQL だけは行の
+区切りを残したいので、 1 行ずつ ``repr()`` を通して実際の改行でつなぐ。
 
 **URL は書き出さない。** レポート ID だけを書き、 組織のドメイン
 （ URL 全体） は ``.py`` に残さない。
@@ -131,12 +132,8 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
         )
     lines.append("")
     lines.append("    def soql(self) -> str:")
-    lines.append("        return (")
-    # カンマで区切るとタプルになる。 隣接する文字列リテラルの連結にして、
-    # 1 行ずつ読みやすい形にする
-    for soql_line in _soql_literal_lines(draft.soql):
-        lines.append(f"            {soql_line}")
-    lines.append("        )")
+    soql_literal = _soql_triple_quoted(draft.soql)
+    lines.append(f"        return {soql_literal}")
     return "\n".join(lines) + "\n"
 
 
@@ -252,13 +249,12 @@ def _count_display_names(display_names: list[str]) -> list[int]:
     return [counts[display_name] for display_name in display_names]
 
 
-def _docstring_literal(text: str) -> str:
-    """3 重引用符の docstring にする。
+def _triple_quoted_body(text: str) -> str:
+    """3 重引用符の中に入る本文の形に整えた文字列を返す。
 
     ``repr()`` が出力する引用符の取り方 （ ``'`` か ``"`` か ） によって
     中のエスケープが違うので、 いったん本文だけを取り出して、 3 重引用符
-    で壊れない形にそろえる。 バックスラッシュと 3 重引用符は、 そのまま
-    コードにならない形にする。
+    で壊れない形にそろえる。
     """
     quoted = repr(text)
     body = quoted[1:-1]
@@ -268,20 +264,27 @@ def _docstring_literal(text: str) -> str:
     else:
         body = body.replace('\\"', '"')
     # 3 重引用符の中で " が 3 つ続くと文字列が壊れるので、 全部 \" にする
-    body = body.replace('"', '\\"')
-    return f'"""{body}"""'
+    return body.replace('"', '\\"')
 
 
-def _soql_literal_lines(soql: str) -> list[str]:
-    """SOQL を 1 行ずつの Python 文字列リテラルにする。"""
-    parts = soql.split("\n")
-    lines: list[str] = []
-    for index, part in enumerate(parts):
-        if index < len(parts) - 1:
-            lines.append(repr(part + "\n"))
-        else:
-            lines.append(repr(part))
-    return lines
+def _docstring_literal(text: str) -> str:
+    """3 重引用符の docstring にする。
+
+    バックスラッシュと 3 重引用符は、 そのままコードにならない形にする
+    （ 中身を整える手順は ``_triple_quoted_body`` にまとめる ）。
+    """
+    return f'"""{_triple_quoted_body(text)}"""'
+
+
+def _soql_triple_quoted(soql: str) -> str:
+    """SOQL を 3 重引用符の文字列にする。
+
+    SOQL は行の区切りを残したいので、 1 行ずつ ``_triple_quoted_body`` で
+    エスケープしてから、 実際の改行でつなぐ。 中身は元の SOQL と 1 文字も
+    違わない。
+    """
+    escaped_lines = [_triple_quoted_body(line) for line in soql.split("\n")]
+    return '"""' + "\n".join(escaped_lines) + '"""'
 
 
 def _flatten(text: str) -> str:
