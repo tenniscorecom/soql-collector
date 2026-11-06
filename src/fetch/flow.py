@@ -18,6 +18,7 @@ from comken.toolbox.salesforce.report import report_id_from_url
 from src import pii
 from src.describe_store import DescribeStore, org_from_url
 from src.fetch.models import FetchOutcome, SiteFor
+from src.fetch.offline import OfflineApiError
 from src.fetch.outcome import build_fetch_outcome
 from src.fetch.site_run import FetchState, run_within_site
 from src.master import MasterEntry
@@ -62,6 +63,7 @@ def run_fetch(
     related_depth: int = RELATED_DEPTH,
     related_max: int = RELATED_MAX,
     row_limit: bool = ROW_LIMIT_ENABLED,
+    allow_refresh: bool = True,
     pii_keywords: tuple[str, ...] = pii.DEFAULT_KEYWORDS,
     pii_person_objects: tuple[str, ...] = pii.DEFAULT_PERSON_OBJECTS,
     describe_csv_path: Path,
@@ -77,12 +79,21 @@ def run_fetch(
     **JSON を書かない**。 結果は ``outcomes[i].record`` で取り出して、
     そのまま ``run_tables`` に渡す。
 
+    ``site_for`` に 接続しないサイト （ ``offline.offline_site_for(base_site_for)`` ）
+    を渡すと、 保存データだけで作り直す（``--rebuild``） になる。 Salesforce に
+    接続せず、 レポート定義が必要になったときは ``OfflineApiError`` でその
+    レポートを失敗にする。 項目定義が無いオブジェクトは、 普通の実行の describe
+    失敗と同じ扱い（ 警告だけ残る ）。
+
     Args:
         entries: 処理対象の管理表エントリ（既に ``--all`` 絞り込み済み）。
         related_depth: 関連オブジェクトを掘る段数。 既定は ``RELATED_DEPTH``。
         related_max: 関連オブジェクトの合計件数上限。 既定は ``RELATED_MAX``。
         row_limit: True のとき 1 レポートごとに 2000 行チェックを実行する。
             既定は ``ROW_LIMIT_ENABLED``。
+        allow_refresh: True のとき、 列対応に ``(不明)`` が残れば API で
+            取り直す。 保存データだけで作り直す（``--rebuild``）ときは
+            API を呼ばないので ``False`` にする。
         pii_keywords: PII 判定に使うキーワード。 既定は ``pii.DEFAULT_KEYWORDS``。
         pii_person_objects: 個人系オブジェクト。 既定は
             ``pii.DEFAULT_PERSON_OBJECTS``。
@@ -149,6 +160,7 @@ def run_fetch(
             related_depth=related_depth,
             related_max=related_max,
             row_limit=row_limit,
+            allow_refresh=allow_refresh,
             pii_keywords=pii_keywords,
             pii_person_objects=pii_person_objects,
             site_for=site_for,
@@ -195,6 +207,7 @@ def _fetch_one(
     refresh_set: set[tuple[str, str]],
     report_store: ReportStore | None = None,
     column_fix_overrides: dict[tuple[str, str], Any] | None = None,
+    allow_refresh: bool = True,
 ) -> FetchOutcome:
     """1 ID の describe を取り、 ``ReportRecord`` を組み立てて返す。
 
@@ -206,11 +219,15 @@ def _fetch_one(
     if site_error is not None:
         return site_error
     assert report_id is not None  # 上の分岐で必ず代入される
+    site = site_for(entry.url)
+    # 組織は 接続先クラスの ``DOMAIN_URL`` から決める。 保存データだけで
+    # 作り直すとき（ ``--rebuild`` ）も、 接続しないサイトの ``DOMAIN_URL``
+    # （ 本来のサイトクラスのもの ） を使うので、 同じコードで同じ組織になる
     org = _org_of(entry, site_for)
 
     state = FetchState()
     try:
-        with site_for(entry.url)() as client:
+        with site() as client:
             run_within_site(
                 client=client,
                 entry=entry,
@@ -224,7 +241,18 @@ def _fetch_one(
                 related_max=related_max,
                 column_fix_overrides=column_fix_overrides,
                 state=state,
+                allow_refresh=allow_refresh,
             )
+    except OfflineApiError as exc:
+        # 保存データに無いので API が必要になった。 途中まで作った record は
+        # 出さず、 このレポートだけ失敗にする
+        return FetchOutcome(
+            entry=entry,
+            status="failed",
+            record=None,
+            warnings=(),
+            error=str(exc),
+        )
     except SalesforceRequestError as exc:
         # 接続失敗・認証失敗・致命 HTTP
         return FetchOutcome(
@@ -258,6 +286,10 @@ def _org_of(entry: MasterEntry, site_for: SiteFor) -> str:
     サンドボックスに差し替えているときは、 管理表の URL（本番）ではなく、 つなぐ組織クラスの
     ``DOMAIN_URL`` で決める。 本番とサンドボックスの describe が、 同じ組織のものとして
     混ざらないようにするため。 ``DOMAIN_URL`` を持たない接続先（テストの代用品）は URL で決める。
+
+    保存データだけで作り直すとき（ ``--rebuild`` ）も、 接続しないサイトの
+    ``DOMAIN_URL`` （ 本来のサイトクラスのもの ） を使うので、 普通の実行と
+    同じコードで同じ組織になる。
     """
     domain_url = getattr(site_for(entry.url), "DOMAIN_URL", "")
     return org_from_url(domain_url or entry.url)

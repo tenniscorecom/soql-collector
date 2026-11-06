@@ -12,6 +12,19 @@ describe を取って ``ReportRecord`` に詰める。 その record の一覧�
 - 2 … 引数が付いた / 管理表に「有効」が ○ の行が無い / config.ini に
   必須キーが無い （comken の ``ConfigError`` がそのまま上がる）
 
+``--rebuild`` （ 保存データだけで作り直す ）:
+
+- 引数は ``--rebuild`` 1 個だけ受け付ける。 ほかは 2 で返す
+- Salesforce に接続しない。 レポート定義と項目定義は 保存データ
+  （``data/レポート定義/`` と ``data/項目定義.csv`` ） から読む
+- 件数チェック（ 2000 行チェック ） はしない
+- レポート定義が保存データに無いレポートは、 途中まで作った record を
+  出さず失敗にする（ 実行.bat で取り直してください ）
+- 項目定義が保存データに無いオブジェクトは、 通常の実行で describe が
+  取れなかったときと同じ扱い（ 警告だけ残す。 レポートは失敗にしない ）
+- 保存データ（ レポート定義 / 項目定義 ） は書き換えない。 今回調べない
+  レポートのレポート定義も消さない
+
 `main.py` はこの ``run()`` の戻り値を ``SystemExit`` に流す。
 
 ログ方針: 実行の開始と終了、 dry-run の一覧はここで 1 回ずつ出す。 1
@@ -46,7 +59,14 @@ from comken.toolbox.salesforce.report import report_id_from_url
 from src import column_fix_xlsx
 from src.column_fix_xlsx import ColumnFixRow
 from src.describe_store import DescribeStore
-from src.fetch import FetchOutcome, ReportRecord, SiteFor, run_fetch
+from src.fetch import (
+    FetchOutcome,
+    ReportRecord,
+    SiteFor,
+    default_site_for,
+    offline_site_for,
+    run_fetch,
+)
 from src.master import MasterEntry, filter_survey_targets, read_master
 from src.report_store import ReportStore
 from src.tables import run_tables
@@ -58,6 +78,11 @@ logger = logging.getLogger(__name__)
 # （``SOQL調査.xlsx`` / ``SOQL資料/`` / ``列名の対応.csv`` / ``項目定義.csv`` には触らない）。
 # 消したものは、 次に調べるときに取り直しになる。
 PRUNE_REPORT_STORE: bool = True
+
+
+# 保存データだけで作り直すときのオプション名。 引数はこれ 1 個だけ受け付ける
+# （ ほかは今まで通り 終了コード 2 ）。
+REBUILD_OPTION = "--rebuild"
 
 
 @dataclass(frozen=True)
@@ -113,18 +138,32 @@ def _fetch(
     entries: list[MasterEntry],
     column_fix_overrides: dict[tuple[str, str], ColumnFixRow],
     site_for: SiteFor | None,
+    *,
+    rebuild: bool = False,
 ) -> list[FetchOutcome]:
-    """``run_fetch`` を呼び ``outcomes`` を返す。 所要時間と describe の集計ログもここで出す。"""
+    """``run_fetch`` を呼び ``outcomes`` を返す。 所要時間と describe の集計ログもここで出す。
+
+    ``rebuild`` が True なら 保存データだけで作り直す（ Salesforce に接続しない。
+    件数チェックもしない。 レポート定義が保存データに無いレポートは 失敗に
+    なる。 項目定義が保存データに無いオブジェクトは、 通常の実行で describe が
+    取れなかったときと同じ扱い（ 警告だけ残して、 そのオブジェクトは不明 ））。
+    """
     started_at = time.perf_counter()
     describe_store = DescribeStore.load(file_paths.describe_csv_path)
     report_store = ReportStore.load(file_paths.describe_csv_path)
     refresh_set: set[tuple[str, str]] = set()
+    if rebuild:
+        # 保存データだけで作り直す: 接続しない site_for に差し替える。
+        # 組織は 本来のサイトクラスの ``DOMAIN_URL`` から決めるので、 base の
+        # site_for を包む（ クラスは作るだけで、 ログインはしない ）
+        site_for = offline_site_for(site_for or default_site_for)
     outcomes = list(
         run_fetch(
             entries,
             related_depth=config.SURVEY.RELATED_DEPTH,
             related_max=config.SURVEY.RELATED_MAX,
-            row_limit=config.SURVEY.ROW_LIMIT_CHECK == "○",
+            row_limit=config.SURVEY.ROW_LIMIT_CHECK == "○" and not rebuild,
+            allow_refresh=not rebuild,
             pii_keywords=tuple(s.strip() for s in config.PII.KEYWORDS.split(",")),
             pii_person_objects=tuple(s.strip() for s in config.PII.PERSON_OBJECTS.split(",")),
             describe_csv_path=file_paths.describe_csv_path,
@@ -155,7 +194,7 @@ def _fetch(
         report_store.hit_count,
         report_store.api_count,
     )
-    if PRUNE_REPORT_STORE:
+    if PRUNE_REPORT_STORE and not rebuild:
         _prune_report_store(report_store, entries)
     return outcomes
 
@@ -227,8 +266,11 @@ def run(
 
     Args:
         argv: コマンドライン引数。 ``None`` なら ``sys.argv[1:]`` を使う。
-            1 件でも指定されたら何もしないでエラー終了（終了コード 2）。
+            ``--rebuild`` 1 個だけを受け付ける（ 保存データだけで作り直す ）。
+            ほかは指定されたら何もしないでエラー終了（終了コード 2）。
         site_for: URL → Salesforce サイトクラスの関数。 テスト用差し替え。
+            ``--rebuild`` のときは 接続しない サイトの土台として使う
+            （ クラス属性 ``DOMAIN_URL`` しか読まない。 ログインはしない ）。
         file_paths: ``config.ini [FILES]`` の値。 省略時は ``read_file_paths()`` で
             読む。 テストで差し替えるために引数で受ける。
 
@@ -240,9 +282,17 @@ def run(
     """
     if argv is None:
         argv = sys.argv[1:]
+    rebuild = False
     if argv:
-        logger.error("引数は使いません。取るレポートは管理表の『有効』列が ○ の行で決まります")
-        return 2
+        if len(argv) == 1 and argv[0] == REBUILD_OPTION:
+            rebuild = True
+        else:
+            logger.error(
+                "引数は使いません。取るレポートは管理表の『有効』列が ○ の行で決まります"
+                "（%s だけ指定できます）",
+                REBUILD_OPTION,
+            )
+            return 2
 
     # config.ini のキー欠落 （``ConfigError``） は全て return 2 にまとめる
     try:
@@ -257,6 +307,10 @@ def run(
 
         # 設定は ``config.SURVEY.*`` / ``config.PII.*`` を直接読む （
         # キー欠落ならこの下で ``ConfigError``）
+        if rebuild:
+            logger.info("保存データだけで作り直す。件数チェックはしない")
+        # ROW_LIMIT は 実際の動き（ 作り直すときは 件数チェックをしない ） を書く
+        row_limit_enabled = config.SURVEY.ROW_LIMIT_CHECK == "○" and not rebuild
         logger.info(
             "取得開始: 管理表=%s 全行数=%d 有効=%d 調査対象=%d 出力先=%s "
             "RELATED_DEPTH=%d RELATED_MAX=%d ROW_LIMIT=%s SIMILAR=%.2f",
@@ -267,7 +321,7 @@ def run(
             file_paths.output_dir,
             config.SURVEY.RELATED_DEPTH,
             config.SURVEY.RELATED_MAX,
-            "○" if config.SURVEY.ROW_LIMIT_CHECK == "○" else "×",
+            "○" if row_limit_enabled else "×",
             config.SURVEY.SIMILAR_COLUMN_THRESHOLD,
         )
 
@@ -294,6 +348,7 @@ def run(
             entries=entries,
             column_fix_overrides=column_fix_overrides,
             site_for=site_for,
+            rebuild=rebuild,
         )
         failed_count = sum(1 for o in outcomes if o.status == "failed")
 

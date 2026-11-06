@@ -8,6 +8,7 @@ from typing import Any
 from comken.exceptions import SalesforceRequestError
 
 from src.describe_store import DescribeStore
+from src.fetch.offline import OfflineDescribeMissing
 from src.fetch.report_slim import make_slim_object
 
 # ``describe_object`` が 401 / 403 を返したとき、 その ID 全体を失敗させる
@@ -36,6 +37,9 @@ def make_overrides_fetcher(
     2. ``DescribeStore`` （メモリ → CSV） を見る
     3. 無ければ API を呼ぶ。 成功時はメモリと CSV に保存
 
+    保存データに無いとき（ ``--rebuild`` ）も、 HTTP エラーのときと同じく
+    失敗をメモリにだけ覚えて ``None`` を返す。
+
     取れた describe は ``make_slim_object`` で整えて ``objects[name]`` に入れる。
     """
 
@@ -58,6 +62,11 @@ def make_overrides_fetcher(
         # 3) API 呼び出し
         try:
             describe = client.describe_object(name)
+        except OfflineDescribeMissing as exc:
+            # 保存データに無い（ --rebuild ）。 通常の実行で 404 などになったときと
+            # 同じ扱いにする: 失敗をメモリにだけ覚えて None を返す
+            store.record_api_failure(org, name, str(exc))
+            return None
         except SalesforceRequestError as exc:
             if exc.status_code in FATAL_STATUS_CODES:
                 # 401 / 403 は上位へ送出してレポート全体を失敗扱いにする
@@ -92,6 +101,9 @@ def fetch_object_cached(
         そのまま上位へ送出する（呼び出し側で ID 全体を失敗扱い）。 ストアには
         生の describe を書く（項目定義.csv の列のため）。
 
+    保存データに無いとき（ ``--rebuild`` ）も、 HTTP エラーのときと同じ扱い
+    （ 失敗をメモリにだけ覚えて 警告を 1 つ残して ``None`` ） にする。
+
     ``csv_used_keys`` を渡すと、 CSV から読んだ （今回 API で取ったものではない）
     ``(org, object_lower)`` のキーをそこに追加する。 取り直しの判定に使う。
     """
@@ -107,6 +119,13 @@ def fetch_object_cached(
 
     try:
         describe = client.describe_object(name)
+    except OfflineDescribeMissing as exc:
+        # 保存データに無い（ --rebuild ）。 通常の実行の describe 失敗
+        # （ 404 など ） と同じ扱いにする: 警告を 1 つ残して None を返す
+        warning = str(exc)
+        store.record_api_failure(org, name, warning)
+        warnings.append(warning)
+        return None
     except SalesforceRequestError as exc:
         if exc.status_code in FATAL_STATUS_CODES:
             raise

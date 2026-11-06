@@ -13,6 +13,7 @@ from comken.exceptions import (
 )
 
 from src.fetch.models import RowCheck
+from src.fetch.offline import OfflineApiError
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ def check_row_count(client: Any, report_id: str) -> RowCheck:
     """
     try:
         table = client.report.get(report_id)
+    except OfflineApiError:
+        # 保存データだけで作り直す実行では、 2000 件チェックはしない。
+        # 呼ばれても 「判定不可」 に縮退せず、 上位へ送出して失敗にする
+        raise
     except SalesforceReportTruncatedError:
         # 2000 行超。 切り捨て検知は正常パスの一部なので reason は None。
         return RowCheck(status=ROW_CHECK_OVER, rows=None, reason=None)

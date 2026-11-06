@@ -79,8 +79,14 @@ def run_within_site(
     related_max: int,
     column_fix_overrides: dict[tuple[str, str], Any],
     state: FetchState,
+    allow_refresh: bool = True,
 ) -> None:
-    """``with site_class() as client:`` の中で行う一連の取得・組み立てを行う。"""
+    """``with site_class() as client:`` の中で行う一連の取得・組み立てを行う。
+
+    ``allow_refresh`` が ``False`` のときは、 取り直し （API で describe を
+    取り直す） をしない。 保存データだけで作り直す（``--rebuild``） ときは
+    API を呼ばないので、 取り直しもしない。
+    """
     # 境界: レポート定義はここで 1 回だけ整え、 以後は整えた値だけを使う。
     # 貯めてあればそれを使い（期限は無い。 作り直すときは ``レポート定義/`` を消す）、
     # 無ければ API で取って貯める
@@ -146,16 +152,19 @@ def run_within_site(
     state.column_map = column_map
 
     # 取り直し: 列対応に (不明) が残り、 CSV から読んだオブジェクトが
-    # このレポートで使われているなら API で取り直す
-    _refresh_unresolved_columns(
-        client=client,
-        org=org,
-        entry=entry,
-        state=state,
-        store=store,
-        refresh_set=refresh_set,
-        fetcher=fetcher,
-    )
+    # このレポートで使われているなら API で取り直す。
+    # 保存データだけで作り直すとき（ ``allow_refresh=False`` ）は API を
+    # 呼ばないので取り直さない
+    if allow_refresh:
+        _refresh_unresolved_columns(
+            client=client,
+            org=org,
+            entry=entry,
+            state=state,
+            store=store,
+            refresh_set=refresh_set,
+            fetcher=fetcher,
+        )
 
     # 人が ``列の直し.xlsx`` に入れた値で ``column_map`` を上書きする
     state.column_map = column_fix_xlsx.apply_overrides(

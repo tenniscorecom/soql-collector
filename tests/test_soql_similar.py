@@ -150,6 +150,27 @@ def test_none_status_is_excluded() -> None:
     assert result == {}
 
 
+def test_partial_status_is_excluded_from_both_sides() -> None:
+    """``一部作れず`` の SOQL は 相手にも自分にも出ない。
+
+    条件が一部省かれている（ ``missing`` がある）ので、 似て見えても当てに
+    ならない。 比較対象は ``作成済み`` と ``要確認`` だけ。
+    """
+    rec_partial = _make_record("1001", status="一部作れず", select_items=("Name",))
+    rec_created = _make_record("1002", select_items=("Name",))
+    rec_needs_check = _make_record("1003", status="要確認", select_items=("Name",))
+
+    result = soql_similar.find_similar_soql([rec_partial, rec_created, rec_needs_check])
+
+    # 一部作れず は 自分の相手にも出ない
+    assert "1001" not in result
+    # かつ 谁的の相手にも出ない
+    assert all(entry.key != "1001" for entries in result.values() for entry in entries)
+    # 作成済み と 要確認 同士は 比べられる
+    assert result["1002"][0].key == "1003"
+    assert result["1003"][0].key == "1002"
+
+
 def test_missing_draft_is_excluded() -> None:
     """``soql_draft`` が無い record は比較対象にしない。"""
     rec_a = _make_record("1001", with_draft=False)

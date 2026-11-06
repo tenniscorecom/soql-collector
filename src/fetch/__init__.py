@@ -41,6 +41,8 @@ CSV を組み立てる。 許可リストでレポート describe から落と�
 - ``object_fetch.py``: オブジェクト describe の取得（ストア → API）
 - ``report_slim.py``: レポート・オブジェクト describe の整形
 - ``row_check.py``: 2000 行チェック
+- ``offline.py``: 保存データだけで作り直す（``--rebuild``）用の接続しない client
+  と専用例外（``OfflineApiError`` / ``OfflineDescribeMissing``）
 - ``models.py``: データクラス（``ReportRecord`` など）
 """
 
@@ -61,6 +63,7 @@ from src.fetch.models import (
     SiteFor,
 )
 from src.fetch.object_fetch import FATAL_STATUS_CODES
+from src.fetch.offline import OfflineApiError, OfflineDescribeMissing, offline_site_for
 
 __all__ = [
     "FATAL_STATUS_CODES",
@@ -69,11 +72,14 @@ __all__ = [
     "ROW_LIMIT_ENABLED",
     "SURVEY_ON_SANDBOX",
     "FetchOutcome",
+    "OfflineApiError",
+    "OfflineDescribeMissing",
     "RelatedNode",
     "RelationRecord",
     "ReportRecord",
     "RowCheck",
     "SiteFor",
     "default_site_for",
+    "offline_site_for",
     "run_fetch",
 ]

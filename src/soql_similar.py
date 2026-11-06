@@ -12,6 +12,10 @@
 - ``WHERE以降が同じ``: WHERE（集合）と ORDER BY が同じで SELECT が違う
 - ``WHEREだけ違う``: SELECT（集合）と ORDER BY が同じで WHERE が違う
 
+比較するのは ``作成済み`` と ``要確認`` の SOQL だけ。 ``作れず`` と
+``一部作れず`` は比べない（ ``一部作れず`` は条件が一部省かれているので、
+似て見えても当てにならない ）。
+
 比較は ``SoqlDraft`` に入れた ``select_items`` / ``where_items`` /
 ``order_by`` で行う（ SOQL の文字列を後からパースしない ）。
 """
@@ -22,7 +26,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from src.soql_builder import STATUS_NONE
+from src.soql_builder import STATUS_NONE, STATUS_PARTIAL
 
 if TYPE_CHECKING:
     from src.fetch import ReportRecord
@@ -58,7 +62,10 @@ class SimilarSoql:
 def find_similar_soql(records: Iterable[ReportRecord]) -> dict[str, list[SimilarSoql]]:
     """``records`` から 「似た SOQL」 の関係を抽出する（純粋関数）。
 
-    ``soql_draft`` が無い record と ``作れず`` の record は対象外にする。
+    比較するのは ``作成済み`` と ``要確認`` の SOQL だけ。 ``soql_draft`` が
+    無い record と、 ``作れず`` / ``一部作れず`` の record は対象外にする
+    （ ``一部作れず`` は 条件が一部省かれているので、 似て見えても当てに
+    ならない ）。
 
     戻り値は ``{管理番号: [相手の SimilarSoql, ...]}`` 。 相手は管理番号の
     昇順。 両方方向に登録する （ A の相手に B、 B の相手に A ） 。 違いの文は
@@ -67,7 +74,7 @@ def find_similar_soql(records: Iterable[ReportRecord]) -> dict[str, list[Similar
     items: list[tuple[str, str, SoqlDraft]] = []
     for record in records:
         draft = record.soql_draft
-        if draft is None or draft.status == STATUS_NONE:
+        if draft is None or draft.status in (STATUS_NONE, STATUS_PARTIAL):
             continue
         items.append((record.key, record.main_object or "", draft))
     items.sort(key=lambda item: item[0])
