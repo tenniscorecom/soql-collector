@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from src import ai_markdown, mapping, relation_diagram, report_py, similar
+from src import ai_markdown, mapping, relation_diagram, report_py, similar, soql_similar
 from src.tables.column_names_csv import (
     aggregate_resolved_fields,
     merge_column_names_csv,
@@ -95,6 +95,9 @@ def run_tables(
                     pair.integration,
                 )
 
+    # 似たSOQL判定（生成した SOQL 同士を比べる。 レポート定義の比較とは別）
+    similar_soql_lookup = soql_similar.find_similar_soql(sorted_records)
+
     # 解決済みフィールドの集約
     resolved_fields = aggregate_resolved_fields(sorted_records, pii_lookups)
 
@@ -113,6 +116,7 @@ def run_tables(
     survey_rows = build_survey_table_rows_from_records(
         sorted_records,
         similar_lookup=key_to_group,
+        similar_soql_lookup=similar_soql_lookup,
         unresolved_counts=unresolved_counts,
         warnings=warning_rows,
         markdown_dir=markdown_dir,
@@ -163,12 +167,13 @@ def run_tables(
     # AI に SOQL を組ませるときにそのまま渡す用途。 既存のファイルはそのまま
     # 残し、 今回取れた record の分だけ上書きする。 似たレポートの情報を
     # ``similar_lookup`` で渡すと、 Markdown の 「似たレポート」 セクションに
-    # 反映される
+    # 反映される。 似た SOQL の情報は ``similar_soql_lookup`` で渡す
     wrote.extend(
         ai_markdown.write_ai_markdowns(
             output_dir,
             sorted_records,
             similar_lookup=key_to_group,
+            similar_soql_lookup=similar_soql_lookup,
             diagrams=diagrams,
             subdir=markdown_dir,
             diagram_subdir=diagram_dir,

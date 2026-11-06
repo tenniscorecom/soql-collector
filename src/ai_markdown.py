@@ -24,11 +24,12 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from src import mapping, relation_diagram
+from src import mapping, relation_diagram, soql_similar
 from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
     from src.fetch import RelationRecord, ReportRecord
+    from src.soql_similar import SimilarSoql
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ def write_ai_markdowns(
     records: Sequence[ReportRecord],
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
+    similar_soql_lookup: dict[str, list[SimilarSoql]] | None = None,
     diagrams: dict[str, relation_diagram.Diagram] | None = None,
     subdir: str = MARKDOWN_SUBDIR,
     diagram_subdir: str = relation_diagram.DIAGRAM_SUBDIR,
@@ -63,6 +65,9 @@ def write_ai_markdowns(
 
     ``diagrams`` は ``{主オブジェクト: Diagram}``（表を作るときに 1 回組んだもの）。
     渡せばレポートごとに関係図を組み直さない。
+
+    ``similar_soql_lookup`` は ``{管理番号: [似た SOQL の相手, ...]}`` 。
+    Markdown の 「似たSOQL」 セクションに反映される。
 
     ``record`` が ``None`` のもの （失敗したもの） は書かない。 既存の
     ファイル （今回取れなかった管理番号のファイルや、 古い失敗ファイル） は
@@ -77,6 +82,7 @@ def write_ai_markdowns(
             target_dir,
             record,
             similar_lookup=similar_lookup,
+            similar_soql_lookup=similar_soql_lookup,
             diagram=diagram,
             diagram_subdir=diagram_subdir,
         )
@@ -92,6 +98,7 @@ def write_ai_markdown(
     record: ReportRecord,
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
+    similar_soql_lookup: dict[str, list[SimilarSoql]] | None = None,
     diagram: relation_diagram.Diagram | None = None,
     diagram_subdir: str = relation_diagram.DIAGRAM_SUBDIR,
 ) -> Any | None:
@@ -101,7 +108,11 @@ def write_ai_markdown(
         return None
     path = target_dir / f"{key}.md"
     content = build_markdown(
-        record, similar_lookup=similar_lookup, diagram=diagram, diagram_subdir=diagram_subdir
+        record,
+        similar_lookup=similar_lookup,
+        similar_soql_lookup=similar_soql_lookup,
+        diagram=diagram,
+        diagram_subdir=diagram_subdir,
     )
     path.write_text(content, encoding=_ENCODING, newline=_NEWLINE)
     return path
@@ -111,6 +122,7 @@ def build_markdown(
     record: ReportRecord,
     *,
     similar_lookup: dict[str, tuple[int, str, str]] | None = None,
+    similar_soql_lookup: dict[str, list[SimilarSoql]] | None = None,
     diagram: relation_diagram.Diagram | None = None,
     diagram_subdir: str = relation_diagram.DIAGRAM_SUBDIR,
 ) -> str:
@@ -126,6 +138,10 @@ def build_markdown(
     ``similar_lookup`` は ``{管理番号: (group_number, base_key, integration)}`` 。
     ``tables.run_tables`` が ``similar.find_similar_groups`` の結果から組み立てる。
     ``None`` のときは 「似たレポート」 セクションは 「なし」 だけ出す
+
+    ``similar_soql_lookup`` は ``{管理番号: [似た SOQL の相手, ...]}`` 。
+    ``tables.run_tables`` が ``soql_similar.find_similar_soql`` の結果から
+    組み立てる。 ``None`` のときは 「似たSOQL」 セクションは 「なし」 だけ出す
     """
     metadata = _report_metadata(record)
     fmt = metadata.get("reportFormat", "")
@@ -201,6 +217,11 @@ def build_markdown(
     parts.append("## 似たレポート")
     similar_text = _format_similar(similar_lookup, key=record.key)
     parts.append(similar_text)
+    parts.append("")
+
+    # 似たSOQL
+    parts.append("## 似たSOQL")
+    parts.extend(_build_similar_soql_section(similar_soql_lookup, key=record.key))
     parts.append("")
 
     # 警告
@@ -357,6 +378,25 @@ def _format_similar(
     if base_key == key:
         return f"グループ{group_number}: {key} が基準"
     return f"グループ{group_number}: {base_key} が基準・{key} 違い"
+
+
+# ── 似たSOQL ───────────────────────────────────────────────────────────────
+
+
+def _build_similar_soql_section(
+    similar_soql_lookup: dict[str, list[SimilarSoql]] | None,
+    *,
+    key: str,
+) -> list[str]:
+    """「似たSOQL」 セクションの本文の行を組み立てる。
+
+    相手が居なければ 「なし」 1 行だけにする。 居るときは 1 相手 1 行の
+    箇条書きにする （ 切らない ） 。
+    """
+    entries = (similar_soql_lookup or {}).get(key) or []
+    if not entries:
+        return ["なし"]
+    return soql_similar.format_markdown_lines(entries)
 
 
 # ── 警告 ────────────────────────────────────────────────────────────────────

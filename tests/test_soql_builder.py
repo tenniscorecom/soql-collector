@@ -1071,6 +1071,47 @@ def test_soql_draft_is_frozen() -> None:
         draft.status = "変えた"  # type: ignore[misc]
 
 
+# ── 比較用の部品 (「似たSOQL」 判定で使う) ──────────────────────────────
+
+
+def test_build_soql_fills_comparison_parts() -> None:
+    """``select_items`` / ``where_items`` / ``order_by`` に 比較用の部品が入る。"""
+    column_map = _column_map_with_types(
+        [
+            ("Name", "Name", "string"),
+            ("StageName", "StageName", "picklist"),
+        ]
+    )
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Name", "operator": "equals", "value": "Acme"},
+            {"column": "StageName", "operator": "equals", "value": "Closed"},
+        ],
+        sort_by=[{"sortColumn": "Name", "sortOrder": "Asc"}],
+        top_rows={"rowLimit": 10},
+    )
+
+    draft = build_soql(record)
+
+    assert draft.select_items == ("Name",)
+    assert draft.where_items == ("Name = 'Acme'", "StageName = 'Closed'")
+    assert draft.order_by == "ORDER BY Name ASC\nLIMIT 10"
+
+
+def test_build_soql_comparison_parts_are_empty_when_none_status() -> None:
+    """``作れず`` のときは 比較用の部品も空。"""
+    record = _make_record(main_object="")
+
+    draft = build_soql(record)
+
+    assert draft.status == STATUS_NONE
+    assert draft.select_items == ()
+    assert draft.where_items == ()
+    assert draft.order_by == ""
+
+
 # ── SOQL 列収集 (mapping.collect_describable_columns) ────────────────
 
 

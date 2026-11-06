@@ -15,6 +15,7 @@ import pytest
 from openpyxl import load_workbook
 
 from src.fetch import RelationRecord, ReportRecord
+from src.soql_builder import SoqlDraft
 from src.tables import (
     COLUMN_NAMES_COLUMNS,
     COLUMN_NAMES_CSV_NAME,
@@ -340,6 +341,67 @@ def test_survey_similar_group_text(tmp_path: Path) -> None:
             assert str(row["似たレポート"]).startswith("グループ")
         else:
             assert str(row["似たレポート"]).startswith("グループ")
+
+
+def test_survey_similar_soql_column(tmp_path: Path) -> None:
+    """生成した SOQL が似ている相手が居るとき、 一覧シートの 「似たSOQL」 列に
+    「<管理番号>: <区分>（<違い>）」 の形で出る。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record_1001 = dataclasses.replace(
+        _make_record("1001", main_object="Opportunity"),
+        soql_draft=SoqlDraft(
+            soql="SELECT Name FROM Opportunity",
+            status="作成済み",
+            missing=(),
+            checks=(),
+            select_items=("Name",),
+            where_items=("Stage = 'Closed'",),
+            order_by="",
+        ),
+    )
+    record_1002 = dataclasses.replace(
+        _make_record("1002", main_object="Opportunity"),
+        soql_draft=SoqlDraft(
+            soql="SELECT Name, Amount FROM Opportunity",
+            status="作成済み",
+            missing=(),
+            checks=(),
+            select_items=("Name", "Amount"),
+            where_items=("Stage = 'Closed'",),
+            order_by="",
+        ),
+    )
+
+    run_tables(output, [record_1001, record_1002])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
+    by_key = {row["管理番号"]: row for row in rows}
+    # 両方向に出る。 違いは自分から見た向き
+    assert by_key["1001"]["似たSOQL"] == "1002: WHERE以降が同じ（SELECT 追加: Amount）"
+    assert by_key["1002"]["似たSOQL"] == "1001: WHERE以降が同じ（SELECT 削除: Amount）"
+
+
+def test_survey_similar_soql_column_is_empty_without_similar(tmp_path: Path) -> None:
+    """相手が居ないときは 「似たSOQL」 列が空文字。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
+    assert (rows[0]["似たSOQL"] or "") == ""
 
 
 def test_survey_main_object_unknown(tmp_path: Path) -> None:

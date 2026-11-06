@@ -7,10 +7,11 @@ import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from src import ai_markdown
+from src import ai_markdown, soql_similar
 
 if TYPE_CHECKING:
     from src.fetch import ReportRecord
+    from src.soql_similar import SimilarSoql
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ def build_survey_table_rows_from_records(
     records: Sequence[ReportRecord],
     *,
     similar_lookup: dict[str, tuple[int, str, str]],
+    similar_soql_lookup: dict[str, list[SimilarSoql]],
     unresolved_counts: dict[str, int],
     warnings: list[dict[str, str]],
     markdown_dir: str = ai_markdown.MARKDOWN_SUBDIR,
@@ -82,6 +84,8 @@ def build_survey_table_rows_from_records(
                 group_text = f"グループ{group_number}: {base_key} が基準・{key} 違い"
         else:
             group_text = ""
+        # 似たSOQL （生成した SOQL 同士が似ている相手）
+        similar_soql_text = soql_similar.format_cell_text(similar_soql_lookup.get(key, []))
         # 警告を 1 行のサマリに
         if record_warnings:
             warning_summary = f"{len(record_warnings)}件: " + record_warnings[0]
@@ -101,6 +105,7 @@ def build_survey_table_rows_from_records(
                 "個人情報": pii_status,
                 "個人情報の該当列": pii_columns,
                 "似たレポート": group_text,
+                "似たSOQL": similar_soql_text,
                 "警告": warning_summary,
                 "SOQL資料": f"{markdown_dir}/{key}.md" if key else "",
             }

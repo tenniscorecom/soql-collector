@@ -323,6 +323,12 @@ class SoqlDraft:
         limit: ``reportMetadata.topRows.rowLimit`` の正の整数。 件数
             チェックで ``min(totalSize, limit)`` を計算するための値。 無い
             / 読めないときは ``None`` 。
+        select_items: SELECT 句に入る列のリスト ( ``select_lines`` そのもの) 。
+            「似た SOQL」 の判定に使う。
+        where_items: WHERE 句に入る条件のリスト ( ``where_lines`` そのもの) 。
+            「似た SOQL」 の判定に使う。
+        order_by: ``ORDER BY ...`` （ 末尾に ``LIMIT N`` を含む ） の文字列。
+            無ければ空文字。 「似た SOQL」 の判定に使う。
     """
 
     soql: str
@@ -331,6 +337,9 @@ class SoqlDraft:
     checks: tuple[str, ...]
     count_soql: str = field(default="")
     limit: int | None = field(default=None)
+    select_items: tuple[str, ...] = field(default=())
+    where_items: tuple[str, ...] = field(default=())
+    order_by: str = field(default="")
 
 
 def _escape_string_literal(value: str) -> str:
@@ -1404,6 +1413,10 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
         checks=tuple(checks),
         count_soql=count_soql,
         limit=_extract_top_rows_limit(metadata),
+        # 「似た SOQL」 の判定に使う部品。 SOQL の文字列を後からパースしない
+        select_items=tuple(select_lines),
+        where_items=tuple(where_lines),
+        order_by=order_by_clause,
     )
 
 

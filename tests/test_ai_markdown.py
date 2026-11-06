@@ -16,6 +16,7 @@ from src.ai_markdown import (
 )
 from src.fetch import RelationRecord, ReportRecord, RowCheck
 from src.soql_builder import SoqlDraft
+from src.soql_similar import SimilarSoql
 from src.tables import run_tables
 
 # ── ヘルパー ─────────────────────────────────────────────────────────────
@@ -308,6 +309,9 @@ def test_ai_markdown_tabular_full_text() -> None:
         "## 似たレポート\n"
         "なし\n"
         "\n"
+        "## 似たSOQL\n"
+        "なし\n"
+        "\n"
         "## 警告\n"
         "なし\n"
         "\n"
@@ -326,6 +330,45 @@ def test_ai_markdown_tabular_full_text() -> None:
     )
 
     assert build_markdown(record) == expected
+
+
+# ── 似たSOQL ───────────────────────────────────────────────────────
+
+
+def test_markdown_has_similar_soql_section() -> None:
+    """生成した SOQL が似ている相手が居るとき、 「似たSOQL」 節に 1 相手 1 行で出る。"""
+    record = _make_record(
+        soql_draft=SoqlDraft(
+            soql="SELECT Subject FROM Task",
+            status="作成済み",
+            missing=(),
+            checks=(),
+            select_items=("Subject",),
+            where_items=(),
+            order_by="",
+        ),
+    )
+    similar_soql_lookup = {
+        "1001": [
+            SimilarSoql(key="1002", category="SOQL同一", diff=""),
+            SimilarSoql(key="1003", category="WHERE以降が同じ", diff="SELECT 追加: Amount"),
+        ]
+    }
+
+    rendered = build_markdown(record, similar_soql_lookup=similar_soql_lookup)
+
+    assert "## 似たSOQL" in rendered
+    assert "- 1002: SOQL同一" in rendered
+    assert "- 1003: WHERE以降が同じ（SELECT 追加: Amount）" in rendered
+
+
+def test_markdown_similar_soql_section_is_none_without_lookup() -> None:
+    """相手が居ないときは 「似たSOQL」 節が 「なし」 1 行。"""
+    record = _make_record()
+
+    rendered = build_markdown(record)
+
+    assert "## 似たSOQL\nなし" in rendered
 
 
 # ── SUMMARY のグループ・集計 ────────────────────────────────────────────
