@@ -22,6 +22,7 @@ from comken.toolbox.salesforce.report import report_id_from_url
 from src.fetch import ReportRecord
 from src.report_py import (
     REPORT_PY_DIR,
+    USE_BULK_LINE,
     build_report_py_source,
     write_report_py_files,
 )
@@ -497,6 +498,63 @@ def test_generated_source_has_no_salesforce_domain() -> None:
     assert source is not None
     assert "salesforce.com" not in source
     assert REPORT_URL not in source
+
+
+# ── USE_BULK ─────────────────────────────────────────────────────
+
+
+def test_generated_class_has_use_bulk() -> None:
+    """``USE_BULK`` は、 常に True で書く。"""
+    record = _make_record(report_name="売上レポート", url=REPORT_URL)
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.USE_BULK is True  # type: ignore[attr-defined]
+
+
+def test_generated_use_bulk_line_comes_right_after_report_id() -> None:
+    """``USE_BULK`` の行は、 ``REPORT_ID`` の次の行に書く。"""
+    record = _make_record(report_name="売上レポート", url=REPORT_URL)
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    lines = source.splitlines()
+    report_id_index = lines.index(f"    REPORT_ID = {REPORT_ID!r}")
+    assert lines[report_id_index + 1] == USE_BULK_LINE
+
+
+def test_generated_use_bulk_line_comes_right_after_name_when_report_id_is_missing() -> None:
+    """``REPORT_ID`` が無いときは、 ``USE_BULK`` を ``NAME`` の次の行に書く。"""
+    record = _make_record(report_name="売上レポート", url="")
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    lines = source.splitlines()
+    name_index = lines.index("    NAME = '売上レポート'")
+    assert lines[name_index + 1] == USE_BULK_LINE
+
+
+def test_generated_use_bulk_line_comes_right_after_key_when_name_is_missing() -> None:
+    """``NAME`` も ``REPORT_ID`` も無いときは、 ``USE_BULK`` を ``KEY`` の次の行に書く。"""
+    record = _make_record(summary="", report_name="", url="")
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    lines = source.splitlines()
+    key_index = lines.index("    KEY = '1001'")
+    assert lines[key_index + 1] == USE_BULK_LINE
+
+
+def test_generated_use_bulk_line_comes_before_column_names() -> None:
+    """``USE_BULK`` の行は、 ``COLUMN_NAMES`` より前に書く。"""
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=_column_map([("Name", "Name", "件名")]),
+    )
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    lines = source.splitlines()
+    use_bulk_index = lines.index(USE_BULK_LINE)
+    column_names_index = lines.index("    COLUMN_NAMES: ClassVar[dict[str, str]] = {")
+    assert use_bulk_index < column_names_index
 
 
 # ── COLUMN_NAMES ─────────────────────────────────────────────────

@@ -38,6 +38,10 @@ REPORT_PY_DIR = "SOQLレポート"
 # 生成するファイル名の接頭辞
 REPORT_PY_PREFIX = "report_"
 
+# 生成するクラスに書く USE_BULK の行。 取り方（ Bulk API 2.0 か 通常の
+# SOQL か ） をレポートごとに人が決められるように、 常に True で書く
+USE_BULK_LINE = "    USE_BULK = True  # False にすると通常の SOQL（REST の query()）で取る"
+
 # 管理番号をファイル名・クラス名に使える形にする（英数字と _ だけ残す）
 _INVALID_KEY_CHARS_PATTERN = re.compile(r"[^A-Za-z0-9_]")
 
@@ -121,6 +125,7 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
     report_id = _report_id(record)
     if report_id:
         lines.append(f"    REPORT_ID = {report_id!r}")
+    lines.append(USE_BULK_LINE)
     if column_names:
         lines.append("    COLUMN_NAMES: ClassVar[dict[str, str]] = {")
         for soql_name, display_name in column_names:
