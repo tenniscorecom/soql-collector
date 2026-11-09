@@ -649,3 +649,144 @@ def test_reference_field_name_is_case_insensitive() -> None:
     )
     assert result.switched is True
     assert result.relationship_name == "Account"
+
+
+# ── 主オブジェクトの親参照は 子の列にしない ─────────────────────────────────
+
+
+def _opportunity_describe() -> dict[str, Any]:
+    """主オブジェクト（ Opportunity ） の describe。
+
+    ``AccountId`` は Account への参照（ 親参照 ） 。 子リレーションには
+    Account への参照が 1 件ある想定。
+    """
+    return {
+        "name": "Opportunity",
+        "label": "商机",
+        "custom": False,
+        "fields": [
+            {"name": "Id", "label": "商机ID", "type": "id"},
+            {"name": "Name", "label": "商机名称", "type": "string"},
+            {
+                "name": "AccountId",
+                "label": "客户",
+                "type": "reference",
+                "relationshipName": "Account",
+                "referenceTo": ["Account"],
+            },
+        ],
+        "childRelationships": [
+            {
+                "childSObject": "Account",
+                "field": "ParentId",
+                "relationshipName": "Accounts",
+            }
+        ],
+    }
+
+
+def _opportunity_account_describe() -> dict[str, Any]:
+    """子（ Account ） の describe。"""
+    return {
+        "name": "Account",
+        "label": "客户",
+        "custom": False,
+        "fields": [
+            {
+                "name": "ParentId",
+                "label": "商机",
+                "type": "reference",
+                "relationshipName": "Opportunity",
+                "referenceTo": ["Opportunity"],
+            },
+            {"name": "Name", "label": "客户名称", "type": "string"},
+        ],
+        "childRelationships": [],
+    }
+
+
+def test_parent_reference_prefix_is_not_treated_as_a_child_column() -> None:
+    """接頭辞が主オブジェクトの親参照にも一致するなら、 子の列にしない。
+
+    主が Opportunity で列が ``Account.Name`` のとき、 Opportunity の
+    ``AccountId`` （ 親参照 ） にも一致するので 親の ``Account.Name`` のままに
+    なり、 FROM も切り替えない。
+    """
+    column_map = [
+        _row("Account.Name", "Account.Name"),
+    ]
+    result = apply_child_base(
+        column_map=column_map,
+        main_object="Opportunity",
+        main_describe=_opportunity_describe(),
+        fetch_object=_fetcher({"Account": _opportunity_account_describe()}),
+    )
+    assert result.switched is False
+    rows = {row["列キー"]: row for row in result.column_map}
+    assert rows["Account.Name"]["対応フィールドAPI名"] == "Account.Name"
+
+
+def test_parent_reference_prefix_blocks_the_from_switch() -> None:
+    """親参照に一致する接頭辞の列があるときは、 他の子への切り替えもしない。
+
+    子の列の判定（ ``_collect_matching_children`` ）と 書き換えの判定
+    （ ``_is_child_row`` ） が同じ判定を使うことを確かめる。
+    """
+    column_map = [
+        _row("Account.Name", "Account.Name"),
+        _row("Contacts.LastName", "(不明)", field_type="", note="対応フィールドなし"),
+    ]
+    describe = _opportunity_describe()
+    describe["fields"].append(
+        {
+            "name": "OwnerId",
+            "label": "负责人",
+            "type": "reference",
+            "relationshipName": "Owner",
+            "referenceTo": ["User"],
+        }
+    )
+    describe["childRelationships"].append(
+        {"childSObject": "Contact", "field": "AccountId", "relationshipName": "Contacts"}
+    )
+    result = apply_child_base(
+        column_map=column_map,
+        main_object="Opportunity",
+        main_describe=describe,
+        fetch_object=_fetcher({"Contact": _contact_describe()}),
+    )
+    # Account.Name は親の列として残り、 Contacts.LastName が子の列になる
+    assert result.switched is True
+    assert result.child_object == "Contact"
+    rows = {row["列キー"]: row for row in result.column_map}
+    # 親の列は、 子から親へ戻るリレーション名が付く（ Account.Account.Name ）
+    assert rows["Account.Name"]["対応フィールドAPI名"] == "Account.Account.Name"
+    assert rows["Contacts.LastName"]["対応フィールドAPI名"] == "LastName"
+
+
+def test_parent_reference_by_reference_to_is_not_treated_as_a_child_column() -> None:
+    """``relationshipName`` が無くても ``referenceTo`` に接頭辞があれば親参照。
+
+    大文字小文字も無視する。
+    """
+    describe = _opportunity_describe()
+    describe["fields"] = [
+        {"name": "Id", "label": "商机ID", "type": "id"},
+        {
+            "name": "Custom_Account__c",
+            "label": "客户",
+            "type": "reference",
+            "relationshipName": None,
+            "referenceTo": ["account"],
+        },
+    ]
+    column_map = [_row("Account.Name", "Account.Name")]
+    result = apply_child_base(
+        column_map=column_map,
+        main_object="Opportunity",
+        main_describe=describe,
+        fetch_object=_fetcher({"Account": _opportunity_account_describe()}),
+    )
+    assert result.switched is False
+    rows = {row["列キー"]: row for row in result.column_map}
+    assert rows["Account.Name"]["対応フィールドAPI名"] == "Account.Name"

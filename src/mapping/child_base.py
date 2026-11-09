@@ -16,6 +16,13 @@
 親の項目 （ 親の ``Name`` など ） に解決されると、 親の値を取り違えるので、
 切り替え前に子の列として作り直す。
 
+ただし、 その接頭辞が 主オブジェクトの **親参照** （ 主オブジェクトの項目が
+参照している先） にも一致するなら（ 項目の ``relationshipName`` が接頭辞と
+一致するか、 ``referenceTo`` に接頭辞がある） 、 それは 「主から親へたどる列」
+なので 子の列としては扱わない。 例: 主が Opportunity で列が ``Account.Name``
+なら、 Opportunity の ``AccountId`` （ ``relationshipName=Account`` ） に
+該当する ので 親の ``Account.Name`` のままにする。
+
 切り替えられるのは、 レポートの列が指している直接の子オブジェクトが
 **1 つだけ** のときだけ。 2 つ以上 （ あるいは同じ子への参照が複数 ） なら
 切り替えず、 列は ``(不明)`` のまま理由を残し、 【未完成】 にする。
@@ -102,7 +109,12 @@ def apply_child_base(
     if not relationships:
         return ChildBaseResult(switched=False, column_map=column_map)
 
-    matched, matched_rows = _collect_matching_children(column_map, relationships, main_object)
+    matched, matched_rows = _collect_matching_children(
+        column_map,
+        relationships,
+        main_object,
+        main_describe,
+    )
     if not matched:
         return ChildBaseResult(switched=False, column_map=column_map)
 
@@ -143,6 +155,7 @@ def apply_child_base(
         child_describe=child_describe,
         fetch_object=fetch_object,
         main_object=main_object,
+        main_describe=main_describe,
     )
     return ChildBaseResult(
         switched=True,
@@ -161,11 +174,14 @@ def _collect_matching_children(
     rows: list[dict[str, str]],
     relationships: list[dict[str, Any]],
     main_object: str,
+    main_describe: dict[str, Any] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, str]]]]:
     """子の列が指す子オブジェクトと、 その子リレーションを集める。
 
     対象は 「列キーの最初の ``.`` より前が子に一致し、 かつ主オブジェクト名と
     一致しない行」 。 解決済みかどうかには依存しない。
+    さらに、 その接頭辞が 主オブジェクトの親参照にも一致する行は
+    （ ``_is_parent_reference_prefix`` ） 対象から外す。
 
     戻り値は ``(子オブジェクト名 -> リレーションのリスト, 子オブジェクト名 ->
     対象にした列のリスト)`` 。
@@ -180,6 +196,8 @@ def _collect_matching_children(
         prefix = _column_prefix(column_key)
         if not prefix or _is_main_object_prefix(prefix, main_object):
             continue
+        if _is_parent_reference_prefix(prefix, main_describe):
+            continue
         for relationship in relationships:
             if not _relationship_matches_prefix(relationship, prefix):
                 continue
@@ -193,6 +211,46 @@ def _collect_matching_children(
                 matched.setdefault(child, []).append(relationship)
             matched_rows.setdefault(child, []).append(row)
     return matched, matched_rows
+
+
+def _parent_reference_prefixes(main_describe: dict[str, Any] | None) -> set[str]:
+    """主オブジェクトの「親参照」（ 主が参照している先） の接頭辞を小文字で集める。
+
+    主オブジェクトの項目の ``relationshipName`` と ``referenceTo`` から作る。
+    大文字小文字は無視する。
+    """
+    prefixes: set[str] = set()
+    if not main_describe:
+        return prefixes
+    fields = main_describe.get("fields")
+    if not isinstance(fields, list):
+        return prefixes
+    for raw_field in fields:
+        if not isinstance(raw_field, dict):
+            continue
+        relationship_name = str(raw_field.get("relationshipName") or "").strip().lower()
+        if relationship_name:
+            prefixes.add(relationship_name)
+        reference_to = raw_field.get("referenceTo")
+        if isinstance(reference_to, list):
+            for target in reference_to:
+                text = str(target or "").strip().lower()
+                if text:
+                    prefixes.add(text)
+    return prefixes
+
+
+def _is_parent_reference_prefix(prefix: str, main_describe: dict[str, Any] | None) -> bool:
+    """列キーの接頭辞が 主オブジェクトの親参照にも一致するか。
+
+    主オブジェクトの項目の ``relationshipName`` が接頭辞と一致するか、
+    ``referenceTo`` に接頭辞があれば True （ 親の列なので 子の列にしない ）。
+    大文字小文字は無視する。
+    """
+    text = prefix.strip().lower()
+    if not text:
+        return False
+    return text in _parent_reference_prefixes(main_describe)
 
 
 def _relationship_key(relationship: dict[str, Any]) -> tuple[str, str, str]:
@@ -268,6 +326,7 @@ def _rewrite_column_map(
     child_describe: dict[str, Any],
     fetch_object: Callable[[str], dict[str, Any] | None] | None,
     main_object: str,
+    main_describe: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """列対応表を 「子から取る形」 に書き換える。
 
@@ -280,7 +339,12 @@ def _rewrite_column_map(
     rewritten: list[dict[str, str]] = []
     for row in column_map:
         new_row = dict(row)
-        if _is_child_row(new_row, child_prefixes=child_prefixes, main_object=main_object):
+        if _is_child_row(
+            new_row,
+            child_prefixes=child_prefixes,
+            main_object=main_object,
+            main_describe=main_describe,
+        ):
             _rewrite_child_column(
                 new_row,
                 child_object=child_object,
@@ -312,11 +376,14 @@ def _is_child_row(
     *,
     child_prefixes: set[str],
     main_object: str,
+    main_describe: dict[str, Any] | None = None,
 ) -> bool:
     """行が子の列かどうか。
 
     列キーの最初の ``.`` より前が子に一致し、 かつ主オブジェクト名と一致
     しないときが子の列。 解決済みかどうかには依存しない。
+    さらに、 その接頭辞が 主オブジェクトの親参照にも一致するなら
+    （ ``_is_parent_reference_prefix`` ） 子の列ではない。
     """
     column_key = row.get("列キー", "")
     if "." not in column_key:
@@ -324,7 +391,9 @@ def _is_child_row(
     prefix = _column_prefix(column_key).strip().lower()
     if not prefix or prefix not in child_prefixes:
         return False
-    return prefix != main_object.strip().lower()
+    if prefix == main_object.strip().lower():
+        return False
+    return not _is_parent_reference_prefix(prefix, main_describe)
 
 
 def _rewrite_child_column(
