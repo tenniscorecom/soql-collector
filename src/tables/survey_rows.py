@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from src import ai_markdown, soql_similar
+from src.soql_builder import (
+    CROSS_FILTER_LINK_DIRECT,
+    CROSS_FILTER_LINK_NOT_DIRECT,
+    CROSS_FILTER_LINK_UNVERIFIED,
+)
 
 if TYPE_CHECKING:
     from src.fetch import ReportRecord
@@ -43,6 +49,43 @@ def _survey_pii_display(record: ReportRecord) -> tuple[str, str]:
 def soql_status_for_record(record: ReportRecord) -> str:
     """``record.soql_draft.status`` をそのまま返す （無ければ空文字） 。"""
     return record.soql_draft.status if record.soql_draft is not None else ""
+
+
+def soql_fetch_method_for_record(record: ReportRecord) -> str:
+    """取り方を 1 セル分にする。 ``Bulk`` / ``REST（理由）`` / 空文字。
+
+    下書きが無ければ空文字。 REST のときは理由 （ 副問い合わせの件 ） を
+    括弧の中に付ける。
+    """
+    draft = record.soql_draft
+    if draft is None:
+        return ""
+    if draft.use_bulk:
+        return "Bulk"
+    reasons = "; ".join(draft.bulk_blockers)
+    return f"REST（{reasons}）"
+
+
+def cross_filter_links_for_record(record: ReportRecord) -> str:
+    """クロスフィルタの繋がりの判定を 1 セル分にする。
+
+    件数が 0 でない判定だけを ``直接2・直接でない1・確認できず1`` の形で
+    並べる。 判定が無ければ空文字。
+    """
+    draft = record.soql_draft
+    if draft is None:
+        return ""
+    counts = Counter(link.status for link in draft.cross_filter_links)
+    parts = [
+        f"{status}{counts[status]}"
+        for status in (
+            CROSS_FILTER_LINK_DIRECT,
+            CROSS_FILTER_LINK_NOT_DIRECT,
+            CROSS_FILTER_LINK_UNVERIFIED,
+        )
+        if counts[status]
+    ]
+    return "・".join(parts)
 
 
 def build_survey_table_rows_from_records(
@@ -99,6 +142,8 @@ def build_survey_table_rows_from_records(
                 "概要": summary,
                 "主オブジェクト": main_object or "(不明)",
                 "SOQLの状態": soql_status_for_record(record),
+                "取り方": soql_fetch_method_for_record(record),
+                "クロスフィルタの繋がり": cross_filter_links_for_record(record),
                 "要対応・要確認の列数": str(unresolved_counts.get(key, 0)),
                 "2000件超": status,
                 "行数": _rows,

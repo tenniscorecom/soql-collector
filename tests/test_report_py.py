@@ -26,7 +26,11 @@ from src.report_py import (
     build_report_py_source,
     write_report_py_files,
 )
-from src.soql_builder import INCOMPLETE_MARKER, build_soql
+from src.soql_builder import (
+    CROSS_FILTER_LINK_NOT_DIRECT,
+    INCOMPLETE_MARKER,
+    build_soql,
+)
 
 # ── ヘルパー ──────────────────────────────────────────────────────
 
@@ -62,6 +66,9 @@ def _make_record(
     report_filters: list[dict] | None = None,
     unresolved_columns: list[str] | None = None,
     report_name: object = None,
+    cross_filters: list[dict] | None = None,
+    objects: dict[str, dict] | None = None,
+    cross_filter_objects: dict[str, dict] | None = None,
     url: str = "https://example.my.salesforce.com/lightning/r/Report/00O000000000001/view",
 ) -> ReportRecord:
     """SOQL の下書きまで済んだ ``ReportRecord`` を作る。
@@ -82,6 +89,8 @@ def _make_record(
         metadata["name"] = report_name
     if report_filters is not None:
         metadata["reportFilters"] = report_filters
+    if cross_filters is not None:
+        metadata["crossFilters"] = cross_filters
     if column_map is None:
         column_map = _column_map(
             [(column_key, column_key, column_key) for column_key in detail_columns]
@@ -108,10 +117,11 @@ def _make_record(
         url=url,
         main_object="Case",
         report={"reportMetadata": metadata, "reportExtendedMetadata": {}},
-        objects={},
+        objects=objects or {},
         relations=(),
         column_map=column_map,
         warnings=(),
+        cross_filter_objects=cross_filter_objects or {},
     )
     return ReportRecord(
         key=record.key,
@@ -125,6 +135,7 @@ def _make_record(
         column_map=record.column_map,
         warnings=record.warnings,
         soql_draft=build_soql(record),
+        cross_filter_objects=record.cross_filter_objects,
     )
 
 
@@ -555,6 +566,126 @@ def test_generated_use_bulk_line_comes_before_column_names() -> None:
     use_bulk_index = lines.index(USE_BULK_LINE)
     column_names_index = lines.index("    COLUMN_NAMES: ClassVar[dict[str, str]] = {")
     assert use_bulk_index < column_names_index
+
+
+def _cross_filter_record() -> ReportRecord:
+    """副問い合わせ （ クロスフィルタ ） を含む record を作る。
+
+    主側の項目は ``id`` 型（ ``Id`` ） にする。 ``reference`` 型は
+    「直接でない」 の判定になり、 副問い合わせにならない。
+    """
+    main_describe = {
+        "name": "Case",
+        "label": "ケース",
+        "custom": False,
+        "fields": [
+            {"name": "Id", "label": "ケースID", "type": "id"},
+            {"name": "Subject", "label": "件名", "type": "string"},
+            {"name": "AccountId", "label": "取引先", "type": "reference"},
+        ],
+        "childRelationships": [
+            {
+                "childSObject": "CaseComment",
+                "field": "ParentId",
+                "relationshipName": "Comments",
+            }
+        ],
+    }
+    child_describe = {
+        "name": "CaseComment",
+        "label": "ケースコメント",
+        "custom": False,
+        "fields": [
+            {"name": "ParentId", "label": "親", "type": "reference"},
+            {"name": "CommentBody", "label": "本文", "type": "textarea"},
+        ],
+        "childRelationships": [],
+    }
+    return _make_record(
+        detail_columns=["Subject"],
+        column_map=_column_map([("Subject", "Subject", "件名")]),
+        cross_filters=[
+            {
+                "criteria": [{"column": "CommentBody", "operator": "equals", "value": " stabbed"}],
+                "includesObject": True,
+                "primaryEntityField": "Id",
+                "relatedEntity": "CaseComment",
+                "relatedEntityJoinField": "ParentId",
+            }
+        ],
+        objects={"Case": main_describe},
+        cross_filter_objects={"CaseComment": child_describe},
+    )
+
+
+def test_generated_class_has_use_bulk_false_for_subquery() -> None:
+    """副問い合わせのあるレポートの ``USE_BULK`` は False で、 理由が付く。"""
+    record = _cross_filter_record()
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.USE_BULK is False  # type: ignore[attr-defined]
+    # 生成した soql() が下書きと一致する
+    assert report_class().soql() == record.soql_draft.soql  # type: ignore[attr-defined]
+    # 理由がコメントに出ている
+    use_bulk_line = next(line for line in source.splitlines() if "USE_BULK" in line)
+    assert use_bulk_line.startswith("    USE_BULK = False  # ")
+    assert "副問い合わせ" in use_bulk_line
+
+
+def test_use_bulk_line_is_unchanged_without_subquery() -> None:
+    """副問い合わせの無いレポートの ``USE_BULK`` の行は 今までと同じ。"""
+    record = _make_record(report_name="売上レポート", url=REPORT_URL)
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    assert USE_BULK_LINE in source.splitlines()
+
+
+# ── クロスフィルタの繋がりのコメント ────────────────────────────────────
+
+
+def test_generated_class_has_cross_filter_link_comment() -> None:
+    """``# 状態:`` の直後に クロスフィルタの繋がり のコメントが 1 件 1 行で 出る。"""
+    record = _cross_filter_record()
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    lines = source.splitlines()
+    status_index = lines.index("# 状態: 要確認")
+
+    comment = lines[status_index + 1]
+    assert comment.startswith("# クロスフィルタ 1: 直接（")
+    assert "Comments: CaseComment.ParentId → Case.Id" in comment
+    assert comment.endswith("SOQL に入れた")
+
+
+def test_generated_class_cross_filter_comment_with_newline_does_not_break_code() -> None:
+    """理由の中に改行が入っていても、 生成した Python は壊れない。"""
+    record = _cross_filter_record()
+    draft = record.soql_draft
+    assert draft is not None
+    link = draft.cross_filter_links[0]
+    broken = dataclasses.replace(
+        link,
+        status=CROSS_FILTER_LINK_NOT_DIRECT,
+        converted=False,
+        reason="1 行目\n2 行目",
+    )
+    record = dataclasses.replace(
+        record,
+        soql_draft=dataclasses.replace(draft, cross_filter_links=(broken,)),
+    )
+
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    # 改行は 1 行に畳まれる
+    assert (
+        "# クロスフィルタ 1: 直接でない（1 行目 2 行目）SOQL に入れていない" in source.splitlines()
+    )
+    # 生成した Python が実行できる
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.KEY == "1001"  # type: ignore[attr-defined]
 
 
 # ── COLUMN_NAMES ─────────────────────────────────────────────────

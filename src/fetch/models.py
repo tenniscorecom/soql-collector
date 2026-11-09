@@ -99,6 +99,11 @@ class ReportRecord:
     soql_draft: Any = dc_field(
         default=None,
     )
+    #: クロスフィルタの副問い合わせに使う子オブジェクトの describe。
+    #: キー = 子オブジェクト名、 値 = ``{name, label, custom, fields,
+    #: childRelationships}`` の slim な dict。 ``objects`` には **入れない**
+    #: （関係図・関連表・対応表の出力を変えないため） 。
+    cross_filter_objects: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
 
 
 @dataclass(frozen=True)

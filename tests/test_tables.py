@@ -15,7 +15,13 @@ import pytest
 from openpyxl import load_workbook
 
 from src.fetch import RelationRecord, ReportRecord
-from src.soql_builder import SoqlDraft
+from src.soql_builder import (
+    CROSS_FILTER_LINK_DIRECT,
+    CROSS_FILTER_LINK_NOT_DIRECT,
+    CROSS_FILTER_LINK_UNVERIFIED,
+    CrossFilterLink,
+    SoqlDraft,
+)
 from src.tables import (
     COLUMN_NAMES_COLUMNS,
     COLUMN_NAMES_CSV_NAME,
@@ -804,3 +810,138 @@ def test_output_dir_missing_does_not_raise(tmp_path: Path) -> None:
     assert output.exists()
     assert (output / XLSX_NAME).exists()
     assert (output / COLUMN_NAMES_CSV_NAME).exists()
+
+
+# ── 一覧シートの 「取り方」 列 ─────────────────────────────────────────
+
+
+def test_survey_fetch_method_column(tmp_path: Path) -> None:
+    """一覧シートの 「取り方」 列に Bulk / REST（理由） が出る。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    bulk_record = dataclasses.replace(
+        _make_record("1001", main_object="Opportunity"),
+        soql_draft=SoqlDraft(
+            soql="SELECT Name FROM Opportunity",
+            status="作成済み",
+            missing=(),
+            checks=(),
+        ),
+    )
+    rest_record = dataclasses.replace(
+        _make_record("1002", main_object="Opportunity"),
+        soql_draft=SoqlDraft(
+            soql="SELECT Name FROM Opportunity",
+            status="要確認",
+            missing=(),
+            checks=(),
+            use_bulk=False,
+            bulk_blockers=("サブクエリを使うため",),
+        ),
+    )
+
+    run_tables(output, [bulk_record, rest_record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    rows = {str(row[0]): dict(zip(headers, row, strict=False)) for row in rows_iter}
+
+    assert rows["1001"]["取り方"] == "Bulk"
+    assert rows["1002"]["取り方"] == "REST（サブクエリを使うため）"
+
+
+def test_survey_fetch_method_column_is_empty_without_draft(tmp_path: Path) -> None:
+    """下書きが無いレポートの 「取り方」 列は空。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = dataclasses.replace(_make_record("1001", main_object="Opportunity"), soql_draft=None)
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    row = dict(zip(headers, rows_iter[0], strict=False))
+
+    # 空のセルは Excel では None として読まれる
+    assert not row["取り方"]
+
+
+# ── 一覧シートの 「クロスフィルタの繋がり」 列 ───────────────────────────
+
+
+def _link(index: int, status: str) -> CrossFilterLink:
+    """一覧のセルを试验するための判定を 1 件作る。"""
+    return CrossFilterLink(
+        index=index,
+        status=status,
+        primary_field="Id",
+        child_object="TaskComment",
+        join_field="ParentId",
+        relationship_name="Comments",
+        converted=status == CROSS_FILTER_LINK_DIRECT,
+        reason="",
+    )
+
+
+def test_survey_cross_filter_link_column(tmp_path: Path) -> None:
+    """一覧シートの 「クロスフィルタの繋がり」 列に 判定の件数 が 出る。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = dataclasses.replace(
+        _make_record("1001", main_object="Opportunity"),
+        soql_draft=SoqlDraft(
+            soql="SELECT Name FROM Opportunity",
+            status="要確認",
+            missing=(),
+            checks=(),
+            cross_filter_links=(
+                _link(1, CROSS_FILTER_LINK_DIRECT),
+                _link(2, CROSS_FILTER_LINK_DIRECT),
+                _link(3, CROSS_FILTER_LINK_NOT_DIRECT),
+                _link(4, CROSS_FILTER_LINK_UNVERIFIED),
+            ),
+        ),
+    )
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    row = dict(zip(headers, rows_iter[0], strict=False))
+
+    assert row["クロスフィルタの繋がり"] == "直接2・直接でない1・確認できず1"
+
+
+def test_survey_cross_filter_link_column_is_empty_without_cross_filter(tmp_path: Path) -> None:
+    """クロスフィルタが無いレポートの 「クロスフィルタの繋がり」 列は空。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = dataclasses.replace(
+        _make_record("1001", main_object="Opportunity"),
+        soql_draft=SoqlDraft(
+            soql="SELECT Name FROM Opportunity",
+            status="作成済み",
+            missing=(),
+            checks=(),
+        ),
+    )
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    rows_iter = list(ws.iter_rows(min_row=4, values_only=True))
+    headers = [c.value for c in ws[3]]
+    workbook.close()
+    row = dict(zip(headers, rows_iter[0], strict=False))
+
+    assert not row["クロスフィルタの繋がり"]

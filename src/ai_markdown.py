@@ -46,6 +46,10 @@ _AGGREGATE_FORMATS: frozenset[str] = frozenset({"SUMMARY", "MATRIX"})
 # ``scope`` の 「自分のレコード」 判定に使う値
 _SCOPE_MY = "my"
 
+# 「## 子リレーション（サブクエリの材料）」 の表に出す最大行数。 超えた分は
+# 「ほか N 件」 の 1 行にまとめる
+MARKDOWN_CHILD_RELATIONSHIP_MAX_ROWS: int = 100
+
 
 def write_ai_markdowns(
     output_dir: Any,
@@ -256,6 +260,15 @@ def build_markdown(
     soql_section = _build_soql_section(record)
     if soql_section:
         parts.extend(soql_section)
+
+    # 取り方（ Bulk か REST か）
+    parts.extend(_build_fetch_method_section(record))
+
+    # クロスフィルタの繋がり
+    parts.extend(_build_cross_filter_link_section(record))
+
+    # 子リレーション（ サブクエリの材料 ）
+    parts.extend(_build_child_relationship_section(record))
 
     # 注意
     notes = _build_notes(record, metadata)
@@ -493,27 +506,28 @@ def _build_filter_extras(metadata: dict[str, Any]) -> list[str]:
         for cf in cross_filters:
             if not isinstance(cf, dict):
                 continue
-            primary = _coerce_str(cf.get("primaryEntityField"))
-            operator = _coerce_str(cf.get("operator"))
-            related = _coerce_str(cf.get("relatedEntity"))
-            join_field = _coerce_str(cf.get("relatedEntityJoinField"))
-            criteria = cf.get("criteria")
-            if isinstance(criteria, str):
-                criteria_text = criteria
-            elif criteria:
-                criteria_text = json.dumps(criteria, ensure_ascii=False)
-            else:
-                criteria_text = ""
-            value_text = f"{primary} {operator} {related}.{join_field}"
-            if criteria_text:
-                value_text += f" ({criteria_text})"
-            lines.append(f"- クロスフィルタ: {value_text}")
+            lines.append(f"- クロスフィルタ: {_format_cross_filter(cf)}")
 
     top_rows = metadata.get("topRows")
     if top_rows:
         lines.append(f"- 上位N: {_format_top_rows(top_rows)}")
 
     return lines
+
+
+def _format_cross_filter(cross_filter: dict[str, Any]) -> str:
+    """クロスフィルタを 「含む / 含まない / 不明」 + 要素全体の JSON に整形する。
+
+    要素全体をそのまま出すのは、 人が実物の形を確かめるため。
+    """
+    includes = cross_filter.get("includesObject")
+    if includes is True:
+        label = "含む"
+    elif includes is False:
+        label = "含まない"
+    else:
+        label = "不明"
+    return f"{label} {json.dumps(cross_filter, ensure_ascii=False)}"
 
 
 # ── 並び順 ─────────────────────────────────────────────────────────────────
@@ -727,6 +741,138 @@ def _build_soql_section(record: ReportRecord) -> list[str]:
     return lines
 
 
+# ── 取り方 ─────────────────────────────────────────────────────────────────
+
+
+def _build_fetch_method_section(record: ReportRecord) -> list[str]:
+    """``## 取り方`` セクションの行を組み立てる。
+
+    ``soql_draft`` が無い record は空リスト（セクションを出さない） 。
+    Bulk なら「SELECT の中の子サブクエリ等を使うように直したら False にする」を、
+    REST なら理由と注意を添える。
+    """
+    draft = record.soql_draft
+    if draft is None:
+        return []
+
+    lines: list[str] = ["## 取り方", ""]
+    if draft.use_bulk:
+        lines.append("- Bulk API 2.0 で取る（USE_BULK = True）")
+        lines.append(
+            "- SELECT の中の子サブクエリ・集計関数・GROUP BY・OFFSET・TYPEOF を使うように直したら "
+            "USE_BULK を False にする"
+        )
+        lines.append("")
+        return lines
+
+    reasons = "; ".join(draft.bulk_blockers)
+    lines.append(f"- REST の query() で取る（USE_BULK = False）: {reasons}")
+    lines.append("- REST の注意: 値が文字列にならず数値・真偽値のまま返る")
+    lines.append("- REST の注意: 0 件だと列が空")
+    lines.append("- REST の注意: 全行 null の参照項目は列が出ない")
+    lines.append("")
+    return lines
+
+
+# ── クロスフィルタの繋がり ────────────────────────────────────────────────
+
+
+def _build_cross_filter_link_section(record: ReportRecord) -> list[str]:
+    """``## クロスフィルタの繋がり`` セクションの行を組み立てる。
+
+    判定が 1 件も無いときは空リスト （セクションを出さない） 。 判定ごとに
+    1 行の表にする。 セルは ``_md_table_row`` でエスケープする。
+    """
+    draft = record.soql_draft
+    if draft is None:
+        return []
+    links = draft.cross_filter_links
+    if not links:
+        return []
+
+    lines: list[str] = ["## クロスフィルタの繋がり", ""]
+    lines.append(
+        "| 番号 | 判定 | 主側項目 | 子オブジェクト | 結合項目 | リレーション名 | SOQL | 理由 |"
+    )
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    for link in links:
+        lines.append(
+            _md_table_row(
+                [
+                    str(link.index),
+                    link.status,
+                    link.primary_field,
+                    link.child_object,
+                    link.join_field,
+                    link.relationship_name,
+                    "入れた" if link.converted else "入れていない",
+                    link.reason,
+                ]
+            )
+        )
+    lines.append("")
+    return lines
+
+
+def _cross_filter_links(record: ReportRecord) -> tuple[Any, ...]:
+    """下書きの クロスフィルタの繋がり の判定を取り出す。"""
+    draft = record.soql_draft
+    if draft is None:
+        return ()
+    return tuple(draft.cross_filter_links)
+
+
+# ── 子リレーション（ サブクエリの材料 ） ──────────────────────────────────
+
+
+def _build_child_relationship_section(record: ReportRecord) -> list[str]:
+    """``## 子リレーション（サブクエリの材料）`` セクションの行を組み立てる。
+
+    主オブジェクトの describe の ``childRelationships`` （ リレーション名・
+    子オブジェクト・参照項目 ） を表にする。 無いときは 「保存データに無い」 の
+    1 行だけにする。
+    """
+    lines: list[str] = ["## 子リレーション（サブクエリの材料）", ""]
+    relationships = _record_child_relationships(record)
+    if not relationships:
+        lines.append("保存データに無い。実行.bat で取り直すと出る")
+        lines.append("")
+        return lines
+
+    lines.append("| リレーション名 | 子オブジェクト | 参照項目 |")
+    lines.append("| --- | --- | --- |")
+    for relationship in relationships[:MARKDOWN_CHILD_RELATIONSHIP_MAX_ROWS]:
+        lines.append(
+            _md_table_row(
+                [
+                    relationship.get("relationshipName", ""),
+                    relationship.get("childSObject", ""),
+                    relationship.get("field", ""),
+                ]
+            )
+        )
+    rest = len(relationships) - MARKDOWN_CHILD_RELATIONSHIP_MAX_ROWS
+    if rest > 0:
+        lines.append(f"ほか {rest} 件")
+
+    lines.append("")
+    lines.append(f"例: (SELECT Id FROM {relationships[0].get('relationshipName', '')})")
+    lines.append("SELECT の中に書いたら USE_BULK を False にする")
+    lines.append("")
+    return lines
+
+
+def _record_child_relationships(record: ReportRecord) -> list[dict[str, Any]]:
+    """主オブジェクトの describe から 子リレーションのリストを取り出す。"""
+    main_object = record.main_object
+    if not main_object:
+        return []
+    describe = record.objects.get(main_object)
+    if not describe:
+        return []
+    return list(describe.get("childRelationships") or [])
+
+
 # ── 注意 ───────────────────────────────────────────────────────────────────
 
 
@@ -753,14 +899,29 @@ def _build_notes(record: ReportRecord, metadata: dict[str, Any]) -> list[str]:
 
     row_check = record.row_check
     if row_check is not None and row_check.status == "超えている":
-        notes.append("- 2000件超なので Bulk で取る")
+        draft = record.soql_draft
+        if draft is None or draft.use_bulk:
+            notes.append("- 2000件超なので Bulk で取る")
+        else:
+            notes.append("- 2000件超だが REST で取る（ページ送りで全件取れる。往復は増える）")
 
     cross_filters = metadata.get("crossFilters")
-    if isinstance(cross_filters, list) and cross_filters:
-        notes.append("- クロスフィルタはサブクエリ")
+    cross_links = _cross_filter_links(record)
+    if cross_links:
+        if any(link.converted for link in cross_links):
+            notes.append("- クロスフィルタは副問い合わせにした（REST で取る）")
+        else:
+            notes.append(
+                "- クロスフィルタは副問い合わせにできていない（理由は「クロスフィルタの繋がり」）"
+            )
+    elif isinstance(cross_filters, list) and cross_filters:
+        notes.append(
+            "- クロスフィルタは副問い合わせにできていない（理由は「クロスフィルタの繋がり」）"
+        )
 
     if metadata.get("reportFormat", "") in _AGGREGATE_FORMATS:
         notes.append("- 集計レポート")
+        notes.append("- GROUP BY と集計関数を使うなら USE_BULK を False にする")
 
     return notes
 

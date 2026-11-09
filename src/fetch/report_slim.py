@@ -50,8 +50,8 @@ REPORT_EXTENDED_METADATA_KEYS: tuple[str, ...] = (
 # SOQL 組立と ``tables`` / ``ai_markdown`` が読む範囲だけを型で示す。
 # SlimReport は ``reportMetadata`` / ``reportExtendedMetadata`` を持つ dict。
 # SlimObject は ``make_slim_object`` の戻り値で、 ``name`` / ``label`` / ``custom`` /
-# ``fields`` の 4 キーを必ず持つ。 ``mapping`` やテストも describe を素の dict として
-# 扱うので、 TypedDict にはせず dict の別名にする。
+# ``fields`` / ``childRelationships`` の 5 キーを必ず持つ。 ``mapping`` やテストも
+# describe を素の dict として扱うので、 TypedDict にはせず dict の別名にする。
 SlimReport = dict[str, Any]
 
 
@@ -261,23 +261,47 @@ def collect_dropped_keys(metadata: object) -> tuple[str, ...]:
 def make_slim_object(describe: object) -> SlimObject:
     """``describe_object()`` の戻り値を、 内側で検証せずに読める形に整える（境界）。
 
-    - 残す: ``name`` / ``label`` / ``custom`` / ``fields``（``childRelationships`` /
-      ``recordTypeInfos`` などは落とす）
+    - 残す: ``name`` / ``label`` / ``custom`` / ``fields`` / ``childRelationships``
+      （``recordTypeInfos`` などは落とす）
     - ``fields`` の各項目は次の 9 キーに**必ず**この型でそろえる: ``name`` /
       ``label`` / ``type`` / ``relationshipName``（str。 無ければ空文字）、
       ``custom`` / ``nameField``（bool）、 ``referenceTo``（空でない str の
       リスト）、 ``picklist``（active な ``value`` を最大 30 件）、
       ``picklistTotal``（active な選択肢の総数）
+    - ``childRelationships`` の各要素は ``childSObject`` / ``field`` /
+      ``relationshipName`` の 3 キーにそろえる。 ``relationshipName`` が空の
+      要素は落とす（リレーションとして使えないため）
     - 入力が壊れていれば空の値で返す。 入力の dict は書き換えない
     """
     source = describe if isinstance(describe, dict) else {}
     fields_raw = source.get("fields")
     fields_list: list[Any] = fields_raw if isinstance(fields_raw, list) else []
+    child_raw = source.get("childRelationships")
+    child_list: list[Any] = child_raw if isinstance(child_raw, list) else []
+    child_relationships = [
+        _slim_child_relationship(child) for child in child_list if isinstance(child, dict)
+    ]
     return {
         "name": _text(source.get("name")),
         "label": _text(source.get("label")),
         "custom": source.get("custom") is True,
         "fields": [_slim_field(field) for field in fields_list if isinstance(field, dict)],
+        "childRelationships": [rel for rel in child_relationships if rel],
+    }
+
+
+def _slim_child_relationship(child: dict[str, Any]) -> dict[str, str]:
+    """``childRelationships`` の各要素を 3 キーにそろえる。
+
+    ``relationshipName`` が空の要素は落とす。
+    """
+    relationship_name = _text(child.get("relationshipName"))
+    if not relationship_name:
+        return {}
+    return {
+        "childSObject": _text(child.get("childSObject")),
+        "field": _text(child.get("field")),
+        "relationshipName": relationship_name,
     }
 
 

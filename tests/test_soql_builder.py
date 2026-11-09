@@ -14,11 +14,15 @@ import pytest
 from src.fetch import ReportRecord
 from src.mapping.owner import OWNER_POLYMORPHIC_NOTE
 from src.soql_builder import (
+    CROSS_FILTER_LINK_DIRECT,
+    CROSS_FILTER_LINK_NOT_DIRECT,
+    CROSS_FILTER_LINK_UNVERIFIED,
     INCOMPLETE_MARKER,
     STATUS_CREATED,
     STATUS_NEEDS_CHECK,
     STATUS_NONE,
     STATUS_PARTIAL,
+    CrossFilterLink,
     SoqlDraft,
     build_soql,
 )
@@ -46,6 +50,8 @@ def _make_record(
     report_boolean_filter: str | None = None,
     format_value: str = "TABULAR",
     report_metadata: dict[str, Any] | None = None,
+    objects: dict[str, dict[str, Any]] | None = None,
+    cross_filter_objects: dict[str, dict[str, Any]] | None = None,
 ) -> ReportRecord:
     """テスト用の ``ReportRecord`` を作る。
 
@@ -116,10 +122,11 @@ def _make_record(
         url="https://example.my.salesforce.com/lightning/r/Report/00O000000000001/view",
         main_object=main_object,
         report={"reportMetadata": report_metadata, "reportExtendedMetadata": {}},
-        objects={},
+        objects=objects or {},
         relations=(),
         column_map=column_map,
         warnings=(),
+        cross_filter_objects=cross_filter_objects or {},
     )
 
 
@@ -916,6 +923,586 @@ def test_cross_filters_go_to_missing() -> None:
     draft = build_soql(record)
     assert draft.status == STATUS_PARTIAL
     assert any("クロスフィルタ" in m for m in draft.missing)
+
+
+# ── クロスフィルタの副問い合わせ ────────────────────────────────────
+
+
+def _main_describe_with_child() -> dict[str, Any]:
+    """主オブジェクトの describe （ 子リレーション 1 件つき ） 。"""
+    return {
+        "name": "Opportunity",
+        "label": "商談",
+        "custom": False,
+        "fields": [
+            {"name": "Id", "label": "商机ID", "type": "id"},
+            {"name": "Name", "label": "商談名", "type": "string"},
+            {"name": "AccountId", "label": "取引先", "type": "reference"},
+            {"name": "StageName", "label": "フェーズ", "type": "picklist"},
+        ],
+        "childRelationships": [
+            {
+                "childSObject": "OpportunityLineItem",
+                "field": "OpportunityId",
+                "relationshipName": "OpportunityLineItems",
+            }
+        ],
+    }
+
+
+def _child_describe() -> dict[str, Any]:
+    """子オブジェクトの describe 。"""
+    return {
+        "name": "OpportunityLineItem",
+        "label": "商机明細",
+        "custom": False,
+        "fields": [
+            {"name": "OpportunityId", "label": "商談", "type": "reference"},
+            {"name": "Product2Id", "label": "商品", "type": "reference"},
+            {"name": "Quantity", "label": "数量", "type": "double"},
+            {"name": "Description", "label": "備考", "type": "string"},
+            {"name": "Notes", "label": "メモ", "type": "textarea"},
+        ],
+        "childRelationships": [],
+    }
+
+
+def _cross_filter(**overrides: Any) -> dict[str, Any]:
+    """副問い合わせにできるクロスフィルタ。 上書きで欠けた項目を作れる。
+
+    主側の項目は ``id`` 型（ ``Id`` ） にする。 ``reference`` 型は
+    「直接でない」 の判定になる。
+    """
+    base: dict[str, Any] = {
+        "criteria": [{"column": "Product2Id", "operator": "equals", "value": "01t000000000001"}],
+        "includesObject": True,
+        "primaryEntityField": "Id",
+        "relatedEntity": "OpportunityLineItem",
+        "relatedEntityJoinField": "OpportunityId",
+    }
+    base.update(overrides)
+    return base
+
+
+def _cross_filter_record(
+    cross_filters: list[dict[str, Any]],
+    **kwargs: Any,
+) -> ReportRecord:
+    """副問い合わせの試験用の record を作る。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    return _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        cross_filters=cross_filters,
+        objects={"Opportunity": _main_describe_with_child()},
+        cross_filter_objects={"OpportunityLineItem": _child_describe()},
+        **kwargs,
+    )
+
+
+def test_cross_filter_becomes_in_subquery() -> None:
+    """``includesObject`` が True のクロスフィルタは ``IN`` の副問い合わせになる。"""
+    record = _cross_filter_record([_cross_filter()])
+    draft = build_soql(record)
+
+    assert draft.soql == (
+        "SELECT Name\n"
+        "FROM Opportunity\n"
+        "WHERE Id IN (SELECT OpportunityId FROM OpportunityLineItem "
+        "WHERE Product2Id = '01t000000000001')"
+    )
+    assert draft.count_soql == (
+        "SELECT COUNT()\n"
+        "FROM Opportunity\n"
+        "WHERE Id IN (SELECT OpportunityId FROM OpportunityLineItem "
+        "WHERE Product2Id = '01t000000000001')"
+    )
+    assert draft.status == STATUS_NEEDS_CHECK
+    assert draft.use_bulk is False
+    assert draft.bulk_blockers
+    assert any("クロスフィルタを副問い合わせにした" in c for c in draft.checks)
+
+
+def test_cross_filter_becomes_not_in_subquery() -> None:
+    """``includesObject`` が False のクロスフィルタは ``NOT IN`` の副問い合わせになる。"""
+    record = _cross_filter_record([_cross_filter(includesObject=False)])
+    draft = build_soql(record)
+
+    assert draft.soql == (
+        "SELECT Name\n"
+        "FROM Opportunity\n"
+        "WHERE Id NOT IN (SELECT OpportunityId FROM OpportunityLineItem "
+        "WHERE Product2Id = '01t000000000001')"
+    )
+    assert draft.status == STATUS_NEEDS_CHECK
+    assert draft.use_bulk is False
+
+
+def test_cross_filter_without_criteria_has_no_inner_where() -> None:
+    """``criteria`` が空のときは内側の WHERE を出さない。"""
+    record = _cross_filter_record([_cross_filter(criteria=[])])
+    draft = build_soql(record)
+
+    assert draft.soql == (
+        "SELECT Name\nFROM Opportunity\nWHERE Id IN (SELECT OpportunityId FROM OpportunityLineItem)"
+    )
+
+
+@pytest.mark.parametrize(
+    "criteria",
+    [None, "文字列"],
+    ids=["none", "not_a_list"],
+)
+def test_cross_filter_with_unusable_criteria_goes_to_missing(criteria: Any) -> None:
+    """``criteria`` が無い（ キーがない・ ``None`` ） ときは missing にする。
+
+    絞り込みが消えた副問い合わせはレポートより多い件数を取るため、 推測で
+    埋めない。 空リスト ``[]`` のときだけ「条件なし」として通す。
+    """
+    record = _cross_filter_record([_cross_filter(criteria=criteria)])
+    draft = build_soql(record)
+
+    assert draft.status == STATUS_PARTIAL
+    assert draft.soql.startswith(INCOMPLETE_MARKER)
+    assert draft.use_bulk is True
+    assert any("クロスフィルタ" in m and "criteria" in m for m in draft.missing)
+
+
+def test_cross_filter_without_criteria_key_goes_to_missing() -> None:
+    """``criteria`` のキー自体が無いときは missing にする。"""
+    cross_filter = _cross_filter()
+    del cross_filter["criteria"]
+    record = _cross_filter_record([cross_filter])
+    draft = build_soql(record)
+
+    assert draft.status == STATUS_PARTIAL
+    assert draft.use_bulk is True
+    assert any("クロスフィルタ" in m and "criteria" in m for m in draft.missing)
+
+
+def test_cross_filter_criteria_checks_are_kept() -> None:
+    """内側の条件の ``checks`` （ ロングテキストの注意 ） は捨てない。"""
+    record = _cross_filter_record(
+        [
+            _cross_filter(
+                criteria=[{"column": "Notes", "operator": "equals", "value": "メモ"}],
+            )
+        ]
+    )
+    draft = build_soql(record)
+
+    assert "Notes = 'メモ'" in draft.soql
+    assert any("ロングテキストは絞り込めない場合がある: Notes" in c for c in draft.checks)
+
+
+def test_cross_filter_subquery_is_wrapped_with_boolean_filter() -> None:
+    """組立式 （ ``1 OR 2`` ） と副問い合わせが並ぶときは 組立式が ``( ... )`` で囲まれる。"""
+    column_map = _column_map_with_types(
+        [("Name", "Name", "string"), ("StageName", "StageName", "string")]
+    )
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Name", "operator": "equals", "value": "A"},
+            {"column": "StageName", "operator": "equals", "value": "B"},
+        ],
+        report_boolean_filter="1 OR 2",
+        cross_filters=[_cross_filter()],
+        objects={"Opportunity": _main_describe_with_child()},
+        cross_filter_objects={"OpportunityLineItem": _child_describe()},
+    )
+    draft = build_soql(record)
+
+    assert draft.soql == (
+        "SELECT Name\n"
+        "FROM Opportunity\n"
+        "WHERE ( ( Name = 'A' ) OR ( StageName = 'B' ) )\n"
+        "  AND\n"
+        "  Id IN (SELECT OpportunityId FROM OpportunityLineItem "
+        "WHERE Product2Id = '01t000000000001')"
+    )
+
+
+def test_cross_filter_value_is_escaped() -> None:
+    """値の ``'`` はエスケープされる。"""
+    record = _cross_filter_record(
+        [
+            _cross_filter(
+                criteria=[{"column": "Description", "operator": "equals", "value": "O'Brien"}]
+            )
+        ]
+    )
+    draft = build_soql(record)
+
+    assert "Description = 'O\\'Brien'" in draft.soql
+
+
+@pytest.mark.parametrize(
+    ("cross_filter", "reason_part"),
+    [
+        ({"includesObject": None}, "includesObject"),
+        ({"primaryEntityField": "NoSuchField"}, "primaryEntityField"),
+        ({"primaryEntityField": "StageName"}, "id でない"),
+        ({"relatedEntity": "NoSuchChild"}, "子リレーション"),
+        ({"relatedEntityJoinField": "NoSuchField"}, "NoSuchField"),
+        (
+            {"criteria": [{"column": "NoSuchColumn", "operator": "equals", "value": "x"}]},
+            "NoSuchColumn",
+        ),
+    ],
+)
+def test_cross_filter_that_cannot_be_converted_goes_to_missing(
+    cross_filter: dict[str, Any],
+    reason_part: str,
+) -> None:
+    """確かめられない項目があるときは missing になり、 USE_BULK は True のまま。"""
+    record = _cross_filter_record([_cross_filter(**cross_filter)])
+    draft = build_soql(record)
+
+    assert draft.status == STATUS_PARTIAL
+    assert draft.soql.startswith(INCOMPLETE_MARKER)
+    assert draft.use_bulk is True
+    assert draft.bulk_blockers == ()
+    assert any("クロスフィルタ" in m and reason_part in m for m in draft.missing)
+
+
+def test_cross_filter_without_child_describe_goes_to_missing() -> None:
+    """子オブジェクトの describe が無いときは missing になる。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        cross_filters=[_cross_filter()],
+        objects={"Opportunity": _main_describe_with_child()},
+    )
+    draft = build_soql(record)
+
+    assert draft.status == STATUS_PARTIAL
+    assert draft.use_bulk is True
+    assert any("describe が無い" in m for m in draft.missing)
+
+
+def test_third_cross_filter_goes_to_missing() -> None:
+    """副問い合わせは 1 文に 2 個まで。 3 個目は missing になる。"""
+    record = _cross_filter_record(
+        [
+            _cross_filter(),
+            _cross_filter(),
+            _cross_filter(),
+        ]
+    )
+    draft = build_soql(record)
+
+    assert draft.status == STATUS_PARTIAL
+    assert draft.use_bulk is False
+    assert draft.soql.count(" IN (SELECT ") == 2
+    assert any("2 個まで" in m for m in draft.missing)
+
+
+def test_cross_filter_primary_field_resolves_by_column_map() -> None:
+    """主側の項目は 列対応表の列キーと一致する項目でも解決できる。"""
+    column_map = _column_map_with_types([("Name", "Name", "string"), ("OPP_ID", "Id", "id")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        cross_filters=[_cross_filter(primaryEntityField="OPP_ID")],
+        objects={"Opportunity": _main_describe_with_child()},
+        cross_filter_objects={"OpportunityLineItem": _child_describe()},
+    )
+    draft = build_soql(record)
+
+    assert "Id IN (SELECT OpportunityId FROM OpportunityLineItem" in draft.soql
+
+
+# ── クロスフィルタの繋がりの判定 ────────────────────────────────────────
+
+
+def _main_describe_with_two_contacts() -> dict[str, Any]:
+    """同じ子オブジェクト（ Contact ） へ 2 本の参照がある 主オブジェクト。"""
+    return {
+        "name": "Account",
+        "label": "取引先",
+        "custom": False,
+        "fields": [
+            {"name": "Id", "label": "取引先ID", "type": "id"},
+            {"name": "Name", "label": "取引先名", "type": "string"},
+        ],
+        "childRelationships": [
+            {
+                "childSObject": "Contact",
+                "field": "AccountId",
+                "relationshipName": "Contacts",
+            },
+            {
+                "childSObject": "Contact",
+                "field": "ParentAccount__c",
+                "relationshipName": "ParentContacts",
+            },
+        ],
+    }
+
+
+def _contact_describe() -> dict[str, Any]:
+    """子オブジェクト（ Contact ） の describe 。"""
+    return {
+        "name": "Contact",
+        "label": "取引先担当者",
+        "custom": False,
+        "fields": [
+            {"name": "AccountId", "label": "取引先", "type": "reference"},
+            {"name": "ParentAccount__c", "label": "親取引先", "type": "reference"},
+            {"name": "LastName", "label": "姓", "type": "string"},
+        ],
+        "childRelationships": [],
+    }
+
+
+def _contact_cross_filter(**overrides: Any) -> dict[str, Any]:
+    """Contact への参照を使うクロスフィルタ。"""
+    base: dict[str, Any] = {
+        "criteria": [],
+        "includesObject": True,
+        "primaryEntityField": "Id",
+        "relatedEntity": "Contact",
+        "relatedEntityJoinField": "AccountId",
+    }
+    base.update(overrides)
+    return base
+
+
+def _contact_record(
+    cross_filters: list[dict[str, Any]],
+    **kwargs: Any,
+) -> ReportRecord:
+    """Contact への参照を使うクロスフィルタの試験用の record を作る。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    return _make_record(
+        main_object="Account",
+        detail_columns=["Name"],
+        column_map=column_map,
+        cross_filters=cross_filters,
+        objects={"Account": _main_describe_with_two_contacts()},
+        cross_filter_objects={"Contact": _contact_describe()},
+        **kwargs,
+    )
+
+
+def test_cross_filter_link_is_direct_and_converted() -> None:
+    """直接つながるリレーションは ``直接`` で、 副問い合わせに変換される。"""
+    record = _cross_filter_record([_cross_filter()])
+    draft = build_soql(record)
+
+    assert draft.cross_filter_links == (
+        CrossFilterLink(
+            index=1,
+            status=CROSS_FILTER_LINK_DIRECT,
+            primary_field="Id",
+            child_object="OpportunityLineItem",
+            join_field="OpportunityId",
+            relationship_name="OpportunityLineItems",
+            converted=True,
+            reason="",
+        ),
+    )
+
+
+def test_cross_filter_link_is_not_direct_when_primary_is_reference() -> None:
+    """主側の項目が ``reference`` なら 「直接でない」 になる。"""
+    record = _cross_filter_record([_cross_filter(primaryEntityField="AccountId")])
+    draft = build_soql(record)
+
+    assert draft.status == STATUS_PARTIAL
+    assert draft.soql.startswith(INCOMPLETE_MARKER)
+    assert draft.use_bulk is True
+    link = draft.cross_filter_links[0]
+    assert link.status == CROSS_FILTER_LINK_NOT_DIRECT
+    assert link.converted is False
+    assert link.primary_field == "AccountId"
+    assert "id でない" in link.reason
+    assert any("クロスフィルタ" in m and "id でない" in m for m in draft.missing)
+
+
+def test_cross_filter_link_is_not_direct_when_related_entity_is_unknown() -> None:
+    """``relatedEntity`` が子リレーションに無いなら 「直接でない」 になる。"""
+    record = _cross_filter_record([_cross_filter(relatedEntity="NoSuchChild")])
+    draft = build_soql(record)
+
+    link = draft.cross_filter_links[0]
+    assert link.status == CROSS_FILTER_LINK_NOT_DIRECT
+    assert link.converted is False
+    assert "子リレーション" in link.reason
+
+
+def test_cross_filter_link_is_not_direct_when_join_field_is_not_a_relationship_field() -> None:
+    """同じ子へ 2 本の参照があるとき、 違う結合項目は 「直接でない」 になる。
+
+    reason には その子リレーションの実際の参照項目が並ぶ。
+    """
+    record = _contact_record([_contact_cross_filter(relatedEntityJoinField="Other__c")])
+    draft = build_soql(record)
+
+    link = draft.cross_filter_links[0]
+    assert link.status == CROSS_FILTER_LINK_NOT_DIRECT
+    assert link.converted is False
+    assert "Other__c" in link.reason
+    assert "AccountId" in link.reason
+    assert "ParentAccount__c" in link.reason
+
+
+@pytest.mark.parametrize(
+    ("join_field", "relationship_name"),
+    [
+        ("AccountId", "Contacts"),
+        ("ParentAccount__c", "ParentContacts"),
+    ],
+)
+def test_cross_filter_link_picks_the_relationship_of_the_join_field(
+    join_field: str,
+    relationship_name: str,
+) -> None:
+    """同じ子へ 2 本の参照があるとき、 結合項目に合うリレーションが選ばれる。"""
+    record = _contact_record([_contact_cross_filter(relatedEntityJoinField=join_field)])
+    draft = build_soql(record)
+
+    link = draft.cross_filter_links[0]
+    assert link.status == CROSS_FILTER_LINK_DIRECT
+    assert link.converted is True
+    assert link.relationship_name == relationship_name
+    assert link.join_field == join_field
+    assert link.child_object == "Contact"
+    assert "Id IN (SELECT " in draft.soql
+
+
+def test_cross_filter_link_is_unverified_when_child_relationships_are_empty() -> None:
+    """主オブジェクトの ``childRelationships`` が空なら 「確認できず」 になる。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        cross_filters=[_cross_filter()],
+        objects={
+            "Opportunity": {
+                "name": "Opportunity",
+                "label": "商談",
+                "custom": False,
+                "fields": [{"name": "Id", "label": "ID", "type": "id"}],
+                "childRelationships": [],
+            }
+        },
+        cross_filter_objects={"OpportunityLineItem": _child_describe()},
+    )
+    draft = build_soql(record)
+
+    link = draft.cross_filter_links[0]
+    assert link.status == CROSS_FILTER_LINK_UNVERIFIED
+    assert link.converted is False
+    assert "childRelationships が空" in link.reason
+
+
+def test_cross_filter_link_is_unverified_without_child_describe() -> None:
+    """子オブジェクトの describe が無いなら 「確認できず」 になる。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        cross_filters=[_cross_filter()],
+        objects={"Opportunity": _main_describe_with_child()},
+    )
+    draft = build_soql(record)
+
+    link = draft.cross_filter_links[0]
+    assert link.status == CROSS_FILTER_LINK_UNVERIFIED
+    assert link.converted is False
+    assert "describe が無い" in link.reason
+
+
+def test_third_cross_filter_link_is_direct_but_not_converted() -> None:
+    """3 個目も判定する。 判定は 「直接」 だが 副問い合わせには入らない。"""
+    record = _cross_filter_record([_cross_filter(), _cross_filter(), _cross_filter()])
+    draft = build_soql(record)
+
+    assert len(draft.cross_filter_links) == 3
+    third = draft.cross_filter_links[2]
+    assert third.index == 3
+    assert third.status == CROSS_FILTER_LINK_DIRECT
+    assert third.converted is False
+    assert "2 個まで" in third.reason
+
+
+def test_cross_filter_link_without_criteria_is_direct_but_not_converted() -> None:
+    """``criteria`` が無いときの判定は 「直接」 だが 副問い合わせには入らない。"""
+    cross_filter = _cross_filter()
+    del cross_filter["criteria"]
+    record = _cross_filter_record([cross_filter])
+    draft = build_soql(record)
+
+    link = draft.cross_filter_links[0]
+    assert link.status == CROSS_FILTER_LINK_DIRECT
+    assert link.converted is False
+    assert "criteria" in link.reason
+    assert draft.use_bulk is True
+
+
+def test_cross_filter_link_is_not_converted_when_boolean_filter_is_broken() -> None:
+    """組立式が壊れて WHERE 全体を出さないときは、 副問い合わせは入らない。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "equals", "value": "A"}],
+        report_boolean_filter="1 AND 2",
+        cross_filters=[_cross_filter()],
+        objects={"Opportunity": _main_describe_with_child()},
+        cross_filter_objects={"OpportunityLineItem": _child_describe()},
+    )
+    draft = build_soql(record)
+
+    link = draft.cross_filter_links[0]
+    assert link.status == CROSS_FILTER_LINK_DIRECT
+    assert link.converted is False
+    assert "WHERE 全体を出さない" in link.reason
+    assert draft.use_bulk is True
+
+
+def test_cross_filter_links_are_kept_when_soql_cannot_be_built() -> None:
+    """SELECT に入れられる列が無い（ 作れず ） でも 判定は残る。"""
+    column_map = _column_map_with_types([("Name", "(不明)", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        cross_filters=[_cross_filter()],
+        objects={"Opportunity": _main_describe_with_child()},
+        cross_filter_objects={"OpportunityLineItem": _child_describe()},
+    )
+    draft = build_soql(record)
+
+    assert draft.status == STATUS_NONE
+    assert len(draft.cross_filter_links) == 1
+    assert draft.cross_filter_links[0].status == CROSS_FILTER_LINK_DIRECT
+
+
+def test_cross_filter_links_are_empty_without_cross_filters() -> None:
+    """クロスフィルタが無ければ 判定は 0 件。"""
+    record = _cross_filter_record([])
+    draft = build_soql(record)
+
+    assert draft.cross_filter_links == ()
+
+
+def test_cross_filter_links_are_empty_when_main_object_is_unknown() -> None:
+    """主オブジェクトが不明なら 判定も 0 件。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        main_object="",
+        detail_columns=["Name"],
+        column_map=column_map,
+        cross_filters=[_cross_filter()],
+    )
+    draft = build_soql(record)
+
+    assert draft.status == STATUS_NONE
+    assert draft.cross_filter_links == ()
 
 
 # ── ORDER BY / LIMIT ───────────────────────────────────────────────────

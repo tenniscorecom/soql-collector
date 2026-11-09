@@ -7,6 +7,7 @@ record だけでネットワークには繋がない） 。 仕様の見出し�
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 from src import pii
@@ -15,7 +16,13 @@ from src.ai_markdown import (
     build_markdown,
 )
 from src.fetch import RelationRecord, ReportRecord, RowCheck
-from src.soql_builder import SoqlDraft
+from src.soql_builder import (
+    CROSS_FILTER_LINK_DIRECT,
+    CROSS_FILTER_LINK_NOT_DIRECT,
+    CROSS_FILTER_LINK_UNVERIFIED,
+    CrossFilterLink,
+    SoqlDraft,
+)
 from src.soql_similar import SimilarSoql
 from src.tables import run_tables
 
@@ -323,6 +330,10 @@ def test_ai_markdown_tabular_full_text() -> None:
         "└ What → Account\n"
         "```\n"
         "\n"
+        "## 子リレーション（サブクエリの材料）\n"
+        "\n"
+        "保存データに無い。実行.bat で取り直すと出る\n"
+        "\n"
         "## SOQL を組むときの注意\n"
         "\n"
         "- 取れなかった列がある\n"
@@ -617,3 +628,331 @@ def test_ai_markdown_broken_implementation_fails_full_text() -> None:
     assert "## 出力する列" not in broken
     # 期待値 （=本物の実装の戻り値） とは一致しない
     assert broken != rendered
+
+
+# ── 取り方 ────────────────────────────────────────────────────────────
+
+
+def test_markdown_has_fetch_method_section_for_bulk() -> None:
+    """``use_bulk`` が True のときは 「取り方」 に Bulk の注意が出る。"""
+    record = _make_record(
+        soql_draft=SoqlDraft(
+            soql="SELECT Subject FROM Task",
+            status="作成済み",
+            missing=(),
+            checks=(),
+        ),
+    )
+    rendered = build_markdown(record)
+    assert "## 取り方" in rendered
+    assert "- Bulk API 2.0 で取る（USE_BULK = True）" in rendered
+    assert (
+        "- SELECT の中の子サブクエリ・集計関数・GROUP BY・OFFSET・TYPEOF を使うように直したら "
+        "USE_BULK を False にする"
+    ) in rendered
+
+
+def test_markdown_has_fetch_method_section_for_rest() -> None:
+    """``use_bulk`` が False のときは 理由と REST の注意が出る。"""
+    record = _make_record(
+        soql_draft=SoqlDraft(
+            soql="SELECT Subject FROM Task",
+            status="要確認",
+            missing=(),
+            checks=(),
+            use_bulk=False,
+            bulk_blockers=("サブクエリを使うため",),
+        ),
+    )
+    rendered = build_markdown(record)
+    assert "## 取り方" in rendered
+    assert "- REST の query() で取る（USE_BULK = False）: サブクエリを使うため" in rendered
+    assert "- REST の注意: 値が文字列にならず数値・真偽値のまま返る" in rendered
+    assert "- REST の注意: 0 件だと列が空" in rendered
+    assert "- REST の注意: 全行 null の参照項目は列が出ない" in rendered
+
+
+def test_markdown_fetch_method_section_omitted_without_draft() -> None:
+    """下書きが無い record は 「取り方」 を出さない。"""
+    record = _make_record()
+    assert "## 取り方" not in build_markdown(record)
+
+
+# ── 子リレーション（ サブクエリの材料 ） ─────────────────────────────────
+
+
+def test_markdown_has_child_relationship_section() -> None:
+    """主オブジェクトの子リレーションが 表 で 出る。"""
+    record = _make_record()
+    objects = dict(record.objects)
+    task = dict(objects["Task"])
+    task["childRelationships"] = [
+        {
+            "childSObject": "TaskComment",
+            "field": "ParentId",
+            "relationshipName": "Comments",
+        }
+    ]
+    objects["Task"] = task
+    record = dataclasses.replace(record, objects=objects)
+
+    rendered = build_markdown(record)
+    assert "## 子リレーション（サブクエリの材料）" in rendered
+    assert "| リレーション名 | 子オブジェクト | 参照項目 |" in rendered
+    assert "| Comments | TaskComment | ParentId |" in rendered
+    assert "例: (SELECT Id FROM Comments)" in rendered
+    assert "SELECT の中に書いたら USE_BULK を False にする" in rendered
+
+
+def test_markdown_child_relationship_section_says_missing_when_no_data() -> None:
+    """子リレーションが無いときは 「保存データに無い」 の 1 行。"""
+    rendered = build_markdown(_make_record())
+    assert "## 子リレーション（サブクエリの材料）" in rendered
+    assert "保存データに無い。実行.bat で取り直すと出る" in rendered
+
+
+def test_markdown_child_relationship_section_limits_rows() -> None:
+    """100 行を超える分は 「ほか N 件」 にまとめる。"""
+    record = _make_record()
+    objects = dict(record.objects)
+    task = dict(objects["Task"])
+    task["childRelationships"] = [
+        {
+            "childSObject": f"Child{index}",
+            "field": "ParentId",
+            "relationshipName": f"Rel{index}",
+        }
+        for index in range(120)
+    ]
+    objects["Task"] = task
+    record = dataclasses.replace(record, objects=objects)
+
+    rendered = build_markdown(record)
+    assert "| Rel99 | Child99 | ParentId |" in rendered
+    assert "| Rel100 |" not in rendered
+    assert "ほか 20 件" in rendered
+
+
+# ── クロスフィルタの表示 ───────────────────────────────────────────────
+
+
+def test_markdown_cross_filter_shows_includes_and_json() -> None:
+    """クロスフィルタは includesObject と 要素全体 の JSON で 出る。"""
+    cross_filter = {
+        "criteria": [{"column": "CommentBody", "operator": "equals", "value": "要対応"}],
+        "includesObject": True,
+        "primaryEntityField": "WhatId",
+        "relatedEntity": "TaskComment",
+        "relatedEntityJoinField": "ParentId",
+    }
+    record = _make_record(report_metadata_override={"crossFilters": [cross_filter]})
+    rendered = build_markdown(record)
+
+    assert "- クロスフィルタ: 含む " in rendered
+    assert '"relatedEntity": "TaskComment"' in rendered
+    assert '"includesObject": true' in rendered
+
+
+def test_markdown_cross_filter_shows_not_includes_and_unknown() -> None:
+    """``includesObject`` が False / 不明 のときは それぞれ の 表示 になる。"""
+    excluded = {
+        "criteria": [],
+        "includesObject": False,
+        "primaryEntityField": "WhatId",
+        "relatedEntity": "TaskComment",
+        "relatedEntityJoinField": "ParentId",
+    }
+    unknown = {"primaryEntityField": "WhatId"}
+    record = _make_record(report_metadata_override={"crossFilters": [excluded, unknown]})
+    rendered = build_markdown(record)
+
+    assert "- クロスフィルタ: 含まない " in rendered
+    assert "- クロスフィルタ: 不明 " in rendered
+
+
+# ── クロスフィルタの繋がりの表 ───────────────────────────────────────────
+
+
+def _cross_filter_links() -> tuple[CrossFilterLink, ...]:
+    """表のテスト用の判定を 2 件作る。"""
+    return (
+        CrossFilterLink(
+            index=1,
+            status=CROSS_FILTER_LINK_DIRECT,
+            primary_field="Id",
+            child_object="TaskComment",
+            join_field="ParentId",
+            relationship_name="Comments",
+            converted=True,
+            reason="",
+        ),
+        CrossFilterLink(
+            index=2,
+            status=CROSS_FILTER_LINK_NOT_DIRECT,
+            primary_field="WhatId",
+            child_object="TaskComment",
+            join_field="ParentId",
+            relationship_name="",
+            converted=False,
+            reason="主側の項目 WhatId の型が id でない（型: reference）",
+        ),
+    )
+
+
+def test_markdown_has_cross_filter_link_section() -> None:
+    """判定が 1 件でもあれば 「クロスフィルタの繋がり」 の表が 出る。"""
+    record = _make_record(
+        soql_draft=SoqlDraft(
+            soql="SELECT Subject FROM Task",
+            status="要確認",
+            missing=(),
+            checks=(),
+            cross_filter_links=_cross_filter_links(),
+        ),
+    )
+    rendered = build_markdown(record)
+
+    assert "## クロスフィルタの繋がり" in rendered
+    assert "| 1 | 直接 | Id | TaskComment | ParentId | Comments | 入れた |  |" in rendered
+    assert (
+        "| 2 | 直接でない | WhatId | TaskComment | ParentId |  | 入れていない | "
+        "主側の項目 WhatId の型が id でない（型: reference） |" in rendered
+    )
+    # 「取り方」 の直後
+    assert rendered.index("## 取り方") < rendered.index("## クロスフィルタの繋がり")
+    assert rendered.index("## クロスフィルタの繋がり") < rendered.index(
+        "## 子リレーション（サブクエリの材料）"
+    )
+
+
+def test_markdown_has_no_cross_filter_link_section_without_links() -> None:
+    """判定が 0 件ならセクションは出さない。"""
+    record = _make_record(
+        soql_draft=SoqlDraft(
+            soql="SELECT Subject FROM Task",
+            status="作成済み",
+            missing=(),
+            checks=(),
+        ),
+    )
+    rendered = build_markdown(record)
+
+    assert "## クロスフィルタの繋がり" not in rendered
+
+
+def test_markdown_cross_filter_link_cell_is_escaped() -> None:
+    """表のセルは ``|`` と改行をエスケープする。"""
+    link = CrossFilterLink(
+        index=1,
+        status=CROSS_FILTER_LINK_UNVERIFIED,
+        primary_field="Id",
+        child_object="TaskComment",
+        join_field="ParentId",
+        relationship_name="Comments",
+        converted=False,
+        reason="理由|に\n改行",
+    )
+    record = _make_record(
+        soql_draft=SoqlDraft(
+            soql="SELECT Subject FROM Task",
+            status="一部作れず",
+            missing=(),
+            checks=(),
+            cross_filter_links=(link,),
+        ),
+    )
+    rendered = build_markdown(record)
+
+    assert "理由\\|に 改行" in rendered
+
+
+# ── 注意 ──────────────────────────────────────────────────────────────
+
+
+def test_markdown_notes_for_rest_with_too_many_rows() -> None:
+    """2000件超でも REST のときは 注意文が変わる。"""
+    record = _make_record(
+        row_check=RowCheck(status="超えている", rows=None, reason=None),
+        soql_draft=SoqlDraft(
+            soql="SELECT Subject FROM Task",
+            status="要確認",
+            missing=(),
+            checks=(),
+            use_bulk=False,
+            bulk_blockers=("サブクエリを使うため",),
+        ),
+    )
+    rendered = build_markdown(record)
+    assert "- 2000件超だが REST で取る（ページ送りで全件取れる。往復は増える）" in rendered
+    assert "- 2000件超なので Bulk で取る" not in rendered
+
+
+def test_markdown_notes_for_cross_filter_and_aggregate() -> None:
+    """クロスフィルタと 集計レポート の 注意文。
+
+    副問い合わせにできていないときは、 理由が 「クロスフィルタの繋がり」 に
+    あることを示す文になる。
+    """
+    record = _make_record(
+        report_metadata_override={
+            "crossFilters": [
+                {
+                    "criteria": [],
+                    "includesObject": True,
+                    "primaryEntityField": "WhatId",
+                    "relatedEntity": "TaskComment",
+                    "relatedEntityJoinField": "ParentId",
+                }
+            ],
+            "reportFormat": "SUMMARY",
+            "groupingsDown": [],
+            "groupingsAcross": [],
+            "aggregates": [],
+        },
+    )
+    rendered = build_markdown(record)
+    assert (
+        "- クロスフィルタは副問い合わせにできていない（理由は「クロスフィルタの繋がり」）"
+        in rendered
+    )
+    assert "- 集計レポート" in rendered
+    assert "- GROUP BY と集計関数を使うなら USE_BULK を False にする" in rendered
+
+
+def test_markdown_notes_say_subquery_when_one_link_is_converted() -> None:
+    """1 件でも副問い合わせに変換できたときは、 「副問い合わせにした」 の文になる。"""
+    link = CrossFilterLink(
+        index=1,
+        status=CROSS_FILTER_LINK_DIRECT,
+        primary_field="Id",
+        child_object="TaskComment",
+        join_field="ParentId",
+        relationship_name="Comments",
+        converted=True,
+        reason="",
+    )
+    record = _make_record(
+        report_metadata_override={
+            "crossFilters": [
+                {
+                    "criteria": [],
+                    "includesObject": True,
+                    "primaryEntityField": "Id",
+                    "relatedEntity": "TaskComment",
+                    "relatedEntityJoinField": "ParentId",
+                }
+            ],
+        },
+        soql_draft=SoqlDraft(
+            soql="SELECT Subject FROM Task",
+            status="要確認",
+            missing=(),
+            checks=(),
+            use_bulk=False,
+            bulk_blockers=("副問い合わせのため",),
+            cross_filter_links=(link,),
+        ),
+    )
+    rendered = build_markdown(record)
+    assert "- クロスフィルタは副問い合わせにした（REST で取る）" in rendered
+    assert "副問い合わせにできていない" not in rendered

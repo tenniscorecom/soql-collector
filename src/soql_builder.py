@@ -23,6 +23,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 from datetime import date as _date
 from typing import TYPE_CHECKING, Any
 
@@ -46,6 +47,33 @@ STATUS_NONE = "作れず"
 # 必ず構文エラーになり、レポート以上の範囲を取る危険を物理的に防ぐ
 INCOMPLETE_MARKER = "【未完成】作れなかった部分があります。このままでは実行できません。"
 
+
+# 副問い合わせは 1 文に 2 個まで。 Salesforce の SOQL の制限に合わせる。
+# 3 個目以降のクロスフィルタは missing にする（省くとレポート以上の範囲を
+# 取る危険があるため）。
+CROSS_FILTER_MAX_SUBQUERIES: int = 2
+
+# 副問い合わせの SOQL を Bulk API 2.0 で取れるか確かめていないため、 REST に
+# するときの理由。 ``SoqlDraft.bulk_blockers`` に入る。
+BULK_BLOCKER_SUBQUERY: str = (
+    "WHERE の副問い合わせを Bulk API 2.0 で動作確認していないため REST で取る"
+)
+
+# クロスフィルタを副問い合わせにしたときの checks メッセージの頭
+CROSS_FILTER_CHECK_PREFIX: str = (
+    "クロスフィルタを副問い合わせにした（公式仕様の形から作った。レポートと件数を実物で確かめる）"
+)
+
+# クロスフィルタの「主オブジェクトと子オブジェクトの繋がり」 の判定。 3 種
+# - ``直接`` … 直接つながるリレーション。 副問い合わせに入れてよい
+# - ``直接でない`` … 情報はそろっているが直接つながっていない
+# - ``確認できず`` … 情報が足りないので確認できない
+CROSS_FILTER_LINK_DIRECT: str = "直接"
+CROSS_FILTER_LINK_NOT_DIRECT: str = "直接でない"
+CROSS_FILTER_LINK_UNVERIFIED: str = "確認できず"
+
+# 組立式が壊れて WHERE 全体を出さないときの、 副問い合わせに入れなかった理由
+BROKEN_BOOLEAN_FILTER_REASON: str = "組立式の条件が壊れたため WHERE 全体を出さない"
 
 # 文字列系として '...' で囲む型。 column_map の ``型`` 列の値で判定する。
 _STRING_TYPES: frozenset[str] = frozenset(
@@ -301,6 +329,58 @@ _QUOTE_ESCAPE_PATTERN = re.compile(r"(['\\])")
 
 
 @dataclass(frozen=True)
+class CrossFilterLink:
+    """``crossFilters`` の 1 個と、 主オブジェクトと子オブジェクトの繋がりの判定。
+
+    Attributes:
+        index: レポートの ``crossFilters`` の中の順番 （ 1 始まり ）。
+        status: 判定。 ``直接`` / ``直接でない`` / ``確認できず`` のいずれか。
+        primary_field: 主オブジェクト側の項目 API 名。 判定できなかったときは
+            空文字。
+        child_object: 子オブジェクト名。
+        join_field: 子オブジェクト側の結合項目 API 名。
+        relationship_name: 子リレーション名。
+        converted: 副問い合わせとして SOQL に入れたか。
+        reason: 判定の理由。 ``直接`` でも ``converted`` が ``False`` のときは
+            副問い合わせにできなかった理由 （ 副問い合わせの上限 など ） 。
+    """
+
+    index: int
+    status: str
+    primary_field: str
+    child_object: str
+    join_field: str
+    relationship_name: str
+    converted: bool
+    reason: str
+
+
+def format_cross_filter_link_comment(link: CrossFilterLink, *, main_object: str = "") -> str:
+    """クロスフィルタ 1 個のコメント行を組み立てる。
+
+    ``直接`` で SOQL に入れたときは 繋がり （ リレーション名: 子オブジェクト.
+    結合項目 → 主側項目 ） を、 入れていないときは 理由 を入れる。
+
+    Args:
+        link: 判定結果。
+        main_object: 主オブジェクト名。 分かっているときは主側項目を
+            ``<主オブジェクト>.<項目>`` の形で出す。
+
+    Returns:
+        コメント行の文字列 （ 改行は含まない ） 。
+    """
+    if link.status == CROSS_FILTER_LINK_DIRECT and link.converted:
+        primary = link.primary_field
+        if main_object and primary:
+            primary = f"{main_object}.{primary}"
+        detail = f"{link.relationship_name or link.child_object}: "
+        detail += f"{link.child_object}.{link.join_field} → {primary}"
+        return f"# クロスフィルタ {link.index}: {link.status}（{detail}）SOQL に入れた"
+    reason = link.reason or "理由不明"
+    return f"# クロスフィルタ {link.index}: {link.status}（{reason}）SOQL に入れていない"
+
+
+@dataclass(frozen=True)
 class SoqlDraft:
     """``build_soql`` の戻り値。 ``frozen`` で再代入しない。
 
@@ -329,6 +409,13 @@ class SoqlDraft:
             「似た SOQL」 の判定に使う。
         order_by: ``ORDER BY ...`` （ 末尾に ``LIMIT N`` を含む ） の文字列。
             無ければ空文字。 「似た SOQL」 の判定に使う。
+        use_bulk: 取り方。 ``True`` = Bulk API 2.0、 ``False`` = REST の
+            ``query()`` 。 副問い合わせ （ クロスフィルタ ） を出したときだけ
+            ``False`` になる。 SOQL 文字列を後からパースして判定しない。
+        bulk_blockers: REST にした理由 （ 1 件 1 要素 ）。 ``use_bulk`` が
+            ``True`` のときは空。
+        cross_filter_links: クロスフィルタ 1 個ずつの繋がりの判定。
+            ``crossFilters`` が無ければ空のタプル。
     """
 
     soql: str
@@ -340,6 +427,9 @@ class SoqlDraft:
     select_items: tuple[str, ...] = field(default=())
     where_items: tuple[str, ...] = field(default=())
     order_by: str = field(default="")
+    use_bulk: bool = True
+    bulk_blockers: tuple[str, ...] = field(default=())
+    cross_filter_links: tuple[CrossFilterLink, ...] = field(default=())
 
 
 def _escape_string_literal(value: str) -> str:
@@ -974,7 +1064,9 @@ def _normalize_operator(operator: str) -> str:
 def _build_where_clause(
     metadata: dict[str, Any],
     column_lookup: dict[str, dict[str, str]],
-) -> tuple[list[str], list[str], list[str]]:
+    *,
+    judgements: list[_CrossFilterJudgement],
+) -> tuple[list[str], list[str], list[str], bool, list[CrossFilterLink]]:
     """``reportFilters`` / ``standardDateFilter`` / ``standardFilters`` /
     ``crossFilters`` から WHERE 句を組み立てる。
 
@@ -989,22 +1081,38 @@ def _build_where_clause(
     ため WHERE は空にして missing に「組立式の条件を作れない」 を入れる。
     クロスフィルタや日付条件の ``missing`` だけでは WHERE 全体は捨てない。
 
+    クロスフィルタは副問い合わせ （ ``IN`` / ``NOT IN`` ） にして 1 行ずつ
+    足す。 作れないものは ``missing`` にして、 従来どおり WHERE 全体は捨てない。
+
     Returns:
-        ``(top-level lines, missing, 追加 checks)`` 。 lines は 1 行 1 条件
-        を表す文字列のリスト ( 組立式が 1 行にまとまる場合は 1 要素、
-        通常は複数要素 )。 WHERE が無いときは空リスト。
+        ``(top-level lines, missing, 追加 checks, 副問い合わせを使ったか,
+        判定のリスト)`` 。
+        lines は 1 行 1 条件を表す文字列のリスト ( 組立式が 1 行にまとまる
+        場合は 1 要素、 通常は複数要素 )。 WHERE が無いときは空リスト。
     """
     missing: list[str] = []
     checks: list[str] = []
     filter_conditions = _collect_report_filter_conditions(metadata, column_lookup, missing, checks)
     date_lines = _collect_standard_date_lines(metadata, column_lookup, missing, checks)
     _collect_standard_filter_checks(metadata, checks)
-    _collect_cross_filter_missing(metadata, missing)
-    lines, ok = _combine_filter_conditions(metadata, filter_conditions, missing, bool(date_lines))
+    cross_filter_lines, links = _build_cross_filter_lines(
+        judgements,
+        missing=missing,
+        checks=checks,
+    )
+    lines, ok = _combine_filter_conditions(
+        metadata,
+        filter_conditions,
+        missing,
+        bool(date_lines) or bool(cross_filter_lines),
+    )
     if not ok:
-        return [], missing, checks
+        # WHERE 全体を出さないので、 副問い合わせも SOQL には入らない
+        links = [_mark_not_converted(link, BROKEN_BOOLEAN_FILTER_REASON) for link in links]
+        return [], missing, checks, False, links
     lines.extend(date_lines)
-    return lines, missing, checks
+    lines.extend(cross_filter_lines)
+    return lines, missing, checks, bool(cross_filter_lines), links
 
 
 def _collect_report_filter_conditions(
@@ -1165,16 +1273,540 @@ def _collect_standard_filter_checks(
         checks.append(f"標準フィルタ {index}: {sf!r} (そのままでは SOQL に翻訳できない)")
 
 
-def _collect_cross_filter_missing(
+@dataclass
+class _CrossFilterJudgement:
+    """クロスフィルタ 1 個の判定結果と、 副問い合わせの組み立てに使う材料。
+
+    ``link`` は ``frozen`` なので、 ``converted`` を変えるときは
+    ``dataclasses.replace`` を使う。
+    """
+
+    index: int
+    cf: Any
+    link: CrossFilterLink
+    primary_name: str = ""
+    join_name: str = ""
+    child_name: str = ""
+    child_describe: dict[str, Any] | None = None
+
+
+def _judge_cross_filters(
     metadata: dict[str, Any],
-    missing: list[str],
-) -> None:
-    """``crossFilters`` を ``missing`` に並べる (副問い合わせが必要) 。"""
+    column_lookup: dict[str, dict[str, str]],
+    *,
+    main_object: str,
+    main_describe: dict[str, Any] | None,
+    cross_filter_objects: dict[str, dict[str, Any]] | None,
+) -> list[_CrossFilterJudgement]:
+    """``crossFilters`` を 1 件ずつ判定する。 判定は変換の前後を問わない。"""
     cross_filters = metadata.get("crossFilters")
-    if not (isinstance(cross_filters, list) and cross_filters):
-        return
-    for index, cf in enumerate(cross_filters, start=1):
-        missing.append(f"クロスフィルタ {index}: {cf!r} (副問い合わせが必要)")
+    if not isinstance(cross_filters, list):
+        return []
+    return [
+        _judge_cross_filter(
+            index,
+            cf,
+            main_object=main_object,
+            main_describe=main_describe,
+            column_lookup=column_lookup,
+            cross_filter_objects=cross_filter_objects,
+        )
+        for index, cf in enumerate(cross_filters, start=1)
+    ]
+
+
+def _judge_cross_filter(
+    index: int,
+    cf: Any,
+    *,
+    main_object: str,
+    main_describe: dict[str, Any] | None,
+    column_lookup: dict[str, dict[str, str]],
+    cross_filter_objects: dict[str, dict[str, Any]] | None,
+) -> _CrossFilterJudgement:
+    """クロスフィルタ 1 個を判定する。
+
+    判定は次の 3 種:
+
+    - ``直接`` … 主側の項目が ``id`` 型で、 その子リレーションの参照項目が
+      結合項目と一致し、 結合項目が子オブジェクトの項目に解決できる
+    - ``直接でない`` … 情報はそろっているが直接つながっていない
+    - ``確認できず`` … 情報が足りないので確認できない
+
+    Returns:
+        ``_CrossFilterJudgement`` 。 ``直接`` のときだけ副問い合わせの材料
+        （ 解決済みの項目名・子の describe ） が入る。
+    """
+
+    def judged(
+        status: str,
+        reason: str,
+        *,
+        primary: str = "",
+        child: str = "",
+        join: str = "",
+        relationship: str = "",
+    ) -> _CrossFilterJudgement:
+        return _CrossFilterJudgement(
+            index=index,
+            cf=cf,
+            link=CrossFilterLink(
+                index=index,
+                status=status,
+                primary_field=primary,
+                child_object=child,
+                join_field=join,
+                relationship_name=relationship,
+                converted=False,
+                reason=reason,
+            ),
+        )
+
+    if not isinstance(cf, dict):
+        return judged(CROSS_FILTER_LINK_UNVERIFIED, "crossFilter が dict でない")
+
+    # 主側の項目
+    primary_raw = _coerce_str(cf.get("primaryEntityField")).strip()
+    if not primary_raw:
+        return judged(CROSS_FILTER_LINK_UNVERIFIED, "primaryEntityField が無い")
+    primary = _resolve_primary_field(
+        primary_raw,
+        main_object=main_object,
+        main_describe=main_describe,
+        column_lookup=column_lookup,
+    )
+    if isinstance(primary, str):
+        return judged(CROSS_FILTER_LINK_UNVERIFIED, primary)
+    primary_name, primary_type = primary
+    if primary_type != "id":
+        return judged(
+            CROSS_FILTER_LINK_NOT_DIRECT,
+            f"主側の項目 {primary_name} の型が id でない（型: {primary_type}）",
+            primary=primary_name,
+        )
+
+    # 子リレーション
+    child_relationships = _describe_child_relationships(main_describe)
+    if not child_relationships:
+        return judged(
+            CROSS_FILTER_LINK_UNVERIFIED,
+            "主オブジェクトの childRelationships が空",
+            primary=primary_name,
+        )
+
+    related_raw = _coerce_str(cf.get("relatedEntity")).strip()
+    if not related_raw:
+        return judged(
+            CROSS_FILTER_LINK_UNVERIFIED,
+            "relatedEntity が無い",
+            primary=primary_name,
+        )
+
+    related_relationships = [
+        relationship
+        for relationship in child_relationships
+        if _relationship_matches_entity(relationship, related_raw)
+    ]
+    if not related_relationships:
+        return judged(
+            CROSS_FILTER_LINK_NOT_DIRECT,
+            f"relatedEntity {related_raw!r} が主オブジェクトの子リレーションに無い",
+            primary=primary_name,
+        )
+
+    # 結合項目。 同じ子オブジェクトへ参照が 2 本あることがあるので、
+    # 結合項目が一致するリレーションを 1 本選ぶ
+    join_raw = _coerce_str(cf.get("relatedEntityJoinField")).strip()
+    if not join_raw:
+        return judged(
+            CROSS_FILTER_LINK_UNVERIFIED,
+            "relatedEntityJoinField が無い",
+            primary=primary_name,
+        )
+    matched = [
+        relationship
+        for relationship in related_relationships
+        if _coerce_str(relationship.get("field")).strip().lower() == join_raw.lower()
+    ]
+    if not matched:
+        actual = "、".join(
+            _coerce_str(relationship.get("field")) for relationship in related_relationships
+        )
+        return judged(
+            CROSS_FILTER_LINK_NOT_DIRECT,
+            f"結合項目 {join_raw!r} は {related_raw} の"
+            f"リレーションの参照項目（{actual}）と一致しない",
+            primary=primary_name,
+        )
+    relationship = matched[0]
+    relationship_name = _coerce_str(relationship.get("relationshipName"))
+    child_name = _coerce_str(relationship.get("childSObject"))
+
+    # 子オブジェクトの describe と、 結合項目の解決
+    child_describe = _find_cross_filter_object(cross_filter_objects, child_name)
+    if child_describe is None:
+        return judged(
+            CROSS_FILTER_LINK_UNVERIFIED,
+            f"relatedEntity {related_raw!r} の子オブジェクト {child_name!r} の describe が無い",
+            primary=primary_name,
+            child=child_name,
+            join=join_raw,
+            relationship=relationship_name,
+        )
+    join = _resolve_child_field(
+        join_raw,
+        child_name=child_name,
+        child_describe=child_describe,
+    )
+    if isinstance(join, str):
+        return judged(
+            CROSS_FILTER_LINK_UNVERIFIED,
+            join,
+            primary=primary_name,
+            child=child_name,
+            join=join_raw,
+            relationship=relationship_name,
+        )
+    join_name, _join_type = join
+
+    result = judged(
+        CROSS_FILTER_LINK_DIRECT,
+        "",
+        primary=primary_name,
+        child=child_name,
+        join=join_name,
+        relationship=relationship_name,
+    )
+    result.primary_name = primary_name
+    result.join_name = join_name
+    result.child_name = child_name
+    result.child_describe = child_describe
+    return result
+
+
+def _relationship_matches_entity(relationship: dict[str, Any], related_entity: str) -> bool:
+    """子リレーションが ``relatedEntity`` に一致するか。
+
+    ``childSObject`` と ``relationshipName`` のどちらでも一致する。
+    比較は大文字小文字を無視する。
+    """
+    target = related_entity.strip().lower()
+    child = _coerce_str(relationship.get("childSObject")).strip()
+    relationship_name = _coerce_str(relationship.get("relationshipName")).strip()
+    return child.lower() == target or relationship_name.lower() == target
+
+
+def _mark_not_converted(link: CrossFilterLink, reason: str) -> CrossFilterLink:
+    """``converted`` を False にする。 既に False なら理由はそのままでよい。"""
+    if not link.converted:
+        return link
+    combined = f"{link.reason} / {reason}" if link.reason else reason
+    return dc_replace(link, converted=False, reason=combined)
+
+
+def _build_cross_filter_lines(
+    judgements: list[_CrossFilterJudgement],
+    *,
+    missing: list[str],
+    checks: list[str],
+) -> tuple[list[str], list[CrossFilterLink]]:
+    """判定済みのクロスフィルタを SOQL の副問い合わせ （ ``IN`` / ``NOT IN`` ） にする。
+
+    ``直接`` のものだけを SOQL に入れる。 ``直接でない`` と ``確認できず`` は
+    ``missing`` に元の値と理由を入れて、 従来どおり 【未完成】 にする。
+    副問い合わせは 1 文に ``CROSS_FILTER_MAX_SUBQUERIES`` 個までで、 超えた分も
+    判定だけ残して ``converted=False`` にする。
+
+    Returns:
+        ``(副問い合わせの条件式のリスト, 判定のリスト)`` 。
+        変換できたものが無ければ条件式は空リスト。
+    """
+    lines: list[str] = []
+    links: list[CrossFilterLink] = []
+    for judgement in judgements:
+        link = judgement.link
+        if link.status != CROSS_FILTER_LINK_DIRECT:
+            missing.append(
+                f"クロスフィルタ {judgement.index}: {judgement.cf!r} "
+                f"(副問い合わせにできない: {link.reason})"
+            )
+            links.append(link)
+            continue
+        if len(lines) >= CROSS_FILTER_MAX_SUBQUERIES:
+            reason = f"副問い合わせは 1 文に {CROSS_FILTER_MAX_SUBQUERIES} 個まで"
+            missing.append(
+                f"クロスフィルタ {judgement.index}: {judgement.cf!r} "
+                f"(副問い合わせにできない: {reason})"
+            )
+            links.append(dc_replace(link, converted=False, reason=reason))
+            continue
+        condition, reason, extra_checks = _build_cross_filter_condition(judgement)
+        if not condition:
+            missing.append(
+                f"クロスフィルタ {judgement.index}: {judgement.cf!r} "
+                f"(副問い合わせにできない: {reason})"
+            )
+            links.append(dc_replace(link, converted=False, reason=reason))
+            continue
+        lines.append(condition)
+        checks.extend(extra_checks)
+        checks.append(f"{CROSS_FILTER_CHECK_PREFIX}: {condition}")
+        links.append(dc_replace(link, converted=True))
+    return lines, links
+
+
+def _build_cross_filter_condition(
+    judgement: _CrossFilterJudgement,
+) -> tuple[str, str, list[str]]:
+    """判定済みのクロスフィルタ 1 個を ``<主側項目> IN (SELECT ...)`` の形にする。
+
+    1 つでも確かめられないものがあれば、 推測で埋めず ``missing`` にする
+    （ レポート以上の件数を取る事故を防ぐため ） 。
+
+    Returns:
+        ``(条件式, 理由, 追加 checks)`` 。 条件式が空文字のときは理由が入る。
+    """
+    cf = judgement.cf
+    includes = cf.get("includesObject")
+    if not isinstance(includes, bool):
+        return "", "includesObject が bool でない", []
+
+    conditions, reason, extra_checks = _build_cross_filter_criteria(
+        cf.get("criteria"),
+        judgement.child_name,
+        judgement.child_describe or {},
+    )
+    if reason:
+        return "", reason, extra_checks
+
+    keyword = "IN" if includes else "NOT IN"
+    inner = f"SELECT {judgement.join_name} FROM {judgement.child_name}"
+    if conditions:
+        inner = f"{inner} WHERE {' AND '.join(conditions)}"
+    return f"{judgement.primary_name} {keyword} ({inner})", "", extra_checks
+
+
+def _resolve_primary_field(
+    raw: object,
+    *,
+    main_object: str,
+    main_describe: dict[str, Any] | None,
+    column_lookup: dict[str, dict[str, str]],
+) -> tuple[str, str] | str:
+    """主側の項目を ``(API名, 型)`` で返す。 解決できなければ理由の文字列。
+
+    解決順:
+
+    1. 主オブジェクトの項目名と大文字小文字無視で一致
+    2. ``<主オブジェクト>.`` を外して一致
+    3. 列対応表の列キーと一致し、 対応フィールドが主オブジェクトの項目
+
+    型は判定側で見る（ ``id`` でなければ 「直接でない」 のため）。
+    """
+    name = _coerce_str(raw).strip()
+    if not name:
+        return "primaryEntityField が無い"
+
+    fields = _describe_fields(main_describe)
+    field = _find_field(fields, name)
+    if field is None:
+        field = _find_field(fields, _strip_object_prefix(name, main_object))
+    if field is None:
+        field = _column_map_field_of_main(name, column_lookup, fields)
+    if field is None:
+        return f"primaryEntityField {name!r} が主オブジェクトの項目に解決できない"
+
+    field_type = _coerce_str(field.get("type")).strip().lower()
+    return _coerce_str(field.get("name")), field_type
+
+
+def find_child_object_name(child_relationships: list[Any], related_entity: str) -> str:
+    """主オブジェクトの子リレーションから、 ``relatedEntity`` に一致する子オブジェクト名。
+
+    ``childSObject`` と ``relationshipName`` のどちらでも一致する。 一致する
+    ものが無ければ空文字。 ``src.fetch.site_run`` も同じ照合を使うので、
+    ここを公開関数にして両方から使う。
+
+    Args:
+        child_relationships: describe の ``childRelationships`` のリスト。
+        related_entity: クロスフィルタの ``relatedEntity`` の値。
+
+    Returns:
+        子オブジェクト名。 一致するものが無ければ空文字。
+    """
+    if not related_entity:
+        return ""
+    target = related_entity.strip().lower()
+    for relationship in child_relationships:
+        if not isinstance(relationship, dict):
+            continue
+        child = _coerce_str(relationship.get("childSObject")).strip()
+        relationship_name = _coerce_str(relationship.get("relationshipName")).strip()
+        if child.lower() == target or relationship_name.lower() == target:
+            return child
+    return ""
+
+
+def _resolve_child_field(
+    raw: object,
+    *,
+    child_name: str,
+    child_describe: dict[str, Any],
+) -> tuple[str, str] | str:
+    """子オブジェクトの項目を ``(API名, 型)`` で返す。 解決できなければ理由。"""
+    name = _coerce_str(raw).strip()
+    if not name:
+        return "relatedEntityJoinField が無い"
+
+    fields = _describe_fields(child_describe)
+    field = _find_field(fields, name)
+    if field is None:
+        field = _find_field(fields, _strip_object_prefix(name, child_name))
+    if field is None:
+        return f"relatedEntityJoinField {name!r} が子オブジェクトの項目に解決できない"
+
+    field_type = _coerce_str(field.get("type")).strip().lower()
+    if field_type not in ("id", "reference"):
+        return f"relatedEntityJoinField {name!r} の型が id / reference でない（型: {field_type}）"
+    return _coerce_str(field.get("name")), field_type
+
+
+def _build_cross_filter_criteria(
+    raw: object,
+    child_name: str,
+    child_describe: dict[str, Any],
+) -> tuple[list[str], str, list[str]]:
+    """``criteria`` を子オブジェクトの条件式のリストにする。
+
+    値は既存の ``_extract_filter_values`` / ``_build_filter_condition`` に
+    任せた（ エスケープもそこに任せる ） 。 1 つでも解釈できなければ
+    理由の文字列を返す。 内側の条件の ``checks`` （ ロングテキストの注意
+    など ） も一緒に返す。
+
+    ``criteria`` が無い（ キーが無い・ ``None`` ） ときは「条件なし」とは
+    見なさない。 絞り込みが消えて件数が増える危険があるため、 ``missing``
+    にする。 空リスト ``[]`` のときだけ「条件なし」として通す。
+
+    Returns:
+        ``(条件式のリスト, 理由, 追加 checks)`` 。 理由が空文字なら変換できた。
+    """
+    if raw is None:
+        return [], "criteria が無い", []
+    if not isinstance(raw, list):
+        return [], "criteria が list でない", []
+
+    fields = _describe_fields(child_describe)
+    conditions: list[str] = []
+    checks: list[str] = []
+    for index, criterion in enumerate(raw, start=1):
+        if not isinstance(criterion, dict):
+            return [], f"条件 {index} が dict でない", checks
+        column = _coerce_str(criterion.get("column")).strip()
+        field = _find_field(fields, column)
+        if field is None:
+            field = _find_field(fields, _strip_object_prefix(column, child_name))
+        if field is None:
+            return [], f"条件 {index}: 列 {column!r} が子オブジェクトの項目に解決できない", checks
+        field_name = _coerce_str(field.get("name"))
+        field_type = _coerce_str(field.get("type"))
+
+        value_missing: list[str] = []
+        values = _extract_filter_values({"型": field_type}, index, criterion, value_missing)
+        if values is None:
+            reason = value_missing[0] if value_missing else "値を読めない"
+            return [], f"条件 {index}: {reason}", checks
+
+        condition, extra_missing, extra_checks = _build_filter_condition(
+            _coerce_str(criterion.get("operator")),
+            values,
+            field_name,
+            field_type,
+        )
+        if extra_missing:
+            return [], f"条件 {index}: {extra_missing[0]}", checks
+        if not condition:
+            return [], f"条件 {index}: 条件式を作れない", checks
+        conditions.append(condition)
+        checks.extend(extra_checks)
+    return conditions, "", checks
+
+
+def _describe_fields(describe: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """describe の ``fields`` を dict のリストで返す。 壊れていれば空リスト。
+
+    ``make_slim_object`` を通った値は ``fields`` が必ずリストなので、 境界の
+    内側では形の確認をしない。
+    """
+    if not describe:
+        return []
+    return list(describe.get("fields") or [])
+
+
+def _describe_child_relationships(describe: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """describe の ``childRelationships`` を dict のリストで返す。
+
+    ``make_slim_object`` を通った値は ``childRelationships`` が必ずリストなので、
+    境界の内側では形の確認をしない。
+    """
+    if not describe:
+        return []
+    return list(describe.get("childRelationships") or [])
+
+
+def _find_field(fields: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    """項目名が大文字小文字無視で一致する項目を返す。 無ければ ``None`` 。"""
+    if not name:
+        return None
+    target = name.strip().lower()
+    for item in fields:
+        if _coerce_str(item.get("name")).strip().lower() == target:
+            return item
+    return None
+
+
+def _strip_object_prefix(name: str, object_name: str) -> str:
+    """``<オブジェクト>.`` が前に付いていれば外す。"""
+    prefix = f"{object_name.strip().lower()}."
+    if object_name and name.strip().lower().startswith(prefix):
+        return name.strip()[len(prefix) :]
+    return name.strip()
+
+
+def _column_map_field_of_main(
+    name: str,
+    column_lookup: dict[str, dict[str, str]],
+    fields: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """列対応表の列キーと一致し、 対応フィールドが主オブジェクトの項目なら
+    その項目を返す。 無ければ ``None`` 。
+    """
+    row = column_lookup.get(name)
+    if row is None:
+        target = name.lower()
+        for key, candidate in column_lookup.items():
+            if key.lower() == target:
+                row = candidate
+                break
+    if row is None:
+        return None
+    soql_name = _coerce_str(row.get("対応フィールドAPI名")).strip()
+    if not soql_name or soql_name == "(不明)":
+        return None
+    return _find_field(fields, soql_name)
+
+
+def _find_cross_filter_object(
+    cross_filter_objects: dict[str, dict[str, Any]] | None,
+    child_name: str,
+) -> dict[str, Any] | None:
+    """``cross_filter_objects`` から子オブジェクトの describe を探す。"""
+    if not cross_filter_objects:
+        return None
+    target = child_name.strip().lower()
+    for name, describe in cross_filter_objects.items():
+        if name.strip().lower() == target:
+            return describe
+    return None
 
 
 def _combine_filter_conditions(
@@ -1355,9 +1987,10 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
     """``record`` (``ReportRecord``) から ``SoqlDraft`` を組み立てる (純粋関数) 。
 
     規則は依頼仕様 (ルール詳細) に従う。 ``record`` は ``ReportRecord``
-    互換 (``key`` / ``summary`` / ``main_object`` / ``report`` / ``column_map``
-    ) であれば良い。 ``report`` は ``make_slim_report`` で絞った形式
-    (``reportMetadata`` / ``reportExtendedMetadata`` のみ) を想定。
+    互換 (``key`` / ``summary`` / ``main_object`` / ``report`` / ``column_map`` /
+    ``objects`` / ``cross_filter_objects`` ) であれば良い。 ``report`` は
+    ``make_slim_report`` で絞った形式 (``reportMetadata`` /
+    ``reportExtendedMetadata`` のみ) を想定。
 
     status の判定ルール:
 
@@ -1367,6 +2000,9 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
     - ``一部作れず`` … ``missing`` に 1 件以上ある (SOQL から省いた部分がある)
     - ``要確認`` … ``missing`` は無いが ``checks`` に 1 件以上ある。
     - ``作成済み`` … ``missing`` も ``checks`` も無い。
+
+    取り方 (``use_bulk``) はサブクエリを出したかどうかで決める。 文字列を
+    後からパースしない。
     """
     main_object = record.main_object
     if not main_object:
@@ -1380,20 +2016,36 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
     # ``record.report`` は入口（``make_slim_report``）で形をそろえてある
     metadata = record.report["reportMetadata"]
     column_lookup = _build_column_lookup(record.column_map)
+    main_describe = _record_main_describe(record, main_object)
+    cross_filter_objects = record.cross_filter_objects
 
     missing: list[str] = []
     checks: list[str] = []
     select_lines = _build_select_lines(metadata, column_lookup, missing)
     _collect_unresolved_metadata_missing(metadata, missing)
+    # クロスフィルタの判定は、 SELECT 列入りの早期 return でも残したいので
+    # 先に済ませておく
+    judgements = _judge_cross_filters(
+        metadata,
+        column_lookup,
+        main_object=main_object,
+        main_describe=main_describe,
+        cross_filter_objects=cross_filter_objects,
+    )
     if not select_lines:
         return SoqlDraft(
             soql="",
             status=STATUS_NONE,
             missing=(*tuple(missing), "SELECT に入れられる列が無い"),
             checks=tuple(checks),
+            cross_filter_links=tuple(judgement.link for judgement in judgements),
         )
 
-    where_lines, where_missing, where_checks = _build_where_clause(metadata, column_lookup)
+    where_lines, where_missing, where_checks, has_subquery, links = _build_where_clause(
+        metadata,
+        column_lookup,
+        judgements=judgements,
+    )
     missing.extend(where_missing)
     checks.extend(where_checks)
     _collect_scope_check(metadata, checks)
@@ -1406,6 +2058,13 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
     status = _decide_status(missing, checks)
     soql, count_soql = _apply_incomplete_marker(soql, count_soql, status)
 
+    # 取り方: 副問い合わせ （ クロスフィルタ ） を出したときは REST にする
+    use_bulk = True
+    bulk_blockers: list[str] = []
+    if has_subquery:
+        use_bulk = False
+        bulk_blockers.append(BULK_BLOCKER_SUBQUERY)
+
     return SoqlDraft(
         soql=soql,
         status=status,
@@ -1417,7 +2076,19 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
         select_items=tuple(select_lines),
         where_items=tuple(where_lines),
         order_by=order_by_clause,
+        use_bulk=use_bulk,
+        bulk_blockers=tuple(bulk_blockers),
+        cross_filter_links=tuple(links),
     )
+
+
+def _record_main_describe(record: ReportRecord, main_object: str) -> dict[str, Any] | None:
+    """``record.objects`` から主オブジェクトの describe を取り出す。
+
+    ``record.objects`` は ``make_slim_object`` を通った値なので、 境界の
+    内側では形の確認をしない。
+    """
+    return record.objects.get(main_object)
 
 
 def _build_select_lines(

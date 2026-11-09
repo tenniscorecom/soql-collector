@@ -504,8 +504,9 @@ def test_run_fetch_has_no_hint_for_other_describe_errors(tmp_path: Path) -> None
 
 
 def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
-    """``objects`` の中身は ``make_slim_object`` を通した形（name/label/custom/fields の 4 キー）
-    で書かれている。 JSON に重そうなキーは残らない（childRelationships / recordTypeInfos など）。
+    """``objects`` の中身は ``make_slim_object`` を通した形（name/label/custom/fields/
+    childRelationships の 5 キー） で書かれている。 JSON に重そうなキーは残らない
+    （recordTypeInfos など）。
     """
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
     client = _FakeClient(
@@ -519,8 +520,8 @@ def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
     record = run_fetch([entry], site_for=site_for, **_settings(tmp_path))[0].record
     payload = _record_to_payload(record)
     opp = payload["objects"]["Opportunity"]
-    # オブジェクトは 4 キーだけ
-    assert set(opp.keys()) == {"name", "label", "custom", "fields"}
+    # オブジェクトは 5 キーだけ
+    assert set(opp.keys()) == {"name", "label", "custom", "fields", "childRelationships"}
     # 各項目は 9 キーだけ
     for field in opp["fields"]:
         assert set(field.keys()) == {
@@ -535,7 +536,6 @@ def test_objects_dict_is_slimmed_to_required_keys(tmp_path: Path) -> None:
             "picklistTotal",
         }
     # 重そうなキーは残らない
-    assert "childRelationships" not in opp
     assert "recordTypeInfos" not in opp
     assert "urls" not in opp
     for field in opp["fields"]:
@@ -2134,7 +2134,11 @@ def _make_full_describe() -> dict:
         "label": "商談",
         "custom": False,
         # 落ちるはずのキー（これらが JSON に残らないことを確認する）
-        "childRelationships": [{"childSObject": "Account", "field": "OpportunityId"}],
+        # ``childRelationships`` は 3 キーだけ残す （リレーション名が無い要素は落とす）
+        "childRelationships": [
+            {"childSObject": "Account", "field": "OpportunityId", "relationshipName": "Account"},
+            {"childSObject": "Contact", "field": "OpportunityId"},
+        ],
         "recordTypeInfos": [{"recordTypeId": "012000000000001"}],
         "urls": {"rowTemplate": "/services/data/v60.0/..."},
         "supportedScopes": [{"label": "すべて"}],
@@ -2181,20 +2185,29 @@ def _make_full_describe() -> dict:
 
 
 def test_slim_object_only_required_top_level_keys() -> None:
-    """``make_slim_object`` は ``name`` / ``label`` / ``custom`` / ``fields`` の 4 キーだけ残す。"""
+    """``make_slim_object`` は ``name`` / ``label`` / ``custom`` / ``fields`` /
+    ``childRelationships`` の 5 キーだけ残す。"""
     result = make_slim_object(_make_full_describe())
-    assert set(result.keys()) == {"name", "label", "custom", "fields"}
+    assert set(result.keys()) == {"name", "label", "custom", "fields", "childRelationships"}
     assert result["name"] == "Opportunity"
     assert result["label"] == "商談"
     assert result["custom"] is False
 
 
+def test_slim_object_keeps_slim_child_relationships() -> None:
+    """``childRelationships`` は ``childSObject`` / ``field`` /
+    ``relationshipName`` の 3 キーだけ残す。 リレーション名が無い要素は落とす。"""
+    result = make_slim_object(_make_full_describe())
+    assert result["childRelationships"] == [
+        {"childSObject": "Account", "field": "OpportunityId", "relationshipName": "Account"}
+    ]
+
+
 def test_slim_object_drops_heavy_keys() -> None:
-    """``make_slim_object`` は重いキー（``childRelationships`` / ``recordTypeInfos`` /
+    """``make_slim_object`` は重いキー（``recordTypeInfos`` /
     ``urls`` / ``supportedScopes`` / ``layoutable`` など）を出力に残さない。"""
     result = make_slim_object(_make_full_describe())
     for forbidden in (
-        "childRelationships",
         "recordTypeInfos",
         "urls",
         "supportedScopes",
@@ -2322,7 +2335,7 @@ def test_slim_object_does_not_mutate_input() -> None:
 
 def test_slim_object_handles_non_dict_input() -> None:
     """``describe`` が dict でない（``None`` や文字列）でも例外を上げず、 空の形で返す。"""
-    empty = {"name": "", "label": "", "custom": False, "fields": []}
+    empty = {"name": "", "label": "", "custom": False, "fields": [], "childRelationships": []}
     assert make_slim_object(None) == empty
     assert make_slim_object("string") == empty
     assert make_slim_object([]) == empty
@@ -2333,10 +2346,11 @@ def test_slim_object_handles_non_dict_input() -> None:
 
 def test_record_report_has_no_heavy_keys(tmp_path: Path) -> None:
     """``ReportRecord.report`` のどこにも ``reportTypeMetadata`` /
-    ``childRelationships`` / ``recordTypeInfos`` / ``picklistValues`` が
-    **キーとして** 出現しない（``json.dumps`` した文字列に
-    ``"重いキー":`` の形が出ない）。
+    ``recordTypeInfos`` / ``picklistValues`` が **キーとして** 出現しない
+    （``json.dumps`` した文字列に ``"重いキー":`` の形が出ない）。
     なぜ: 機微な情報や、 巨大な原本が record の中に漏れていないことを保証する。
+
+    ``childRelationships`` だけは 3 キーに絞った形で残す（サブクエリの材料）。
     """
     # 元 describe に「重い」 キーを全部盛りにした ``Account`` を作る
     full_describe = {
@@ -2380,13 +2394,17 @@ def test_record_report_has_no_heavy_keys(tmp_path: Path) -> None:
     # 「キー名そのもの」 が文字列として現れるのは無い）
     for forbidden in (
         "reportTypeMetadata",
-        "childRelationships",
         "recordTypeInfos",
         "picklistValues",
     ):
         assert f'"{forbidden}":' not in raw_text, (
             f"{forbidden!r} が record のキーとして残っています"
         )
+
+    # 子リレーションは 3 キーだけ（元の describe の 余計なキーは残さない）
+    for obj in record.objects.values():
+        for relationship in obj.get("childRelationships", []):
+            assert set(relationship.keys()) == {"childSObject", "field", "relationshipName"}
 
 
 # ── 関連オブジェクトの集め方が原本の fields を使うこと ──────────────────────

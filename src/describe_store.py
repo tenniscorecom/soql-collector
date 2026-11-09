@@ -6,6 +6,12 @@
 1 行 1 項目で溜まり、 次回の実行からは CSV を見て API を呼ばない。
 
 - 保存先: ``[FILES] DESCRIBE_CSV_PATH`` （既定 ``./data/項目定義.csv``）
+- 子リレーション （ ``describe`` の ``childRelationships`` ） は別の CSV
+  （同じフォルダの ``子リレーション.csv`` ） に保存する。 項目定義.csv の
+  形式は変えない
+- 子が 0 件のオブジェクトも、 子リレーション.csv に 1 行だけ残す（ 子オブジェクト・
+  リレーション名・参照項目 は空文字 ）。 これがないと 「まだ取り直していない」
+  と区別がつかなくなるため。 読み込んだときは キーは残して 要素は 0 個にする
 - メモリ辞書（1 回の実行内） のキーは ``(組織, オブジェクト)`` のタプル。
   組織 = URL のホスト名 （小文字）。 これで本番と Sandbox のレポートが
   同じ実行に混ざっても別物として扱われる
@@ -60,6 +66,22 @@ DESCRIBE_CSV_COLUMNS: tuple[str, ...] = (
 )
 
 
+# 子リレーションを保存する CSV のファイル名。 項目定義.csv と同じフォルダに
+# 置く （ 保存場所の決め方は既存の保存に合わせる ）
+CHILD_RELATIONSHIP_CSV_NAME = "子リレーション.csv"
+
+
+# 子リレーションの CSV の列 （この順）
+CHILD_RELATIONSHIP_CSV_COLUMNS: tuple[str, ...] = (
+    "組織",
+    "オブジェクト",
+    "子オブジェクト",
+    "リレーション名",
+    "参照項目",
+    "取得日時",
+)
+
+
 # 真偽値の書き出し
 TRUE_MARK = "○"
 
@@ -88,6 +110,11 @@ def _normalize_object(name: str) -> str:
 def _key(org: str, object_name: str) -> tuple[str, str]:
     """メモリ辞書 / CSV の共通キー ``(org_lower, object_lower)`` を組み立てる。"""
     return (org.strip().lower(), _normalize_object(object_name))
+
+
+def child_relationship_csv_path(describe_csv_path: Path) -> Path:
+    """子リレーションの CSV のパスを返す。 項目定義.csv と同じフォルダに置く。"""
+    return describe_csv_path.parent / CHILD_RELATIONSHIP_CSV_NAME
 
 
 def _bool_mark(value: str) -> bool:
@@ -224,6 +251,147 @@ def csv_rows_to_describe(rows: list[dict[str, str]]) -> dict[str, Any]:
     }
 
 
+# ── 子リレーション（describe の childRelationships） ────────────────────
+
+
+def describe_to_child_relationship_rows(
+    org: str,
+    object_name: str,
+    describe: dict[str, Any],
+    fetched_at: str,
+) -> list[dict[str, str]]:
+    """describe dict から 子リレーションの CSV 行 dict のリストを作る。
+
+    ``relationshipName`` が空の要素は落とす（リレーションとして使えないため）。
+
+    子が 1 つも無いオブジェクトは、 「取得済みだが 0 件」 を表す印の行を
+    1 行書く（ 子オブジェクト・リレーション名・参照項目 は空文字 ）。 これ
+    が無いと、 「まだ取り直していない」 と区別がつかなくなるため。
+    """
+    rows: list[dict[str, str]] = []
+    relationships = describe.get("childRelationships")
+    if isinstance(relationships, list):
+        for item in relationships:
+            if not isinstance(item, dict):
+                continue
+            relationship_name = _coerce_str(item.get("relationshipName"))
+            if not relationship_name:
+                continue
+            rows.append(
+                {
+                    "組織": org,
+                    "オブジェクト": object_name,
+                    "子オブジェクト": _coerce_str(item.get("childSObject")),
+                    "リレーション名": relationship_name,
+                    "参照項目": _coerce_str(item.get("field")),
+                    "取得日時": fetched_at,
+                }
+            )
+    if rows:
+        return rows
+    return [
+        {
+            "組織": org,
+            "オブジェクト": object_name,
+            "子オブジェクト": "",
+            "リレーション名": "",
+            "参照項目": "",
+            "取得日時": fetched_at,
+        }
+    ]
+
+
+def csv_rows_to_child_relationships(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """CSV の行 dict から ``childRelationships`` の要素のリストを組み立てる。
+
+    「取得済みだが 0 件」 の印の行（ リレーション名が空の行 ） は除かれる。
+    キーの有無で 「取得済みか」 を表是这样的ので、 要素は 0 個でも
+    キーは残す。
+    """
+    return [
+        {
+            "childSObject": row["子オブジェクト"],
+            "field": row["参照項目"],
+            "relationshipName": row["リレーション名"],
+        }
+        for row in rows
+        if row["リレーション名"].strip()
+    ]
+
+
+def load_child_relationship_index(path: Path) -> dict[tuple[str, str], list[dict[str, str]]]:
+    """子リレーションの CSV を読み ``(org, object_lower) -> 要素のリスト`` を返す。
+
+    - ファイルが存在しないときは空 dict を返す（古い保存データでも落ちない）
+    - 見出しが ``CHILD_RELATIONSHIP_CSV_COLUMNS`` と違うときは ``CSVError``
+    - 「取得済みだが 0 件」 の印の行は、 キーは残して要素は 0 個にする
+      （ キーの有無で 「取得済みか」 を表すため ）
+    """
+    if not path.exists():
+        return {}
+    with CSV(path) as csv:
+        table = csv.read()
+    if list(table.columns) != list(CHILD_RELATIONSHIP_CSV_COLUMNS):
+        raise CSVError(
+            f"既存の {path.name} の見出しが想定と違います: {path}\n"
+            f"期待: {list(CHILD_RELATIONSHIP_CSV_COLUMNS)}\n"
+            f"実際: {list(table.columns)}\n"
+            "対処: ファイルを別名に退避してから再実行してください。"
+        )
+    index: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for row in table.to_rows():
+        org_raw = row["組織"].strip().lower()
+        obj_raw = row["オブジェクト"].strip()
+        if not org_raw or not obj_raw:
+            continue
+        index.setdefault((org_raw, _normalize_object(obj_raw)), []).append(row)
+    return {key: csv_rows_to_child_relationships(rows) for key, rows in index.items()}
+
+
+def upsert_child_relationship_rows(
+    path: Path,
+    org: str,
+    object_name: str,
+    describe: dict[str, Any],
+    *,
+    fetched_at: str | None = None,
+) -> None:
+    """子リレーションの CSV の ``(org, object)`` の行を入れ替える。
+
+    既存 CSV が無いときは新規作成。 既存 CSV が見出し違いのときは
+    ``CSVError`` を上げる。
+    """
+    org_key = org.strip().lower()
+    obj_key = _normalize_object(object_name)
+    ts = fetched_at or now_iso()
+
+    rows: list[dict[str, str]] = []
+    if path.exists():
+        with CSV(path) as csv:
+            table = csv.read()
+        if list(table.columns) != list(CHILD_RELATIONSHIP_CSV_COLUMNS):
+            raise CSVError(
+                f"既存の {path.name} の見出しが想定と違います: {path}\n"
+                "対処: ファイルを別名に退避してから再実行してください。"
+            )
+        for row in table.to_rows():
+            row_org = row["組織"].strip().lower()
+            row_obj = row["オブジェクト"].strip()
+            if row_org == org_key and _normalize_object(row_obj) == obj_key:
+                continue
+            rows.append(row)
+
+    rows.extend(describe_to_child_relationship_rows(org_key, object_name, describe, ts))
+
+    rows.sort(
+        key=lambda r: (r["組織"], r["オブジェクト"], r["リレーション名"], r["子オブジェクト"])
+    )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with CSV(path, columns=list(CHILD_RELATIONSHIP_CSV_COLUMNS)) as csv:
+        csv.replace(Table(list(CHILD_RELATIONSHIP_CSV_COLUMNS), rows))
+
+
 # ── 読み込み ────────────────────────────────────────────────────────────
 
 
@@ -322,6 +490,21 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _merge_child_relationships(
+    index: dict[tuple[str, str], dict[str, Any]],
+    child_index: dict[tuple[str, str], list[dict[str, str]]],
+) -> None:
+    """読み込んだ describe に 子リレーションを足す （ in place ） 。
+
+    子リレーションの CSV が無い（古い保存データ） ときは何もしない。
+    """
+    for key, relationships in child_index.items():
+        describe = index.get(key)
+        if describe is None:
+            continue
+        describe["childRelationships"] = relationships
+
+
 # ── メモリ＋CSV のストア ────────────────────────────────────────────────
 
 
@@ -361,8 +544,14 @@ class DescribeStore:
 
     @classmethod
     def load(cls, path: Path) -> DescribeStore:
-        """CSV を読んでストアを作る。 ファイルが無ければ空ストアを返す。"""
+        """CSV を読んでストアを作る。 ファイルが無ければ空ストアを返す。
+
+        子リレーションの CSV も読み、 describe に ``childRelationships`` として
+        持たせる。 子の CSV が無い（古い保存データ） ときは空のまま。
+        """
         index = load_describe_index(path)
+        child_index = load_child_relationship_index(child_relationship_csv_path(path))
+        _merge_child_relationships(index, child_index)
         return cls(path=path, csv_index=index)
 
     def lookup(self, org: str, object_name: str) -> dict[str, Any] | None:
@@ -390,21 +579,53 @@ class DescribeStore:
     def record_api_success(self, org: str, object_name: str, describe: dict[str, Any]) -> None:
         """API で取得した describe をメモリと CSV に書く。
 
-        CSV への書き出しが失敗してもメモリには載せる （1 回の実行の中では
-        同じオブジェクトを取り直さないため） 。
+        項目定義.csv と 子リレーション.csv の両方に書く。 CSV への書き出しが
+        失敗してもメモリには載せる （1 回の実行の中では同じオブジェクトを
+        取り直さないため） 。
+
+        API から取った describe は、 子が 0 件でも 「子リレーションは取得済み」
+        として扱う。 そのため  ``childRelationships`` キーが無い.describe は
+        キーのみ足してからメモリと CSV に書く。
         """
         key = _key(org, object_name)
+        stored = describe
+        if isinstance(describe, dict) and "childRelationships" not in describe:
+            stored = {**describe, "childRelationships": []}
         self.memory_cache[key] = {
-            "describe": describe,
+            "describe": stored,
             "warning": None,
             "source": "api",
         }
         self.api_count += 1
         try:
-            upsert_object_rows(self.path, org, object_name, describe)
+            upsert_object_rows(self.path, org, object_name, stored)
+            upsert_child_relationship_rows(
+                child_relationship_csv_path(self.path),
+                org,
+                object_name,
+                stored,
+            )
         except (OSError, CSVError) as exc:
             # メモリには載っているので、 この実行中は API を再呼びしない
             logger.warning("CSV への書き出しに失敗: %s", exc)
+
+    def has_child_relationships(self, org: str, object_name: str) -> bool:
+        """子リレーションの情報を持っている（取得済み）なら True。
+
+        件数が 0 でも True。 「まだ取り直していない」 ときは False。
+        判定は ``childRelationships`` キーの有無で行う （ 0 件でもキーは
+        残すので、 件数では判定できない ） 。
+        """
+        key = _key(org, object_name)
+        cached = self.memory_cache.get(key)
+        if cached is not None:
+            describe = cached.get("describe")
+            if isinstance(describe, dict):
+                return "childRelationships" in describe
+        describe = self.csv_index.get(key)
+        if describe is None:
+            return False
+        return "childRelationships" in describe
 
     def record_api_failure(self, org: str, object_name: str, warning: str) -> None:
         """API の失敗をメモリにだけ覚える。 CSV には書かない。"""
@@ -413,6 +634,23 @@ class DescribeStore:
             "describe": None,
             "warning": warning,
             "source": "memory",
+        }
+
+    def restore_csv_entry(self, org: str, object_name: str) -> None:
+        """失敗した取り直しのあと、 CSV の値をメモリへ読み戻す。
+
+        ``refresh_from_api`` が失敗するとメモリには「失敗記録」だけが残る。
+        そのままでは次のレポートが同じオブジェクトを引けなくなるので、 CSV の
+        値へ戻す。
+        """
+        key = _key(org, object_name)
+        describe = self.csv_index.get(key)
+        if describe is None:
+            return
+        self.memory_cache[key] = {
+            "describe": describe,
+            "warning": None,
+            "source": "csv",
         }
 
     def refresh_from_api(

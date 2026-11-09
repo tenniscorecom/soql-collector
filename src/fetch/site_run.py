@@ -30,6 +30,8 @@ from src.fetch.report_slim import (
 from src.fetch.row_check import check_row_count, log_row_check
 from src.master import MasterEntry
 from src.report_store import ReportStore
+from src.soql_builder import find_child_object_name
+from src.text_utils import coerce_str as _coerce_str
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,9 @@ class FetchState:
     slim_report: SlimReport = dc_field(default_factory=lambda: make_slim_report(None))
     dropped_keys: tuple[str, ...] = ()
     warnings: list[str] = dc_field(default_factory=list)
+    #: クロスフィルタの副問い合わせに使う子オブジェクトの describe。
+    #: ``objects`` には入れない（関係図・関連表・対応表の出力を変えないため）。
+    cross_filter_objects: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
 
 
 # レポートが見つからないとき（HTTP 404）に、 警告へ足す説明
@@ -138,6 +143,21 @@ def run_within_site(
             csv_used_keys=state.csv_used_keys,
         )
 
+    # 保存済みの項目定義には子リレーションが入らないので、 主オブジェクトの
+    # 子リレーションが未取得なら API で取り直す。 列対応表を作る前にやる
+    # （ 取り直しの結果で ``main_describe`` が変わるため ）。
+    # 保存データだけで作り直すとき（ ``allow_refresh=False`` ）は API を
+    # 呼ばないので取り直さない
+    if allow_refresh:
+        _refresh_child_relationships(
+            client=client,
+            org=org,
+            entry=entry,
+            state=state,
+            store=store,
+            refresh_set=refresh_set,
+        )
+
     # 列対応表を組み立てる (主が取れるときは関連オブジェクト収集もここで行う)
     column_map = _build_initial_column_map(
         client=client,
@@ -166,6 +186,16 @@ def run_within_site(
             fetcher=fetcher,
         )
 
+    # クロスフィルタの副問い合わせに使う子オブジェクトの describe を取りに行く。
+    # 取り直しのあと（ ``main_describe`` が変わるため ） に行う。
+    # ``objects`` には入れない（関係図・関連表・対応表の出力を変えないため）。
+    state.cross_filter_objects = _collect_cross_filter_objects(
+        client=client,
+        org=org,
+        state=state,
+        store=store,
+    )
+
     # 人が ``列の直し.xlsx`` に入れた値で ``column_map`` を上書きする
     state.column_map = column_fix_xlsx.apply_overrides(
         column_map_rows=state.column_map,
@@ -175,6 +205,119 @@ def run_within_site(
         warnings=state.warnings,
         fetch_object=fetcher,
     )
+
+
+def _collect_cross_filter_objects(
+    *,
+    client: Any,
+    org: str,
+    state: FetchState,
+    store: DescribeStore,
+) -> dict[str, dict[str, Any]]:
+    """クロスフィルタの ``relatedEntity`` を子オブジェクトとして取り、 describe を返す。
+
+    主オブジェクトの ``childRelationships`` に ``childSObject`` または
+    ``relationshipName`` で一致するものを探す。 取りに行くのは既存の取得部品
+    （ ストアのキャッシュ → API ） で、 失敗時は警告だけ残す。
+
+    戻り値のキーは子オブジェクト名。 ``state.objects`` には入れない。
+    """
+    cross_filters = state.slim_report.get("reportMetadata", {}).get("crossFilters")
+    if not (isinstance(cross_filters, list) and cross_filters):
+        return {}
+    main_describe = state.main_describe
+    if not isinstance(main_describe, dict):
+        return {}
+
+    child_relationships = main_describe.get("childRelationships")
+    if not isinstance(child_relationships, list):
+        return {}
+
+    result: dict[str, dict[str, Any]] = {}
+    for cross_filter in cross_filters:
+        if not isinstance(cross_filter, dict):
+            continue
+        related_entity = _coerce_str(cross_filter.get("relatedEntity")).strip()
+        child_name = find_child_object_name(child_relationships, related_entity)
+        if not child_name or child_name in result:
+            continue
+        describe = fetch_object_cached(client, org, child_name, store, state.warnings)
+        if describe is None:
+            continue
+        result[child_name] = describe
+    return result
+
+
+def _refresh_child_relationships(
+    *,
+    client: Any,
+    org: str,
+    entry: MasterEntry,
+    state: FetchState,
+    store: DescribeStore,
+    refresh_set: set[tuple[str, str]],
+) -> None:
+    """主オブジェクトの子リレーションが未取得なら、 API で取り直す。
+
+    項目定義.csv には子リレーションが入らないので、 保存されたままでは
+    クロスフィルタを副問い合わせに変換できない。 子リレーションは 副問い合わせ
+    の材料なので、 クロスフィルタの有無いにかかわらず 全レポートの主オブジェクト
+    で取る。 取り直しは ``store.refresh_from_api`` で行い、 子リレーションの CSV
+    にも保存する。 取り直した結果は ``state.main_describe`` と ``state.objects``
+    に反映する。
+
+    - 取り直しに失敗したら CSV の値のまま続ける
+    - 1 回の実行で同じオブジェクトを 2 度取り直さない
+    - ``--rebuild`` （ ``allow_refresh=False`` ） では呼ばない
+    - 子リレーションが 0 件でも 「取得済み」 として扱い、 取り直さない
+      （ 子リレーション.csv に 1 行残すため、 2 回目の実行で API を呼ばない ）
+    """
+    main_object_name = state.main_object_name
+    if not main_object_name:
+        return
+    key = object_key(org, main_object_name)
+    # CSV 由来でない（ API から取ったか、 すでに取り直した） なら子リレーションも
+    # 入っているので取り直さない
+    if key not in state.csv_used_keys:
+        return
+    # 1 回の実行で同じオブジェクトを取り直さない
+    if key in refresh_set:
+        return
+    if store.has_child_relationships(org, main_object_name):
+        # 子リレーションの CSV から読んだ （ すでに保存されている ）
+        return
+
+    api_name = api_name_from_store(store, key) or main_object_name
+    logger.info(
+        "取り直し: 管理番号=%s 組織=%s オブジェクト=%s （子リレーションが未取得のため）",
+        entry.key,
+        org,
+        api_name,
+    )
+    refreshed_raw = store.refresh_from_api(client, org, api_name, state.warnings)
+    # 成功でも失敗でも、 この実行ではもう取り直さない
+    refresh_set.add(key)
+    if refreshed_raw is None:
+        # 取り直しに失敗したら CSV の値のまま続ける。 ストアは失敗記録に
+        # 置き換えてしまったので、 CSV の値を戻す（ 次のレポートが主オブジェクトを
+        # 見つけられなくなるのを防ぐ ）。 失敗の理由はストアの文言をそのまま出す
+        failed = store.lookup(org, main_object_name)
+        if failed is not None and failed.get("warning"):
+            state.warnings.append(failed["warning"])
+        store.restore_csv_entry(org, main_object_name)
+        return
+
+    refreshed = make_slim_object(refreshed_raw)
+    state.main_describe = refreshed
+    state.objects[main_object_name] = refreshed
+    # 取り直したものは CSV 由来でなくなる（ 以後取り直しの対象外にする ）
+    state.csv_used_keys.discard(key)
+    cached = store.lookup(org, main_object_name)
+    if cached is not None and cached.get("source") == "csv":
+        logger.warning(
+            "取り直し後も CSV 由来のままです（子リレーションが古い可能性があります）: %s",
+            main_object_name,
+        )
 
 
 def _build_initial_column_map(

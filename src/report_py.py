@@ -26,9 +26,11 @@ from comken.exceptions import SalesforceReportIDNotFoundError
 from comken.toolbox.salesforce.report import report_id_from_url
 
 from src import mapping
+from src.soql_builder import format_cross_filter_link_comment
 
 if TYPE_CHECKING:
     from src.fetch import ReportRecord
+    from src.soql_builder import SoqlDraft
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +40,13 @@ REPORT_PY_DIR = "SOQLレポート"
 # 生成するファイル名の接頭辞
 REPORT_PY_PREFIX = "report_"
 
-# 生成するクラスに書く USE_BULK の行。 取り方（ Bulk API 2.0 か 通常の
-# SOQL か ） をレポートごとに人が決められるように、 常に True で書く
+# 生成するクラスに書く USE_BULK の行。 取り方（ Bulk API 2.0 か REST の
+# query() か ） は下書きの ``use_bulk`` で決める。 副問い合わせ （ クロス
+# フィルタ ） を出したときは False にして、 理由をコメントに付ける
 USE_BULK_LINE = "    USE_BULK = True  # False にすると通常の SOQL（REST の query()）で取る"
+
+# USE_BULK を False にする時の行の頭。 後ろに理由を書く
+USE_BULK_FALSE_PREFIX = "    USE_BULK = False  # "
 
 # 管理番号をファイル名・クラス名に使える形にする（英数字と _ だけ残す）
 _INVALID_KEY_CHARS_PATTERN = re.compile(r"[^A-Za-z0-9_]")
@@ -111,6 +117,11 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
     lines.append("from src.soql_reports.base import SoqlReport")
     lines.append("")
     lines.append(f"# 状態: {draft.status}")
+    for link in draft.cross_filter_links:
+        # 理由の中に改行が入っていてもコードが壊れないよう、 空白に置き換える
+        lines.append(
+            _flatten(format_cross_filter_link_comment(link, main_object=record.main_object or ""))
+        )
     for check in draft.checks:
         lines.append(f"# 要確認: {_flatten(check)}")
     for missing in draft.missing:
@@ -125,7 +136,7 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
     report_id = _report_id(record)
     if report_id:
         lines.append(f"    REPORT_ID = {report_id!r}")
-    lines.append(USE_BULK_LINE)
+    lines.append(_use_bulk_line(draft))
     if column_names:
         lines.append("    COLUMN_NAMES: ClassVar[dict[str, str]] = {")
         for soql_name, display_name in column_names:
@@ -140,6 +151,19 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
     soql_literal = _soql_triple_quoted(draft.soql)
     lines.append(f"        return {soql_literal}")
     return "\n".join(lines) + "\n"
+
+
+def _use_bulk_line(draft: SoqlDraft) -> str:
+    """``USE_BULK`` の行を組み立てる。
+
+    ``use_bulk`` が ``True`` のときは ``USE_BULK_LINE`` をそのまま使う。
+    ``False`` のときは理由をコメントに付ける。 理由の改行・制御文字は
+    ``_flatten`` で空白に置き換える。
+    """
+    if draft.use_bulk:
+        return USE_BULK_LINE
+    reason = _flatten("; ".join(draft.bulk_blockers)) or "REST の query() で取る"
+    return f"{USE_BULK_FALSE_PREFIX}{reason}"
 
 
 def _report_name(record: ReportRecord) -> str:

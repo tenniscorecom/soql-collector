@@ -66,6 +66,7 @@ def build_fetch_outcome(
             relations=tuple(state.relations),
             column_map=state.column_map,
             warnings=tuple(warnings),
+            cross_filter_objects=state.cross_filter_objects,
         )
     )
 
@@ -83,6 +84,7 @@ def build_fetch_outcome(
         row_check=state.row_check,
         pii=pii_result,
         soql_draft=soql_draft,
+        cross_filter_objects=state.cross_filter_objects,
     )
     return FetchOutcome(
         entry=entry,

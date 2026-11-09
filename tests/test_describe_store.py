@@ -25,10 +25,13 @@ from comken.exceptions import CSVError, SalesforceRequestError
 from src.describe_store import (
     DESCRIBE_CSV_COLUMNS,
     DescribeStore,
+    child_relationship_csv_path,
     csv_rows_to_describe,
     describe_to_csv_rows,
+    load_child_relationship_index,
     load_describe_index,
     org_from_url,
+    upsert_child_relationship_rows,
     upsert_object_rows,
 )
 from src.fetch import run_fetch
@@ -413,6 +416,14 @@ def test_different_orgs_keep_separate_state_across_runs(tmp_path: Path) -> None:
         _opportunity_describe(),
         fetched_at="2025-01-01T00:00:00+00:00",
     )
+    # 子リレーションも保存しておく（ 無いと 「未取得」 として取り直しに回る ）
+    upsert_child_relationship_rows(
+        child_relationship_csv_path(settings["describe_csv_path"]),
+        "example.my.salesforce.com",
+        "Opportunity",
+        _opportunity_describe(),
+        fetched_at="2025-01-01T00:00:00+00:00",
+    )
 
     metadata = {
         "reportMetadata": {
@@ -512,6 +523,14 @@ def test_object_without_csv_rows_triggers_api_call(tmp_path: Path) -> None:
     # CSV に Account だけ書いておく
     upsert_object_rows(
         settings["describe_csv_path"],
+        "example.my.salesforce.com",
+        "Account",
+        _account_describe(),
+        fetched_at="2025-01-01T00:00:00+00:00",
+    )
+    # 子リレーションも保存しておく（ 無いと 「未取得」 として取り直しに回る ）
+    upsert_child_relationship_rows(
+        child_relationship_csv_path(settings["describe_csv_path"]),
         "example.my.salesforce.com",
         "Account",
         _account_describe(),
@@ -840,6 +859,155 @@ def test_describe_store_counts_track_sources(tmp_path: Path) -> None:
     assert store.api_count == 1
     # もう一度引くと今度はメモリにある
     assert store.lookup("example.my.salesforce.com", "Opportunity") is not None
+
+
+# ── 子リレーションの保存 ──────────────────────────────────────────────
+
+
+def _opportunity_with_children() -> dict:
+    """子リレーションを持つ describe。"""
+    return {
+        "name": "Opportunity",
+        "label": "商談",
+        "custom": False,
+        "fields": [
+            {"name": "Name", "label": "商談名", "type": "string"},
+        ],
+        "childRelationships": [
+            {
+                "childSObject": "OpportunityLineItem",
+                "field": "OpportunityId",
+                "relationshipName": "OpportunityLineItems",
+            },
+            {
+                # リレーション名が無い要素は落とす
+                "childSObject": "NoName",
+                "field": "OpportunityId",
+            },
+        ],
+    }
+
+
+def test_child_relationships_are_saved_and_read_back(tmp_path: Path) -> None:
+    """子リレーションは別の CSV に保存し、 読み戻せる。"""
+    describe_csv = tmp_path / "describe.csv"
+    store = DescribeStore.load(describe_csv)
+    store.record_api_success(
+        "example.my.salesforce.com",
+        "Opportunity",
+        _opportunity_with_children(),
+    )
+
+    child_csv = child_relationship_csv_path(describe_csv)
+    assert child_csv.exists()
+    rows = _read_csv_rows(child_csv)
+    assert len(rows) == 1
+    assert rows[0]["子オブジェクト"] == "OpportunityLineItem"
+    assert rows[0]["リレーション名"] == "OpportunityLineItems"
+    assert rows[0]["参照項目"] == "OpportunityId"
+
+    # 読み直すと 子リレーション が describe に入る
+    reloaded = DescribeStore.load(describe_csv)
+    entry = reloaded.lookup("example.my.salesforce.com", "Opportunity")
+    assert entry is not None
+    describe = entry["describe"]
+    assert describe is not None
+    assert describe["childRelationships"] == [
+        {
+            "childSObject": "OpportunityLineItem",
+            "field": "OpportunityId",
+            "relationshipName": "OpportunityLineItems",
+        }
+    ]
+
+
+def test_load_without_child_relationship_csv_does_not_fail(tmp_path: Path) -> None:
+    """子リレーションの CSV が無い（古い保存データ） でも読み込める。"""
+    describe_csv = tmp_path / "describe.csv"
+    upsert_object_rows(
+        describe_csv,
+        "example.my.salesforce.com",
+        "Opportunity",
+        _opportunity_describe(),
+        fetched_at="2025-01-01T00:00:00+00:00",
+    )
+    assert not child_relationship_csv_path(describe_csv).exists()
+
+    store = DescribeStore.load(describe_csv)
+    entry = store.lookup("example.my.salesforce.com", "Opportunity")
+    assert entry is not None
+    describe = entry["describe"]
+    assert describe is not None
+    assert describe.get("childRelationships", []) == []
+
+
+def test_child_relationship_csv_path_is_next_to_describe_csv(tmp_path: Path) -> None:
+    """子リレーションの CSV は 項目定義.csv と同じフォルダに置く。"""
+    path = child_relationship_csv_path(tmp_path / "data" / "項目定義.csv")
+    assert path == tmp_path / "data" / "子リレーション.csv"
+
+
+def test_child_relationship_csv_keeps_marker_row_for_zero_children(tmp_path: Path) -> None:
+    """子が 0 件のオブジェクトは、 印の行を 1 行 残す。
+
+    「まだ取り直していない」 と区別できるようにするため。
+    """
+    describe_csv = tmp_path / "describe.csv"
+    store = DescribeStore.load(describe_csv)
+    store.record_api_success(
+        "example.my.salesforce.com",
+        "Opportunity",
+        _opportunity_describe(),
+    )
+
+    child_csv = child_relationship_csv_path(describe_csv)
+    assert child_csv.exists()
+    rows = _read_csv_rows(child_csv)
+    assert len(rows) == 1
+    assert rows[0]["オブジェクト"] == "Opportunity"
+    assert rows[0]["子オブジェクト"] == ""
+    assert rows[0]["リレーション名"] == ""
+    assert rows[0]["参照項目"] == ""
+    assert rows[0]["取得日時"]
+
+    # 読み直すと、 キーは残して 要素は 0 個
+    index = load_child_relationship_index(child_csv)
+    assert index[("example.my.salesforce.com", "opportunity")] == []
+
+
+def test_has_child_relationships_is_true_even_with_zero_children(tmp_path: Path) -> None:
+    """子が 0 件でも 「取得済み」 なら True。"""
+    describe_csv = tmp_path / "describe.csv"
+    store = DescribeStore.load(describe_csv)
+    # まだ取っていない
+    assert store.has_child_relationships("example.my.salesforce.com", "Opportunity") is False
+
+    store.record_api_success(
+        "example.my.salesforce.com",
+        "Opportunity",
+        _opportunity_describe(),
+    )
+    assert store.has_child_relationships("example.my.salesforce.com", "Opportunity") is True
+
+    # CSV から読み直しても True（ 印の行が ある ので ）
+    reloaded = DescribeStore.load(describe_csv)
+    assert reloaded.has_child_relationships("example.my.salesforce.com", "Opportunity") is True
+    # 別のオブジェクトは False
+    assert reloaded.has_child_relationships("example.my.salesforce.com", "Account") is False
+
+
+def test_has_child_relationships_is_false_without_child_relationship_csv(tmp_path: Path) -> None:
+    """子リレーションの CSV が無い（ 古い保存データ ） ときは False。"""
+    describe_csv = tmp_path / "describe.csv"
+    upsert_object_rows(
+        describe_csv,
+        "example.my.salesforce.com",
+        "Opportunity",
+        _opportunity_describe(),
+        fetched_at="2025-01-01T00:00:00+00:00",
+    )
+    store = DescribeStore.load(describe_csv)
+    assert store.has_child_relationships("example.my.salesforce.com", "Opportunity") is False
 
 
 # ── pytest import ──────────────────────────────────────────────────────
