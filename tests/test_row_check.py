@@ -267,8 +267,7 @@ def test_row_limit_disabled_skips_get(tmp_path: Path) -> None:
     outcome = _fetch_one(
         entry,
         site_for=_site_for(client),
-        store=DescribeStore.empty(tmp_path / "describe.csv"),
-        refresh_set=set(),
+        store=DescribeStore.empty(),
         **settings,
     )
     assert outcome.status == "ok"
@@ -312,8 +311,7 @@ def test_row_data_never_leaks_to_output(tmp_path: Path, caplog: pytest.LogCaptur
     outcome = _fetch_one(
         entry,
         site_for=_site_for(client2),
-        store=DescribeStore.empty(tmp_path / "describe.csv"),
-        refresh_set=set(),
+        store=DescribeStore.empty(),
         **settings,
     )
     # 警告 / エラーメッセージに目印が入らない

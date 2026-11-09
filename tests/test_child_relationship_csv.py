@@ -147,8 +147,8 @@ def test_invalid_value_never_reaches_soql(tmp_path: Path) -> None:
     assert rows == ()
 
 
-def test_rebuild_does_not_create_the_file_but_reads_it(tmp_path: Path) -> None:
-    """``--rebuild`` は作らないが、 已有なら読む。"""
+def test_analyze_does_not_create_the_file_but_reads_it(tmp_path: Path) -> None:
+    """解析の段は作らないが、 既にあれば読む。"""
     from src.run import FilePaths, _load_manual_child_relationships
 
     file_paths = FilePaths(
@@ -162,17 +162,17 @@ def test_rebuild_does_not_create_the_file_but_reads_it(tmp_path: Path) -> None:
     )
     path = child_relationship_csv_path(file_paths.column_fix_xlsx_path)
 
-    # 作り直し: ファイルは作らない
-    assert _load_manual_child_relationships(file_paths, rebuild=True) == ()
+    # 解析の段: ファイルは作らない
+    assert _load_manual_child_relationships(file_paths, creates_file=False) == ()
     assert not path.exists()
 
-    # 通常の実行: 見出しだけのファイルを作る
-    assert _load_manual_child_relationships(file_paths, rebuild=False) == ()
+    # 取得の段: 見出しだけのファイルを作る
+    assert _load_manual_child_relationships(file_paths, creates_file=True) == ()
     assert path.exists()
 
-    # 既にあれば、 作り直しでも読む
+    # 既にあれば、 解析の段でも読む
     _write_csv(path, [["Account", "Contacts", "Contact", "AccountId", ""]])
-    rows = _load_manual_child_relationships(file_paths, rebuild=True)
+    rows = _load_manual_child_relationships(file_paths, creates_file=False)
     assert len(rows) == 1
     assert rows[0].child_object == "Contact"
 
@@ -412,9 +412,8 @@ def test_manual_child_relationship_is_reported_in_markdown() -> None:
 
 
 def test_manual_values_are_not_written_to_saved_data(tmp_path: Path) -> None:
-    """data/子リレーション.csv に手入力の値は書かない。"""
+    """保存する原本に手入力の値は書かない。"""
     from src.describe_store import DescribeStore
-    from src.describe_store import child_relationship_csv_path as store_child_path
     from src.fetch.site_run import FetchState, run_within_site
     from src.report_store import ReportStore
 
@@ -440,7 +439,7 @@ def test_manual_values_are_not_written_to_saved_data(tmp_path: Path) -> None:
         "reportExtendedMetadata": {},
     }
     describe_csv = tmp_path / "data" / "項目定義.csv"
-    store = DescribeStore.empty(describe_csv)
+    store = DescribeStore.load(describe_csv)
     report_store = ReportStore.empty()
     state = FetchState()
     run_within_site(
@@ -451,23 +450,20 @@ def test_manual_values_are_not_written_to_saved_data(tmp_path: Path) -> None:
         store=store,
         report_store=report_store,
         row_limit=False,
-        refresh_set=set(),
         related_depth=1,
         related_max=40,
         column_fix_overrides={},
         state=state,
-        allow_refresh=False,
         manual_child_relationships=(_manual_row(),),
     )
     assert state.main_object_name == "Account"
     assert state.main_describe is not None
     relationships = state.main_describe["childRelationships"]
     assert any(item.get("手入力") for item in relationships)
-
-    saved_path = store_child_path(describe_csv)
-    if saved_path.exists():
-        text = saved_path.read_text(encoding="utf-8-sig")
-        assert "手入力" not in text
+    # 保存した原本には手入力の値が入らない
+    saved_path = tmp_path / "data" / "元データ" / "オブジェクト" / "org__account.json"
+    assert saved_path.exists()
+    assert "手入力" not in saved_path.read_text(encoding="utf-8")
 
 
 def test_manual_child_describe_is_fetched_in_site_run(tmp_path: Path) -> None:
@@ -510,15 +506,13 @@ def test_manual_child_describe_is_fetched_in_site_run(tmp_path: Path) -> None:
         entry=_entry(),
         org="org",
         report_id="00O1",
-        store=DescribeStore.empty(tmp_path / "data" / "項目定義.csv"),
+        store=DescribeStore.empty(),
         report_store=ReportStore.empty(),
         row_limit=False,
-        refresh_set=set(),
         related_depth=1,
         related_max=40,
         column_fix_overrides={},
         state=state,
-        allow_refresh=False,
         manual_child_relationships=(_manual_row(),),
     )
     assert "Contact" in client.described

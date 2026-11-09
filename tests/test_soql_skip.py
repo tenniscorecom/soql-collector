@@ -2,12 +2,11 @@
 
 ``src.soql_builder.build_soql`` が ``row_check`` を見て SOQL を作らないこと、
 ``.py`` を作らないこと、 ``列の直し.xlsx`` に足さないこと、
-``--rebuild`` で同じ判定になること を確かめる。
+``--analyze`` で同じ判定になること を確かめる。
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -366,37 +365,8 @@ def test_outcome_builds_skipped_draft() -> None:
 # ── 件数の保存 ────────────────────────────────────────────────────────────
 
 
-def test_report_store_saves_and_reads_rows(tmp_path: Path) -> None:
-    """件数を保存し、 読み出せる。"""
-    from src.report_store import ReportStore
-
-    store = ReportStore.load(tmp_path / "項目定義.csv")
-    slim = {"reportMetadata": {"detailColumns": []}, "reportExtendedMetadata": {}}
-    store.put("org", "00O1", slim, ())
-    store.save_rows("org", "00O1", 42)
-    cached = store.get("org", "00O1")
-    assert cached is not None
-    assert cached.rows == 42
-
-
-def test_report_store_reads_old_file_without_rows(tmp_path: Path) -> None:
-    """「件数」 が無い古いファイルでも読める（ 件数は None ） 。"""
-    from src.report_store import ReportStore
-
-    store = ReportStore.load(tmp_path / "項目定義.csv")
-    slim = {"reportMetadata": {"detailColumns": []}, "reportExtendedMetadata": {}}
-    store.put("org", "00O1", slim, ())
-    path = tmp_path / "レポート定義" / "org__00O1.json"
-    document = json.loads(path.read_text(encoding="utf-8"))
-    document.pop("件数", None)
-    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
-    cached = store.get("org", "00O1")
-    assert cached is not None
-    assert cached.rows is None
-
-
 @pytest.mark.parametrize("rows", [0, 1, 999, 1000])
-def test_rebuild_uses_saved_rows_for_the_same_judgement(tmp_path: Path, rows: int) -> None:
+def test_analyze_uses_saved_rows_for_the_same_judgement(tmp_path: Path, rows: int) -> None:
     """保存した件数から、 実行時と同じ判定 （ 飛ばす ） になる。"""
     from src.describe_store import DescribeStore
     from src.fetch.offline import OfflineClient
@@ -412,8 +382,8 @@ def test_rebuild_uses_saved_rows_for_the_same_judgement(tmp_path: Path, rows: in
         "reportExtendedMetadata": {},
     }
     store = ReportStore.load(tmp_path / "項目定義.csv")
-    store.put("org", "00O1", slim, ())
-    store.save_rows("org", "00O1", rows)
+    store.put("org", "00O1", slim)
+    store.put_row_count("org", "00O1", status=ROW_CHECK_UNDER, rows=rows, reason=None)
 
     state = FetchState()
     run_within_site(
@@ -421,22 +391,20 @@ def test_rebuild_uses_saved_rows_for_the_same_judgement(tmp_path: Path, rows: in
         entry=_entry(),
         org="org",
         report_id="00O1",
-        store=DescribeStore.empty(tmp_path / "項目定義.csv"),
+        store=DescribeStore.empty(),
         report_store=store,
         row_limit=False,
-        refresh_set=set(),
         related_depth=1,
         related_max=40,
         column_fix_overrides={},
         state=state,
-        allow_refresh=False,
     )
     assert state.row_check is not None
     assert state.row_check.status == ROW_CHECK_UNDER
     assert state.row_check.rows == rows
 
 
-def test_rebuild_without_saved_rows_leaves_row_check_none(tmp_path: Path) -> None:
+def test_analyze_without_saved_rows_leaves_row_check_none(tmp_path: Path) -> None:
     """保存が無いときは row_check なしのまま。"""
     from src.describe_store import DescribeStore
     from src.fetch.offline import OfflineClient
@@ -452,7 +420,7 @@ def test_rebuild_without_saved_rows_leaves_row_check_none(tmp_path: Path) -> Non
         "reportExtendedMetadata": {},
     }
     store = ReportStore.load(tmp_path / "項目定義.csv")
-    store.put("org", "00O1", slim, ())
+    store.put("org", "00O1", slim)
 
     state = FetchState()
     run_within_site(
@@ -460,21 +428,19 @@ def test_rebuild_without_saved_rows_leaves_row_check_none(tmp_path: Path) -> Non
         entry=_entry(),
         org="org",
         report_id="00O1",
-        store=DescribeStore.empty(tmp_path / "項目定義.csv"),
+        store=DescribeStore.empty(),
         report_store=store,
         row_limit=False,
-        refresh_set=set(),
         related_depth=1,
         related_max=40,
         column_fix_overrides={},
         state=state,
-        allow_refresh=False,
     )
     assert state.row_check is None
 
 
-def test_rebuild_does_not_write_saved_data(tmp_path: Path) -> None:
-    """``--rebuild`` は保存データを書き換えない。"""
+def test_analyze_does_not_write_saved_data(tmp_path: Path) -> None:
+    """``--analyze`` は保存データを書き換えない。"""
     from src.describe_store import DescribeStore
     from src.fetch.offline import OfflineClient
     from src.fetch.site_run import FetchState, run_within_site
@@ -489,8 +455,8 @@ def test_rebuild_does_not_write_saved_data(tmp_path: Path) -> None:
         "reportExtendedMetadata": {},
     }
     store = ReportStore.load(tmp_path / "項目定義.csv")
-    store.put("org", "00O1", slim, ())
-    path = tmp_path / "レポート定義" / "org__00O1.json"
+    store.put("org", "00O1", slim)
+    path = tmp_path / "元データ" / "レポート" / "org__00O1.json"
     before = path.read_text(encoding="utf-8")
 
     state = FetchState()
@@ -499,15 +465,13 @@ def test_rebuild_does_not_write_saved_data(tmp_path: Path) -> None:
         entry=_entry(),
         org="org",
         report_id="00O1",
-        store=DescribeStore.empty(tmp_path / "項目定義.csv"),
+        store=DescribeStore.empty(),
         report_store=store,
         row_limit=False,
-        refresh_set=set(),
         related_depth=1,
         related_max=40,
         column_fix_overrides={},
         state=state,
-        allow_refresh=False,
     )
     assert path.read_text(encoding="utf-8") == before
 

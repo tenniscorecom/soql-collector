@@ -146,7 +146,6 @@ def _settings(tmp_path: Path, related_max: int = 40, related_depth: int = 1) -> 
         "row_limit": True,
         "pii_keywords": ("name", "電話"),
         "pii_person_objects": ("Contact",),
-        "describe_csv_path": tmp_path / "describe.csv",
     }
 
 
@@ -356,10 +355,10 @@ def test_run_fetch_does_not_describe_report_again_when_stored(tmp_path: Path) ->
     site_for, _ = _site_for(client)
     settings = _settings(tmp_path)
 
-    first_store = ReportStore.load(settings["describe_csv_path"])
+    first_store = ReportStore.load(tmp_path / "describe.csv")
     first = run_fetch([entry], site_for=site_for, report_store=first_store, **settings)[0]
     # 別の実行（ストアを作り直す）でも、 フォルダに貯めたものが使われる
-    second_store = ReportStore.load(settings["describe_csv_path"])
+    second_store = ReportStore.load(tmp_path / "describe.csv")
     second = run_fetch([entry], site_for=site_for, report_store=second_store, **settings)[0]
 
     assert client.report.describe_calls == ["00O5g00000ABCDE"]
@@ -387,13 +386,13 @@ def test_run_fetch_keeps_dropped_keys_warning_when_report_is_stored(tmp_path: Pa
     first = run_fetch(
         [entry],
         site_for=site_for,
-        report_store=ReportStore.load(settings["describe_csv_path"]),
+        report_store=ReportStore.load(tmp_path / "describe.csv"),
         **settings,
     )[0]
     second = run_fetch(
         [entry],
         site_for=site_for,
-        report_store=ReportStore.load(settings["describe_csv_path"]),
+        report_store=ReportStore.load(tmp_path / "describe.csv"),
         **settings,
     )[0]
 
@@ -416,7 +415,7 @@ def test_run_fetch_without_report_store_describes_every_time(tmp_path: Path) -> 
     run_fetch([entry], site_for=site_for, **_settings(tmp_path))
 
     assert len(client.report.describe_calls) == 2
-    assert not (tmp_path / "レポート定義").exists()
+    assert not (tmp_path / "元データ").exists()
 
 
 SANDBOX_DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com"
@@ -457,7 +456,7 @@ def test_run_fetch_keys_describes_by_connected_org_not_by_url(tmp_path: Path) ->
     )
     site_for, site = _site_for(client)
     site.DOMAIN_URL = SANDBOX_DOMAIN  # つなぐ組織クラスが持つ URL（サンドボックス）
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
 
     run_fetch([entry], site_for=site_for, describe_store=store, **_settings(tmp_path))
 
@@ -1592,7 +1591,7 @@ def test_fetch_object_cached_calls_only_once(tmp_path: Path) -> None:
     )
     from src.describe_store import DescribeStore
 
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
     org = "example.my.salesforce.com"
     warnings1: list[str] = []
     assert fetch_object_cached(client, org, "Account", store, warnings1) is not None
@@ -2864,7 +2863,7 @@ def test_run_fetch_fetches_missing_object_along_user_path(tmp_path: Path) -> Non
         },
     )
     site_for, _ = _site_for(client)
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
 
     outcomes = run_fetch(
         [entry],
@@ -2909,7 +2908,7 @@ def test_run_fetch_caches_fetched_user_across_reports(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
 
     outcomes = run_fetch(
         [entry1, entry2],
@@ -2927,10 +2926,7 @@ def test_run_fetch_caches_fetched_user_across_reports(tmp_path: Path) -> None:
 
 
 def test_run_fetch_uses_describe_csv_cache_for_user(tmp_path: Path) -> None:
-    """``describe.csv`` （``DescribeStore.csv_index``） に User が既にあれば
-    Salesforce に問い合わせない。 ``_run_fetch`` の前に ``store.csv_index`` に
-    User の describe を入れて、 simulate する
-    """
+    """保存に User が既にあれば Salesforce に問い合わせない。"""
     user_describe = _main_describe("User", [{"name": "Name", "type": "string"}])
 
     entry = MasterEntry(key="1", summary="", url=f"{DOMAIN}/00O5g00000ABCDE/view", enabled=True)
@@ -2944,14 +2940,14 @@ def test_run_fetch_uses_describe_csv_cache_for_user(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    store = DescribeStore.empty(tmp_path / "describe.csv")
-    # pre-populate csv_index with User. キーは ``org_from_url`` で取り出される
-    # URL のホスト名 （小文字） とオブジェクト名を lower で揃える。
+    # 組織は ``org_from_url`` で取り出される URL のホスト名 （小文字）。
     # ``DOMAIN`` のホストは ``example--sandbox.sandbox.my.salesforce.com``
     from src.describe_store import org_from_url
 
-    org = org_from_url(entry.url)
-    store.csv_index[(org, "user")] = user_describe
+    DescribeStore.load(tmp_path / "describe.csv").record_api_success(
+        org_from_url(entry.url), "User", user_describe
+    )
+    store = DescribeStore.load(tmp_path / "describe.csv")
 
     outcomes = run_fetch(
         [entry],
@@ -3001,7 +2997,7 @@ def test_run_fetch_typo_in_path_warns_with_candidates(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
 
     overrides = {
         ("opportunity", "Opp.Account.Owner"): ColumnMapRow(
@@ -3053,7 +3049,7 @@ def test_run_fetch_path_fetch_404_warns_and_record_ok(tmp_path: Path) -> None:
         errors={"User": SalesforceRequestError("GET", "/sobjects/User/describe", 404, "Not Found")},
     )
     site_for, _ = _site_for(client)
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
 
     outcomes = run_fetch(
         [entry],
@@ -3090,7 +3086,7 @@ def test_run_fetch_path_fetch_401_marks_report_failed(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
 
     outcomes = run_fetch(
         [entry],
@@ -3144,7 +3140,7 @@ def test_run_fetch_handles_polymorphic_what(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
 
     overrides = {
         ("opportunity", "Opp.What"): ColumnMapRow(
@@ -3196,7 +3192,7 @@ def test_run_fetch_path_too_long_warns(tmp_path: Path) -> None:
         object_describes={"Opportunity": opp_describe},
     )
     site_for, _ = _site_for(client)
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
 
     overrides = {
         ("opportunity", "Opp.A.B.C.D.E.F"): ColumnMapRow(
@@ -3247,7 +3243,7 @@ def test_run_fetch_user_fix_overrides_auto_resolved(tmp_path: Path) -> None:
         object_describes={"Opportunity": opp_describe},
     )
     site_for, _ = _site_for(client)
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
 
     overrides = {
         ("opportunity", "Opp.Name"): ColumnMapRow(
@@ -3305,7 +3301,7 @@ def test_run_fetch_no_fetcher_legacy_behavior(tmp_path: Path) -> None:
         },
     )
     site_for, _ = _site_for(client)
-    store = DescribeStore.empty(tmp_path / "describe.csv")
+    store = DescribeStore.empty()
 
     # overrides 無し
     outcomes = run_fetch([entry], site_for=site_for, describe_store=store, **_settings(tmp_path))

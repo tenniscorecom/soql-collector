@@ -1,25 +1,7 @@
-"""``--rebuild`` （保存データだけで作り直す） のテスト。
+"""``--analyze`` （保存データだけで出力を作る） のテスト。
 
-Salesforce には繋がない。 保存データ（ ``data/レポート定義/`` のレポート定義と
-``data/項目定義.csv`` の項目定義 ） だけを用意して、 ``run(["--rebuild"])`` が
-保存データだけで出力を作ることを確かめる。
-
-確かめること:
-
-- 保存データが揃っていれば Salesforce のクライアントは 1 度も作られず、
-  ``SOQL調査.xlsx`` と ``SOQL資料/{管理番号}.md`` が出る
-- ``列の直し.xlsx`` の 「直したSOQL列名」 が --rebuild の出力（SOQL） に反映される
-- レポート定義が保存データに無いレポートは 失敗になり、 終了コード 1、
-  理由に 「実行.bat で取り直して」 が入る。 他のレポートは出る
-- 項目定義（describe）が保存データに無いときは、 普通の実行で describe が
-  404 になったときと同じ扱い（ レポートは失敗にせず、 警告だけ残る ）
-- 主オブジェクト候補 (a) が保存データに無く (b) が保存データにあれば、 (b) で
-  主オブジェクトが決まる（ 普通の実行と同じ挙動 ）
-- 組織は 接続先クラスの ``DOMAIN_URL`` から決める（ 保存データのファイル名から
-  推測しない ）
-- ``--rebuild`` 以外の引数は今まで通り 2
-- ``--rebuild`` では件数チェックの API を呼ばない
-- ``--rebuild`` の後も レポート定義 / 項目定義 の保存ファイルが変わらない
+Salesforce には繋がない。 保存データ（ ``data/元データ/`` の原本 ） だけを用意して、
+``run(["--analyze"])`` が保存データだけで出力を作ることを確かめる。
 """
 
 from __future__ import annotations
@@ -35,17 +17,11 @@ from openpyxl.worksheet.table import Table as XlsxTable
 from openpyxl.worksheet.table import TableStyleInfo
 
 from src.column_fix_xlsx import COLUMN_FIX_COLUMNS
-from src.describe_store import DescribeStore, upsert_object_rows
+from src.describe_store import DescribeStore
 from src.fetch import offline_site_for, run_fetch
-from src.fetch.offline import OfflineDescribeMissing
-from src.fetch.report_slim import make_slim_report
 from src.master import MasterEntry
 from src.report_store import ReportStore
-from src.soql_builder import (
-    CROSS_FILTER_LINK_UNVERIFIED,
-    STATUS_NONE,
-    STATUS_PARTIAL,
-)
+from src.soql_builder import STATUS_NONE, STATUS_PARTIAL
 
 DOMAIN = "https://example.my.salesforce.com/lightning/r/Report"
 # 接続先の組織（ URL のホスト名 ）。 保存データもこの名前で分ける
@@ -206,12 +182,13 @@ def _save_report_definition(
 ) -> None:
     """レポート定義を 保存データ に書く。"""
     store = ReportStore.load(file_paths.describe_csv_path)
-    store.put(org, report_id, make_slim_report(metadata), ())
+    store.put(org, report_id, metadata)
 
 
 def _save_object_describe(file_paths: Any, describe: dict[str, Any], *, org: str = ORG) -> None:
-    """オブジェクトの項目定義を 保存データ （ 項目定義.csv ） に書く。"""
-    upsert_object_rows(file_paths.describe_csv_path, org, describe["name"], describe)
+    """オブジェクトの原本を 保存データ に書く。"""
+    store = DescribeStore.load(file_paths.describe_csv_path)
+    store.record_api_success(org, describe["name"], describe)
 
 
 def _write_column_fix(path: Path, rows: list[dict[str, str]]) -> None:
@@ -273,7 +250,7 @@ def _fake_base_site_for(domain_url: str) -> Any:
     """``site_for`` 互換の関数。 返すのは サイト **クラス** （ ``DOMAIN_URL`` を持つ ）。
 
     クラスは インスタンス化すると ``AssertionError`` になる（= ログインする）。
-    ``--rebuild`` では クラス属性の ``DOMAIN_URL`` しか読まない。
+    ``--analyze`` では クラス属性の ``DOMAIN_URL`` しか読まない。
     """
 
     class _BaseSite:
@@ -288,12 +265,12 @@ def _fake_base_site_for(domain_url: str) -> Any:
     return resolver
 
 
-def _run_rebuild(file_paths: Any, domain_url: str = ORG_DOMAIN_URL) -> int:
-    """``--rebuild`` で ``run()`` を 1 回実行する。"""
+def _run_analyze(file_paths: Any, domain_url: str = ORG_DOMAIN_URL) -> int:
+    """``--analyze`` で ``run()`` を 1 回実行する。"""
     from src.run import run
 
     return run(
-        ["--rebuild"],
+        ["--analyze"],
         site_for=_fake_base_site_for(domain_url),
         file_paths=file_paths,
     )
@@ -347,14 +324,13 @@ def _entry() -> MasterEntry:
     )
 
 
-def _fetch_settings(tmp_path: Path, name: str = "describe") -> dict[str, Any]:
+def _fetch_settings() -> dict[str, Any]:
     """``run_fetch`` に渡す kwargs を返す。"""
     return {
         "related_depth": 1,
         "related_max": 40,
         "pii_keywords": (),
         "pii_person_objects": (),
-        "describe_csv_path": tmp_path / f"{name}.csv",
     }
 
 
@@ -426,7 +402,7 @@ def _fake_site_for(client: _FakeClient) -> Any:
 # ── テスト本体 ───────────────────────────────────────────────────────────
 
 
-def test_rebuild_builds_outputs_from_saved_data_without_client(
+def test_analyze_builds_outputs_from_saved_data_without_client(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     """保存データが揃っていれば Salesforce のクライアントは 1 度も作られず、
@@ -437,7 +413,7 @@ def test_rebuild_builds_outputs_from_saved_data_without_client(
     _save_object_describe(file_paths, _task_describe())
 
     # サイトクラスは 1 度も作られない（ 作られたら AssertionError ）
-    code = _run_rebuild(file_paths)
+    code = _run_analyze(file_paths)
 
     assert code == 0
     out = tmp_path / "output"
@@ -445,8 +421,8 @@ def test_rebuild_builds_outputs_from_saved_data_without_client(
     assert (out / "SOQL資料" / "1001.md").exists()
 
 
-def test_rebuild_applies_human_fixed_soql_column_name(tmp_path: Path, monkeypatch: Any) -> None:
-    """``列の直し.xlsx`` の 「直したSOQL列名」 が --rebuild の出力（ SOQL ） に
+def test_analyze_applies_human_fixed_soql_column_name(tmp_path: Path, monkeypatch: Any) -> None:
+    """``列の直し.xlsx`` の 「直したSOQL列名」 が --analyze の出力（ SOQL ） に
     反映される。
     """
     file_paths = _setup(tmp_path, monkeypatch, _one_report_row())
@@ -465,7 +441,7 @@ def test_rebuild_applies_human_fixed_soql_column_name(tmp_path: Path, monkeypatc
         ],
     )
 
-    assert _run_rebuild(file_paths) == 0
+    assert _run_analyze(file_paths) == 0
 
     md_text = (tmp_path / "output" / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
     assert "Description" in md_text
@@ -475,11 +451,11 @@ def test_rebuild_applies_human_fixed_soql_column_name(tmp_path: Path, monkeypatc
     assert by_key["MYSTERY"]["どこから"] == "人が直した"
 
 
-def test_rebuild_fails_when_report_definition_is_missing(
+def test_analyze_fails_when_report_definition_is_missing(
     tmp_path: Path, monkeypatch: Any, caplog: Any
 ) -> None:
     """レポート定義が保存データに無いレポートは 失敗になり、 終了コード 1、
-    理由に 「実行.bat で取り直して」 が入る。 他のレポートは出る。
+    理由に 「取得.bat で取って」 が入る。 他のレポートは出る。
     """
     file_paths = _setup(tmp_path, monkeypatch, _two_report_rows())
     # 1002 のレポート定義は 保存データ に無い
@@ -487,18 +463,18 @@ def test_rebuild_fails_when_report_definition_is_missing(
     _save_object_describe(file_paths, _task_describe())
 
     with caplog.at_level(logging.ERROR, logger="src.fetch.flow"):
-        code = _run_rebuild(file_paths)
+        code = _run_analyze(file_paths)
 
     assert code == 1
     out = tmp_path / "output"
     assert (out / "SOQL資料" / "1001.md").exists()
     assert not (out / "SOQL資料" / "1002.md").exists()
-    # 失敗の理由に 取り直しの案内が出る（ Salesforce のエラー其它に混ぜない ）
-    assert "理由=保存データに無いので 実行.bat で取り直してください" in caplog.text
-    assert "レポート定義" in caplog.text
+    # 失敗の理由に 取り直しの案内が出る（ Salesforce のエラーに混ぜない ）
+    assert "理由=保存データに無いので 取得.bat で取ってください" in caplog.text
+    assert "レポートの元データ" in caplog.text
 
 
-def test_rebuild_warns_when_object_describe_is_missing(
+def test_analyze_warns_when_object_describe_is_missing(
     tmp_path: Path, monkeypatch: Any, caplog: Any
 ) -> None:
     """項目定義（ describe ） が保存データに無いときは、 普通の実行で describe が
@@ -509,7 +485,7 @@ def test_rebuild_warns_when_object_describe_is_missing(
     _save_report_definition(file_paths, REPORT_ID, _report_metadata())
 
     with caplog.at_level(logging.WARNING, logger="src.fetch.flow"):
-        code = _run_rebuild(file_paths)
+        code = _run_analyze(file_paths)
 
     # レポート全体は失敗しない（ 終了コードは 0 ）
     assert code == 0
@@ -524,8 +500,8 @@ def test_rebuild_warns_when_object_describe_is_missing(
     assert overview["1001"]["SOQLの状態"] == STATUS_NONE
 
 
-def test_rebuild_missing_object_describe_has_same_record_as_normal_404(tmp_path: Path) -> None:
-    """--rebuild で項目定義が無いときの record は、 普通の実行で describe が
+def test_analyze_missing_object_describe_has_same_record_as_normal_404(tmp_path: Path) -> None:
+    """--analyze で項目定義が無いときの record は、 普通の実行で describe が
     404 のときの record と、 警告文以外は同じ（ 主オブジェクト不明・SOQL は
     作れず・列対応表も同じ ）。
     """
@@ -539,23 +515,22 @@ def test_rebuild_missing_object_describe_has_same_record_as_normal_404(tmp_path:
     normal = run_fetch(
         [_entry()],
         site_for=_fake_site_for(client),
-        describe_store=DescribeStore.empty(tmp_path / "normal.csv"),
+        describe_store=DescribeStore.empty(),
         report_store=ReportStore.empty(),
         row_limit=False,
-        **_fetch_settings(tmp_path, "normal"),
+        **_fetch_settings(),
     )[0]
 
-    # --rebuild: レポート定義は保存データにあり、 項目定義は無い
+    # --analyze: レポート定義は保存データにあり、 項目定義は無い
     report_store = ReportStore.load(tmp_path / "data" / "項目定義.csv")
-    report_store.put(ORG, REPORT_ID, make_slim_report(metadata), ())
+    report_store.put(ORG, REPORT_ID, metadata)
     rebuild = run_fetch(
         [_entry()],
         site_for=offline_site_for(_fake_base_site_for(ORG_DOMAIN_URL)),
-        describe_store=DescribeStore.empty(tmp_path / "rebuild.csv"),
+        describe_store=DescribeStore.empty(),
         report_store=report_store,
         row_limit=False,
-        allow_refresh=False,
-        **_fetch_settings(tmp_path, "rebuild"),
+        **_fetch_settings(),
     )[0]
 
     assert normal.status == "ok"
@@ -580,7 +555,7 @@ def test_rebuild_missing_object_describe_has_same_record_as_normal_404(tmp_path:
     assert "404" in normal_record.warnings[0]
 
 
-def test_rebuild_uses_column_key_candidate_when_report_type_is_missing(
+def test_analyze_uses_column_key_candidate_when_report_type_is_missing(
     tmp_path: Path, monkeypatch: Any, caplog: Any
 ) -> None:
     """主オブジェクト候補 (a) が保存データに無く、 (b) の候補は保存データにある
@@ -601,7 +576,7 @@ def test_rebuild_uses_column_key_candidate_when_report_type_is_missing(
     _save_object_describe(file_paths, _account_describe())
 
     with caplog.at_level(logging.WARNING, logger="src.fetch.flow"):
-        code = _run_rebuild(file_paths)
+        code = _run_analyze(file_paths)
 
     assert code == 0
     sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
@@ -611,7 +586,7 @@ def test_rebuild_uses_column_key_candidate_when_report_type_is_missing(
     assert "オブジェクト CustomType__c" not in caplog.text
 
 
-def test_rebuild_uses_org_of_connected_site_not_saved_file_name(
+def test_analyze_uses_org_of_connected_site_not_saved_file_name(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     """接続先がサンドボックスなら、 サンドボックスの組織の保存データを使う。
@@ -634,23 +609,23 @@ def test_rebuild_uses_org_of_connected_site_not_saved_file_name(
     _save_object_describe(file_paths, _account_describe(), org=SANDBOX_ORG)
 
     # 接続先はサンドボックス（ base のサイトクラスの DOMAIN_URL ）
-    assert _run_rebuild(file_paths, domain_url=SANDBOX_DOMAIN_URL) == 0
+    assert _run_analyze(file_paths, domain_url=SANDBOX_DOMAIN_URL) == 0
 
     sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
     assert overview["1001"]["主オブジェクト"] == "Account"
 
 
-def test_rebuild_option_is_read_from_sys_argv(tmp_path: Path, monkeypatch: Any) -> None:
-    """``python main.py --rebuild`` のように 引数を渡さない呼び出しでも、
-    ``sys.argv`` から ``--rebuild`` を読む。
+def test_analyze_option_is_read_from_sys_argv(tmp_path: Path, monkeypatch: Any) -> None:
+    """``python main.py --analyze`` のように 引数を渡さない呼び出しでも、
+    ``sys.argv`` から ``--analyze`` を読む。
     """
     from src.run import run
 
     file_paths = _setup(tmp_path, monkeypatch, _one_report_row())
     _save_report_definition(file_paths, REPORT_ID, _report_metadata())
     _save_object_describe(file_paths, _task_describe())
-    monkeypatch.setattr("sys.argv", [str(tmp_path / "main.py"), "--rebuild"])
+    monkeypatch.setattr("sys.argv", [str(tmp_path / "main.py"), "--analyze"])
 
     code = run(None, site_for=_fake_base_site_for(ORG_DOMAIN_URL), file_paths=file_paths)
 
@@ -659,17 +634,20 @@ def test_rebuild_option_is_read_from_sys_argv(tmp_path: Path, monkeypatch: Any) 
 
 
 def test_run_with_other_argv_returns_2(tmp_path: Path, monkeypatch: Any) -> None:
-    """``--rebuild`` 以外の引数は 今まで通り 2。"""
+    """決まった形以外の引数は 2。 廃止した古いオプションも 2。"""
     from src.run import run
 
     file_paths = _setup(tmp_path, monkeypatch, _one_report_row())
     _save_report_definition(file_paths, REPORT_ID, _report_metadata())
     _save_object_describe(file_paths, _task_describe())
 
+    assert (
+        run(["--rebuild"], site_for=_fake_base_site_for(ORG_DOMAIN_URL), file_paths=file_paths) == 2
+    )
     assert run(["fetch"], site_for=_fake_base_site_for(ORG_DOMAIN_URL), file_paths=file_paths) == 2
     assert (
         run(
-            ["--rebuild", "x"],
+            ["--analyze", "x"],
             site_for=_fake_base_site_for(ORG_DOMAIN_URL),
             file_paths=file_paths,
         )
@@ -679,8 +657,8 @@ def test_run_with_other_argv_returns_2(tmp_path: Path, monkeypatch: Any) -> None
     assert not (tmp_path / "output" / "SOQL調査.xlsx").exists()
 
 
-def test_rebuild_does_not_call_row_count_api(tmp_path: Path, monkeypatch: Any) -> None:
-    """``--rebuild`` では 件数チェックの API を呼ばない。
+def test_analyze_does_not_call_row_count_api(tmp_path: Path, monkeypatch: Any) -> None:
+    """``--analyze`` では 件数チェックの API を呼ばない。
 
     呼んだら オフライン用の例外で失敗するので、 終了コード 0 と
     「2000件超」 が 「未実施」 であることを確かめる。
@@ -689,7 +667,7 @@ def test_rebuild_does_not_call_row_count_api(tmp_path: Path, monkeypatch: Any) -
     _save_report_definition(file_paths, REPORT_ID, _report_metadata())
     _save_object_describe(file_paths, _task_describe())
 
-    assert _run_rebuild(file_paths) == 0
+    assert _run_analyze(file_paths) == 0
 
     sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
@@ -697,8 +675,8 @@ def test_rebuild_does_not_call_row_count_api(tmp_path: Path, monkeypatch: Any) -
     assert overview["1001"]["行数"] == ""
 
 
-def test_rebuild_does_not_change_saved_data(tmp_path: Path, monkeypatch: Any) -> None:
-    """``--rebuild`` の後も レポート定義 / 項目定義 の保存ファイルが変わらない。
+def test_analyze_does_not_change_saved_data(tmp_path: Path, monkeypatch: Any) -> None:
+    """``--analyze`` の後も 保存データのファイルの中身と更新時刻が変わらない。
     今回調べないレポートのレポート定義も消さない。
     """
     file_paths = _setup(tmp_path, monkeypatch, _one_report_row())
@@ -708,18 +686,23 @@ def test_rebuild_does_not_change_saved_data(tmp_path: Path, monkeypatch: Any) ->
     unused_report_id = "00O5g00000ZZZZZ"
     _save_report_definition(file_paths, unused_report_id, _report_metadata(unused_report_id))
 
-    describe_path = file_paths.describe_csv_path
-    store_dir = describe_path.parent / "レポート定義"
-    before_csv = describe_path.read_bytes()
-    before_json = {path.name: path.read_bytes() for path in sorted(store_dir.glob("*.json"))}
+    raw_dir = file_paths.describe_csv_path.parent / "元データ"
+    before = _snapshot(raw_dir)
 
-    assert _run_rebuild(file_paths) == 0
+    assert _run_analyze(file_paths) == 0
 
-    assert describe_path.read_bytes() == before_csv
-    after_json = {path.name: path.read_bytes() for path in sorted(store_dir.glob("*.json"))}
-    assert after_json == before_json
-    # 今回調べないレポートのレポート定義も残っている
-    assert f"{ORG}__{unused_report_id}.json" in after_json
+    assert _snapshot(raw_dir) == before
+    # 今回調べないレポートの原本も残っている
+    assert f"レポート/{ORG}__{unused_report_id}.json" in before
+
+
+def _snapshot(folder: Path) -> dict[str, tuple[bytes, int]]:
+    """フォルダの全ファイルの中身と更新時刻。"""
+    return {
+        path.relative_to(folder).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in folder.rglob("*")
+        if path.is_file()
+    }
 
 
 # ── クロスフィルタの副問い合わせ ────────────────────────────────────────
@@ -784,8 +767,8 @@ def _cross_filter_metadata(report_id: str = REPORT_ID) -> dict[str, Any]:
     return metadata
 
 
-def test_rebuild_makes_same_cross_filter_subquery_soql(tmp_path: Path) -> None:
-    """クロスフィルタの副問い合わせは、 普通の実行と ``--rebuild`` で同じ SOQL になる。
+def test_analyze_makes_same_cross_filter_subquery_soql(tmp_path: Path) -> None:
+    """クロスフィルタの副問い合わせは、 普通の実行と ``--analyze`` で同じ SOQL になる。
 
     子リレーションと子オブジェクトの項目定義は 保存データ に残るため、
     作り直しても同じ副問い合わせCCI を出せる。
@@ -801,15 +784,11 @@ def test_rebuild_makes_same_cross_filter_subquery_soql(tmp_path: Path) -> None:
     normal = run_fetch(
         [_entry()],
         site_for=_fake_site_for(client),
-        describe_store=DescribeStore.empty(csv_path),
+        describe_store=DescribeStore.load(csv_path),
         report_store=ReportStore.load(csv_path),
         row_limit=False,
-        **_fetch_settings(tmp_path, "normal"),
+        **_fetch_settings(),
     )[0]
-
-    # 保存データ （ 項目定義と子リレーション） が揃っている
-    assert csv_path.exists()
-    assert (csv_path.parent / "子リレーション.csv").exists()
 
     rebuild = run_fetch(
         [_entry()],
@@ -817,8 +796,7 @@ def test_rebuild_makes_same_cross_filter_subquery_soql(tmp_path: Path) -> None:
         describe_store=DescribeStore.load(csv_path),
         report_store=ReportStore.load(csv_path),
         row_limit=False,
-        allow_refresh=False,
-        **_fetch_settings(tmp_path, "rebuild"),
+        **_fetch_settings(),
     )[0]
 
     assert normal.status == "ok"
@@ -839,7 +817,7 @@ def test_rebuild_makes_same_cross_filter_subquery_soql(tmp_path: Path) -> None:
     assert normal_record.soql_draft.use_bulk == rebuild_record.soql_draft.use_bulk
 
 
-def test_rebuild_cross_filter_child_object_not_in_objects(tmp_path: Path) -> None:
+def test_analyze_cross_filter_child_object_not_in_objects(tmp_path: Path) -> None:
     """副問い合わせの 子オブジェクトは ``objects`` に入らない。"""
     metadata = _cross_filter_metadata()
     csv_path = tmp_path / "data" / "項目定義.csv"
@@ -852,10 +830,10 @@ def test_rebuild_cross_filter_child_object_not_in_objects(tmp_path: Path) -> Non
     normal = run_fetch(
         [_entry()],
         site_for=_fake_site_for(client),
-        describe_store=DescribeStore.empty(csv_path),
+        describe_store=DescribeStore.load(csv_path),
         report_store=ReportStore.load(csv_path),
         row_limit=False,
-        **_fetch_settings(tmp_path, "normal"),
+        **_fetch_settings(),
     )[0]
 
     record = normal.record
@@ -867,16 +845,16 @@ def test_rebuild_cross_filter_child_object_not_in_objects(tmp_path: Path) -> Non
     assert "TaskComment" in record.cross_filter_objects
 
 
-def test_rebuild_cross_filter_without_child_describe_is_incomplete(tmp_path: Path) -> None:
+def test_analyze_cross_filter_without_child_describe_is_incomplete(tmp_path: Path) -> None:
     """子の項目定義が保存データに無いときは、 警告が残り クロスフィルタは未完成。"""
     metadata = _cross_filter_metadata()
     csv_path = tmp_path / "data" / "項目定義.csv"
 
     # 主オブジェクト （ 子リレーションつき ） だけ保存する。 子は無い
-    store = DescribeStore.empty(csv_path)
+    store = DescribeStore.load(csv_path)
     store.record_api_success(ORG, "Task", _task_with_children_describe())
     report_store = ReportStore.load(csv_path)
-    report_store.put(ORG, REPORT_ID, make_slim_report(metadata), ())
+    report_store.put(ORG, REPORT_ID, metadata)
 
     outcome = run_fetch(
         [_entry()],
@@ -884,8 +862,7 @@ def test_rebuild_cross_filter_without_child_describe_is_incomplete(tmp_path: Pat
         describe_store=DescribeStore.load(csv_path),
         report_store=report_store,
         row_limit=False,
-        allow_refresh=False,
-        **_fetch_settings(tmp_path, "rebuild"),
+        **_fetch_settings(),
     )[0]
 
     assert outcome.status == "ok"
@@ -901,363 +878,3 @@ def test_rebuild_cross_filter_without_child_describe_is_incomplete(tmp_path: Pat
     assert any("クロスフィルタ" in message for message in record.soql_draft.missing)
     # 取り方は Bulk のまま
     assert record.soql_draft.use_bulk is True
-
-
-# ── 保存済みの項目定義から子リレーションを取り直す ──────────────────────
-
-
-class _CountingClient(_FakeClient):
-    """``describe_object`` の呼び出し（ オブジェクト名 ） を記録する偽物。"""
-
-    def __init__(
-        self,
-        metadata: dict[str, Any],
-        errors: dict[str, BaseException],
-        describes: dict[str, dict[str, Any]] | None = None,
-    ) -> None:
-        super().__init__(metadata, errors, describes)
-        self.describe_object_calls: list[str] = []
-
-    def describe_object(self, name: str) -> dict[str, Any]:
-        self.describe_object_calls.append(name)
-        return super().describe_object(name)
-
-
-class _OfflineCountingClient(_CountingClient):
-    """``describe_object`` を呼ぶと 「保存データに無い」 を出す偽物。
-
-    ``--rebuild`` の接続しないクライアントと同じ動き。 何が呼ばれたかを
-    数えるため、 呼び出しは記録してから例外を投げる。
-    """
-
-    def describe_object(self, name: str) -> dict[str, Any]:
-        self.describe_object_calls.append(name)
-        raise OfflineDescribeMissing(name)
-
-
-def _entry2() -> MasterEntry:
-    """2 つ目のレポートの管理表の行（ ``run_fetch`` に直接渡す用 ）。"""
-    return MasterEntry(
-        key="1002",
-        summary="別のレポート",
-        url=f"{DOMAIN}/{OTHER_REPORT_ID}/view",
-        enabled=True,
-    )
-
-
-def _save_saved_data(csv_path: Path, metadata: dict[str, Any]) -> None:
-    """レポート定義と主オブジェクトの項目定義を 保存データ に書く。"""
-    report_store = ReportStore.load(csv_path)
-    report_store.put(ORG, REPORT_ID, make_slim_report(metadata), ())
-    # 項目定義.csv だけ（ 子リレーション.csv はまだ無い ）
-    upsert_object_rows(csv_path, ORG, "Task", _task_with_children_describe())
-
-
-def test_cross_filter_refreshes_child_relationships_from_saved_item_definition(
-    tmp_path: Path,
-) -> None:
-    """項目定義.csv だけがある状態でも、 取り直しのあとにクロスフィルタが
-    副問い合わせになり、 子リレーション.csv ができる。
-    """
-    metadata = _cross_filter_metadata()
-    csv_path = tmp_path / "data" / "項目定義.csv"
-    _save_saved_data(csv_path, metadata)
-
-    client = _CountingClient(
-        metadata,
-        {},
-        describes={"Task": _task_with_children_describe(), "TaskComment": _task_comment_describe()},
-    )
-    outcome = run_fetch(
-        [_entry()],
-        site_for=_fake_site_for(client),
-        describe_store=DescribeStore.load(csv_path),
-        report_store=ReportStore.load(csv_path),
-        row_limit=False,
-        **_fetch_settings(tmp_path, "normal"),
-    )[0]
-
-    assert outcome.status == "ok"
-    record = outcome.record
-    assert record is not None
-    # 主オブジェクトは 1 回だけ API から取り直す
-    assert client.describe_object_calls.count("Task") == 1
-    # 取り直しのあとに子リレーションの CSV ができる
-    child_csv = csv_path.parent / "子リレーション.csv"
-    assert child_csv.exists()
-    assert "TaskComment" in child_csv.read_text(encoding="utf-8")
-    # クロスフィルタは副問い合わせになる
-    assert record.soql_draft.soql == (
-        "SELECT Subject\n"
-        "FROM Task\n"
-        "WHERE Id IN (SELECT ParentId FROM TaskComment WHERE CommentBody = '要対応')"
-    )
-    assert record.soql_draft.use_bulk is False
-
-
-def test_cross_filter_refresh_is_done_once_for_two_reports_of_same_main_object(
-    tmp_path: Path,
-) -> None:
-    """主オブジェクトが同じレポートが 2 件でも、 取り直しは 1 回だけ。"""
-    metadata = _cross_filter_metadata()
-    metadata2 = _cross_filter_metadata(OTHER_REPORT_ID)
-    csv_path = tmp_path / "data" / "項目定義.csv"
-    _save_saved_data(csv_path, metadata)
-    report_store = ReportStore.load(csv_path)
-    report_store.put(ORG, OTHER_REPORT_ID, make_slim_report(metadata2), ())
-
-    client = _CountingClient(
-        metadata,
-        {},
-        describes={"Task": _task_with_children_describe(), "TaskComment": _task_comment_describe()},
-    )
-    outcomes = run_fetch(
-        [_entry(), _entry2()],
-        site_for=_fake_site_for(client),
-        describe_store=DescribeStore.load(csv_path),
-        report_store=report_store,
-        row_limit=False,
-        **_fetch_settings(tmp_path, "normal"),
-    )
-
-    assert all(outcome.status == "ok" for outcome in outcomes)
-    # 主オブジェクトの describe_object は 1 回だけ
-    assert client.describe_object_calls.count("Task") == 1
-    # 2 件とも副問い合わせになる
-    for outcome in outcomes:
-        record = outcome.record
-        assert record is not None
-        assert "IN (SELECT ParentId FROM TaskComment" in record.soql_draft.soql
-
-
-def test_cross_filter_does_not_call_api_when_child_relationship_csv_exists(
-    tmp_path: Path,
-) -> None:
-    """子リレーション.csv がある次の実行では、 主オブジェクトを取り直さない。"""
-    metadata = _cross_filter_metadata()
-    csv_path = tmp_path / "data" / "項目定義.csv"
-    _save_saved_data(csv_path, metadata)
-
-    # 1 回目: 子リレーション.csv を作る
-    first_client = _CountingClient(
-        metadata,
-        {},
-        describes={"Task": _task_with_children_describe(), "TaskComment": _task_comment_describe()},
-    )
-    run_fetch(
-        [_entry()],
-        site_for=_fake_site_for(first_client),
-        describe_store=DescribeStore.load(csv_path),
-        report_store=ReportStore.load(csv_path),
-        row_limit=False,
-        **_fetch_settings(tmp_path, "first"),
-    )
-    assert first_client.describe_object_calls.count("Task") == 1
-    assert (csv_path.parent / "子リレーション.csv").exists()
-
-    # 2 回目: 保存データ （ 子リレーション.csv 込み ） だけで解決できる
-    second_client = _CountingClient(
-        metadata,
-        {},
-        describes={"Task": _task_with_children_describe(), "TaskComment": _task_comment_describe()},
-    )
-    outcomes = run_fetch(
-        [_entry()],
-        site_for=_fake_site_for(second_client),
-        describe_store=DescribeStore.load(csv_path),
-        report_store=ReportStore.load(csv_path),
-        row_limit=False,
-        **_fetch_settings(tmp_path, "second"),
-    )
-
-    assert outcomes[0].status == "ok"
-    record = outcomes[0].record
-    assert record is not None
-    # 主オブジェクトは API から取り直さない
-    assert "Task" not in second_client.describe_object_calls
-    # 副問い合わせは同じものが出る
-    assert "IN (SELECT ParentId FROM TaskComment" in record.soql_draft.soql
-
-
-def test_rebuild_with_only_item_definition_does_not_call_api(tmp_path: Path) -> None:
-    """``--rebuild`` で項目定義.csv だけのときは API を呼ばず、 クロスフィルタは
-    missing のまま。
-    """
-    metadata = _cross_filter_metadata()
-    csv_path = tmp_path / "data" / "項目定義.csv"
-    _save_saved_data(csv_path, metadata)
-
-    client = _OfflineCountingClient(metadata, {}, {})
-    outcome = run_fetch(
-        [_entry()],
-        site_for=_fake_site_for(client),
-        describe_store=DescribeStore.load(csv_path),
-        report_store=ReportStore.load(csv_path),
-        row_limit=False,
-        allow_refresh=False,
-        **_fetch_settings(tmp_path, "rebuild"),
-    )[0]
-
-    assert outcome.status == "ok"
-    record = outcome.record
-    assert record is not None
-    # 主オブジェクトは API から取らない
-    assert "Task" not in client.describe_object_calls
-    # クロスフィルタは missing のまま
-    assert record.soql_draft.status == STATUS_PARTIAL
-    assert record.soql_draft.soql.startswith("【未完成】")
-    assert any("クロスフィルタ" in message for message in record.soql_draft.missing)
-    assert record.soql_draft.use_bulk is True
-
-
-def test_cross_filter_refresh_failure_keeps_saved_item_definition(tmp_path: Path) -> None:
-    """取り直しが失敗しても、 CSV の値のまま続けて 警告だけ残す。"""
-    metadata = _cross_filter_metadata()
-    csv_path = tmp_path / "data" / "項目定義.csv"
-    _save_saved_data(csv_path, metadata)
-
-    client = _CountingClient(
-        metadata,
-        {"Task": SalesforceRequestError("GET", "/sobjects/Task/describe", 500, "Boom")},
-        describes={"TaskComment": _task_comment_describe()},
-    )
-    outcome = run_fetch(
-        [_entry()],
-        site_for=_fake_site_for(client),
-        describe_store=DescribeStore.load(csv_path),
-        report_store=ReportStore.load(csv_path),
-        row_limit=False,
-        **_fetch_settings(tmp_path, "normal"),
-    )[0]
-
-    assert outcome.status == "ok"
-    record = outcome.record
-    assert record is not None
-    # 取り直しは 1 回だけ
-    assert client.describe_object_calls.count("Task") == 1
-    # 主オブジェクトは CSV の値のまま
-    assert record.main_object == "Task"
-    # 失敗の理由が警告に残る
-    assert any("Task" in warning and "500" in warning for warning in record.warnings)
-    # クロスフィルタは missing のまま
-    assert record.soql_draft.status == STATUS_PARTIAL
-    assert any("クロスフィルタ" in message for message in record.soql_draft.missing)
-
-
-# ── 子リレーションの取り直し（ クロスフィルタの無いレポートも ） ──────────
-
-
-def _run_normal(file_paths: Any, client: Any) -> int:
-    """``run()`` を 1 回実行する（ Salesforce に繋ぐ ） 。"""
-    from src.run import run
-
-    return run([], site_for=_fake_site_for(client), file_paths=file_paths)
-
-
-def test_object_without_children_does_not_call_api_on_second_run(tmp_path: Path) -> None:
-    """子が 0 件のオブジェクトも、 1 回目に 子リレーション.csv が残るので
-    2 回目の実行では API を呼ばない。
-    """
-    # 列は 1 つだけ（ 全部解決する列にする。 そうしないと 「(不明) の列」 の
-    # 取り直しが別に起きる ）
-    metadata = _report_metadata(
-        detail_columns=("SUBJECT",),
-        column_info={"SUBJECT": "件名"},
-    )
-    # ``make_slim_report`` が残すのは dict の値だけ。 表示名で解決させる
-    metadata["reportExtendedMetadata"]["detailColumnInfo"] = {"SUBJECT": {"label": "件名"}}
-    csv_path = tmp_path / "data" / "項目定義.csv"
-
-    first_client = _CountingClient(metadata, {}, describes={"Task": _task_describe()})
-    run_fetch(
-        [_entry()],
-        site_for=_fake_site_for(first_client),
-        describe_store=DescribeStore.empty(csv_path),
-        report_store=ReportStore.load(csv_path),
-        row_limit=False,
-        **_fetch_settings(tmp_path, "first"),
-    )
-    assert first_client.describe_object_calls.count("Task") == 1
-    # 子が 0 件でも 子リレーション.csv に 1 行残る
-    child_csv = csv_path.parent / "子リレーション.csv"
-    assert child_csv.exists()
-    assert "Task" in child_csv.read_text(encoding="utf-8")
-
-    second_client = _CountingClient(metadata, {}, describes={"Task": _task_describe()})
-    outcomes = run_fetch(
-        [_entry()],
-        site_for=_fake_site_for(second_client),
-        describe_store=DescribeStore.load(csv_path),
-        report_store=ReportStore.load(csv_path),
-        row_limit=False,
-        **_fetch_settings(tmp_path, "second"),
-    )
-
-    assert outcomes[0].status == "ok"
-    # 主オブジェクトは API から取り直さない
-    assert "Task" not in second_client.describe_object_calls
-
-
-def test_report_without_cross_filter_refreshes_child_relationships(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    """クロスフィルタの無いレポートでも、 項目定義.csv だけの状態から
-    1 回取り直して、 Markdown に子リレーションの表が 出る。
-    """
-    # 列は 1 つだけ（ 全部解決する列にする。 そうしないと 「(不明) の列」 の
-    # 取り直しが別に起きて、 どちらの理由で取り直したのか分からなくなる ）
-    metadata = _report_metadata(
-        detail_columns=("SUBJECT",),
-        column_info={"SUBJECT": "件名"},
-    )
-    metadata["reportExtendedMetadata"]["detailColumnInfo"] = {"SUBJECT": {"label": "件名"}}
-    file_paths = _setup(tmp_path, monkeypatch, _one_report_row())
-    _save_report_definition(file_paths, REPORT_ID, metadata)
-    # 項目定義.csv だけ（ 子リレーション.csv は無い ）
-    _save_object_describe(file_paths, _task_with_children_describe())
-
-    client = _CountingClient(
-        metadata,
-        {},
-        describes={"Task": _task_with_children_describe()},
-    )
-    assert _run_normal(file_paths, client) == 0
-
-    # 主オブジェクトは 1 回だけ取り直す
-    assert client.describe_object_calls.count("Task") == 1
-    # 取り直しのあとに 子リレーション.csv ができる
-    child_csv = file_paths.describe_csv_path.parent / "子リレーション.csv"
-    assert child_csv.exists()
-    assert "TaskComment" in child_csv.read_text(encoding="utf-8")
-    # Markdown に 子リレーションの表が 出る
-    md_text = (tmp_path / "output" / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
-    assert "## 子リレーション（サブクエリの材料）" in md_text
-    assert "| Comments | TaskComment | ParentId |" in md_text
-
-
-def test_rebuild_with_old_saved_data_marks_cross_filter_unverified(tmp_path: Path) -> None:
-    """``--rebuild`` で 子リレーション.csv が無い（ 古い保存データ ） のときは、
-    クロスフィルタの判定が 「確認できず」 になる。
-    """
-    metadata = _cross_filter_metadata()
-    csv_path = tmp_path / "data" / "項目定義.csv"
-    _save_saved_data(csv_path, metadata)
-
-    client = _OfflineCountingClient(metadata, {}, {})
-    outcome = run_fetch(
-        [_entry()],
-        site_for=_fake_site_for(client),
-        describe_store=DescribeStore.load(csv_path),
-        report_store=ReportStore.load(csv_path),
-        row_limit=False,
-        allow_refresh=False,
-        **_fetch_settings(tmp_path, "rebuild"),
-    )[0]
-
-    assert outcome.status == "ok"
-    record = outcome.record
-    assert record is not None
-    link = record.soql_draft.cross_filter_links[0]
-    assert link.status == CROSS_FILTER_LINK_UNVERIFIED
-    assert link.converted is False
-    assert "childRelationships が空" in link.reason

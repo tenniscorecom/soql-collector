@@ -277,7 +277,6 @@ def _run_e2e(tmp_path: Path) -> Path:
     _build_master(master)
     _write_ini(tmp_path, master)
 
-    file_paths = _load_file_paths_for_test(tmp_path)
     output_dir = tmp_path / "output"
 
     client = _FakeClient(_e2e_describe(), _e2e_object_describes())
@@ -290,7 +289,6 @@ def _run_e2e(tmp_path: Path) -> Path:
     )
     outcomes = run_fetch(
         [entry],
-        describe_csv_path=file_paths.describe_csv_path,
         site_for=_site_for(client),
     )
     assert all(o.status == "ok" for o in outcomes), [(o.status, o.error) for o in outcomes]
@@ -408,7 +406,6 @@ def test_e2e_columns_sheet_with_summary_report(tmp_path: Path) -> None:
     master = tmp_path / "master.xlsx"
     _build_master(master)
     _write_ini(tmp_path, master)
-    file_paths = _load_file_paths_for_test(tmp_path)
     output_dir = tmp_path / "output"
 
     describe = {
@@ -434,7 +431,6 @@ def test_e2e_columns_sheet_with_summary_report(tmp_path: Path) -> None:
     )
     outcomes = run_fetch(
         [entry],
-        describe_csv_path=file_paths.describe_csv_path,
         site_for=_site_for(client),
     )
     run_tables(output_dir, [o.record for o in outcomes if o.record])
@@ -460,7 +456,6 @@ def test_e2e_columns_sheet_top_rows_is_human_readable(tmp_path: Path) -> None:
     master = tmp_path / "master.xlsx"
     _build_master(master)
     _write_ini(tmp_path, master)
-    file_paths = _load_file_paths_for_test(tmp_path)
     output_dir = tmp_path / "output"
 
     describe = {
@@ -483,7 +478,6 @@ def test_e2e_columns_sheet_top_rows_is_human_readable(tmp_path: Path) -> None:
     )
     outcomes = run_fetch(
         [entry],
-        describe_csv_path=file_paths.describe_csv_path,
         site_for=_site_for(client),
     )
     run_tables(output_dir, [o.record for o in outcomes if o.record])

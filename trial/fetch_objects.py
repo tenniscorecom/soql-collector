@@ -1,18 +1,16 @@
 """trial/fetch_objects.py — オブジェクトの項目定義を取り直す単品サンプル。
 
 人が 「対応が取れなかった」 と思ったときに、 そのオブジェクトの API 名を
-リストで書いて実行するだけで ``data/項目定義.csv`` のキャッシュに項目定義を
-入れ、 ``output/single/オブジェクトの項目.csv`` にも展開する。
+リストで書いて実行するだけで ``data/元データ/オブジェクト/`` に原本を
+保存し、 ``output/single/オブジェクトの項目.csv`` にも展開する。
 
 ``trial/`` は **名前空間パッケージ** （``__init__.py`` を **持たない**）。
 ``python -m trial.fetch_objects`` でそのまま動く。
 
 ファイル先頭の ``OBJECT_NAMES`` / ``ORG_URL`` を書き換えて実行する
 （コマンドライン引数は使わない）。 1 回の接続でリストの各オブジェクトを
-**Salesforce から取り直す** （キャッシュは読まない）。 結果は既存の
-``DescribeStore`` のキャッシュ ``[FILES] DESCRIBE_CSV_PATH`` （ 既定
-``./data/項目定義.csv`` ） に upsert し、 次の通常の実行がそこから使える
-ようにする。
+**Salesforce から取り直す** （保存は読まない）。 結果は ``DescribeStore`` で
+原本のまま上書き保存し、 次の解析がそこから使えるようにする。
 
 終了コード:
 
@@ -108,7 +106,7 @@ def main(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # キャッシュは読み込まず、 取得結果を書き込むためだけにストアを作る
-    describe_store = DescribeStore.empty(file_paths.describe_csv_path)
+    describe_store = DescribeStore.load(file_paths.describe_csv_path, force=True)
 
     try:
         site_class = site_for(connection_url)

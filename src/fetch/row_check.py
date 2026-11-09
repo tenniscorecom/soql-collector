@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 _ERROR_REASON_MAX_LENGTH = 200
 
 
+# 結合レポートなど、 形式のせいで判定できないときの理由。 何度取っても同じ結果なので保存する
+ROW_CHECK_FORMAT_REASON = (
+    "この形式のレポートは取得できないため判定できません（結合レポート・明細の列が無いレポートなど）"
+)
+
+
 # レポート row check の状態定数は ``src.row_check_status`` に置いている
 # （ ``src.soql_builder`` からも使うので、 循環 import を避けるため ）
 
@@ -45,7 +51,7 @@ def check_row_count(client: Any, report_id: str) -> RowCheck:
     try:
         table = client.report.get(report_id)
     except OfflineApiError:
-        # 保存データだけで作り直す実行では、 2000 件チェックはしない。
+        # 解析の段では 2000 件チェックはしない。
         # 呼ばれても 「判定不可」 に縮退せず、 上位へ送出して失敗にする
         raise
     except SalesforceReportTruncatedError:
@@ -59,10 +65,7 @@ def check_row_count(client: Any, report_id: str) -> RowCheck:
             return RowCheck(
                 status=ROW_CHECK_UNKNOWN,
                 rows=None,
-                reason=(
-                    "この形式のレポートは取得できないため判定できません"
-                    "（結合レポート・明細の列が無いレポートなど）"
-                ),
+                reason=ROW_CHECK_FORMAT_REASON,
             )
         return RowCheck(
             status=ROW_CHECK_UNKNOWN,
@@ -80,6 +83,14 @@ def check_row_count(client: Any, report_id: str) -> RowCheck:
         rows=len(table),
         reason=None,
     )
+
+
+def can_save_row_check(row_check: RowCheck) -> bool:
+    """件数の判定を保存してよいか。
+
+    通信エラーなどの 「判定不可」 は API の失敗なので保存しない（次の取得でやり直す）。
+    """
+    return row_check.status != ROW_CHECK_UNKNOWN or row_check.reason == ROW_CHECK_FORMAT_REASON
 
 
 def _format_error_reason(exc: BaseException) -> str:

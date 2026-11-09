@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from pathlib import Path
 from typing import Any
 
 from comken.exceptions import (
@@ -64,15 +63,12 @@ def run_fetch(
     related_depth: int = RELATED_DEPTH,
     related_max: int = RELATED_MAX,
     row_limit: bool = ROW_LIMIT_ENABLED,
-    allow_refresh: bool = True,
     pii_keywords: tuple[str, ...] = pii.DEFAULT_KEYWORDS,
     pii_person_objects: tuple[str, ...] = pii.DEFAULT_PERSON_OBJECTS,
-    describe_csv_path: Path,
     dry_run: bool = False,
     site_for: SiteFor | None = None,
     describe_store: DescribeStore | None = None,
     report_store: ReportStore | None = None,
-    refresh_set: set[tuple[str, str]] | None = None,
     column_fix_overrides: dict[tuple[str, str], Any] | None = None,
     manual_child_relationships: tuple[ManualChildRelationship, ...] = (),
 ) -> list[FetchOutcome]:
@@ -82,32 +78,26 @@ def run_fetch(
     そのまま ``run_tables`` に渡す。
 
     ``site_for`` に 接続しないサイト （ ``offline.offline_site_for(base_site_for)`` ）
-    を渡すと、 保存データだけで作り直す（``--rebuild``） になる。 Salesforce に
-    接続せず、 レポート定義が必要になったときは ``OfflineApiError`` でその
-    レポートを失敗にする。 項目定義が無いオブジェクトは、 普通の実行の describe
+    を渡すと、 解析の段（保存データだけで出力を作る） になる。 Salesforce に
+    接続せず、 レポートの原本が必要になったときは ``OfflineApiError`` でその
+    レポートを失敗にする。 原本が無いオブジェクトは、 取得の段の describe
     失敗と同じ扱い（ 警告だけ残る ）。
 
     Args:
         entries: 処理対象の管理表エントリ（既に ``--all`` 絞り込み済み）。
         related_depth: 関連オブジェクトを掘る段数。 既定は ``RELATED_DEPTH``。
         related_max: 関連オブジェクトの合計件数上限。 既定は ``RELATED_MAX``。
-        row_limit: True のとき 1 レポートごとに 2000 行チェックを実行する。
+        row_limit: True のとき、 件数が保存に無いレポートの 2000 行チェックを実行する。
             既定は ``ROW_LIMIT_ENABLED``。
-        allow_refresh: True のとき、 列対応に ``(不明)`` が残れば API で
-            取り直す。 保存データだけで作り直す（``--rebuild``）ときは
-            API を呼ばないので ``False`` にする。
         pii_keywords: PII 判定に使うキーワード。 既定は ``pii.DEFAULT_KEYWORDS``。
         pii_person_objects: 個人系オブジェクト。 既定は
             ``pii.DEFAULT_PERSON_OBJECTS``。
-        describe_csv_path: ``describe_store`` が ``None`` のときに空ストアを
-            作るパス。 ``run.py`` が ``[FILES] DESCRIBE_CSV_PATH`` から渡す。
         dry_run: True なら接続せず、 対象だけ表示用 ``FetchOutcome`` を返す。
         site_for: URL → Salesforce サイトクラスの関数。テスト用差し替え。
-        describe_store: メモリ＋CSV の describe キャッシュ。 ``None`` のときは
-            ``describe_csv_path`` から空ストアを作る。 同じ実行内で
-            ``describe_object`` を 1 回にまとめるための入口。
-        refresh_set: 取り直し （一度 API で取り直して再試行） を実行済みの
-            ``(org, object_lower)`` の集合。 ``None`` のときは内部で作る。
+        describe_store: メモリ＋保存した原本の describe ストア。 ``None`` のときは
+            保存しないストアを作る。 同じ実行内で ``describe_object`` を 1 回に
+            まとめるための入口。
+        report_store: レポートの原本と件数のストア。 ``None`` のときは保存しない。
         column_fix_overrides: 人が ``列の直し.xlsx`` に入れた上書き。
             ``(主オブジェクト小文字, 列キー)`` → ``ColumnMapRow`` の dict。
             ``_fetch_one`` に渡して ``column_map`` の ``対応フィールドAPI名``
@@ -123,11 +113,9 @@ def run_fetch(
         site_for = default_site_for
 
     if describe_store is None:
-        describe_store = DescribeStore.empty(describe_csv_path)
+        describe_store = DescribeStore.empty()
     if report_store is None:
         report_store = ReportStore.empty()
-    if refresh_set is None:
-        refresh_set = set()
     if column_fix_overrides is None:
         column_fix_overrides = {}
 
@@ -165,13 +153,11 @@ def run_fetch(
             related_depth=related_depth,
             related_max=related_max,
             row_limit=row_limit,
-            allow_refresh=allow_refresh,
             pii_keywords=pii_keywords,
             pii_person_objects=pii_person_objects,
             site_for=site_for,
             store=describe_store,
             report_store=report_store,
-            refresh_set=refresh_set,
             column_fix_overrides=column_fix_overrides,
             manual_child_relationships=manual_child_relationships,
         )
@@ -210,10 +196,8 @@ def _fetch_one(
     pii_person_objects: tuple[str, ...],
     site_for: SiteFor,
     store: DescribeStore,
-    refresh_set: set[tuple[str, str]],
     report_store: ReportStore | None = None,
     column_fix_overrides: dict[tuple[str, str], Any] | None = None,
-    allow_refresh: bool = True,
     manual_child_relationships: tuple[ManualChildRelationship, ...] = (),
 ) -> FetchOutcome:
     """1 ID の describe を取り、 ``ReportRecord`` を組み立てて返す。
@@ -227,9 +211,9 @@ def _fetch_one(
         return site_error
     assert report_id is not None  # 上の分岐で必ず代入される
     site = site_for(entry.url)
-    # 組織は 接続先クラスの ``DOMAIN_URL`` から決める。 保存データだけで
-    # 作り直すとき（ ``--rebuild`` ）も、 接続しないサイトの ``DOMAIN_URL``
-    # （ 本来のサイトクラスのもの ） を使うので、 同じコードで同じ組織になる
+    # 組織は 接続先クラスの ``DOMAIN_URL`` から決める。 解析の段も、 接続しない
+    # サイトの ``DOMAIN_URL`` （ 本来のサイトクラスのもの ） を使うので、
+    # 同じコードで同じ組織になる
     org = _org_of(entry, site_for)
 
     state = FetchState()
@@ -243,12 +227,10 @@ def _fetch_one(
                 store=store,
                 report_store=report_store or ReportStore.empty(),
                 row_limit=row_limit,
-                refresh_set=refresh_set,
                 related_depth=related_depth,
                 related_max=related_max,
                 column_fix_overrides=column_fix_overrides,
                 state=state,
-                allow_refresh=allow_refresh,
                 manual_child_relationships=manual_child_relationships,
             )
     except OfflineApiError as exc:
@@ -295,9 +277,8 @@ def _org_of(entry: MasterEntry, site_for: SiteFor) -> str:
     ``DOMAIN_URL`` で決める。 本番とサンドボックスの describe が、 同じ組織のものとして
     混ざらないようにするため。 ``DOMAIN_URL`` を持たない接続先（テストの代用品）は URL で決める。
 
-    保存データだけで作り直すとき（ ``--rebuild`` ）も、 接続しないサイトの
-    ``DOMAIN_URL`` （ 本来のサイトクラスのもの ） を使うので、 普通の実行と
-    同じコードで同じ組織になる。
+    解析の段も、 接続しないサイトの ``DOMAIN_URL`` （ 本来のサイトクラスのもの ）
+    を使うので、 取得の段と同じコードで同じ組織になる。
     """
     domain_url = getattr(site_for(entry.url), "DOMAIN_URL", "")
     return org_from_url(domain_url or entry.url)

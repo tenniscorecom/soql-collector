@@ -22,6 +22,7 @@ CSV を組み立てる。
 - ``columns_rows.py``: 列の対応シートの行
 - ``column_names_csv.py``: ``列名の対応.csv`` の行と積み上げ
 - ``diagram_rows.py``: 関係図シートの行
+- ``ai_csv.py``: AI チャットに渡すファイル（``AIチャット用/``）
 - ``xlsx_out.py``: xlsx の書き出し
 - ``constants.py``: ファイル名・シート名・列名の定数
 """

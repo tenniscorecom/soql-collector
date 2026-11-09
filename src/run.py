@@ -1,29 +1,35 @@
 """src/run.py — main.py から呼ばれる入口。
 
-``実行.bat`` または ``python main.py`` から呼ばれると、 ``argv`` を
-``sys.argv[1:]`` として受け取り、 管理表の「有効」列が ``○`` の行すべての
-describe を取って ``ReportRecord`` に詰める。 その record の一覧を
-``run_tables`` に渡して CSV を組み立てる。 JSON は書かない。
+レポートの describe とオブジェクトの describe を加工せず原本のまま保存し、 出力は保存データ
+だけから作る。 取得と解析を分けることで、 同じ情報を何度も Salesforce から取らずに済み、
+解析で新しい項目が要るようになっても取り直さずに済む。
+
+入口（引数）:
+
+- なし（``実行.bat``）… 取得の段のあと解析の段を通す。 取得で失敗したレポートがあっても、
+  解析は保存にある分で進む
+- ``--fetch``（``取得.bat``）… 取得の段だけ。 保存に無いものだけ取る。 出力は作らない
+- ``--fetch --force``（``全部取り直し.bat``）… 取得の段だけ。 全部取り直して上書きする
+- ``--analyze``（``解析.bat``）… 解析の段だけ。 Salesforce に接続しない
 
 終了コード:
 
 - 0 … 全件成功
 - 1 … 1 件以上のレポートが失敗した / 出力の生成に失敗した
-- 2 … 引数が付いた / 管理表に「有効」が ○ の行が無い / config.ini に
-  必須キーが無い （comken の ``ConfigError`` がそのまま上がる）
+- 2 … 引数が違う / 管理表に調べる行が無い / config.ini に必須キーが無い /
+  入力ファイルの見出しが違う
 
-``--rebuild`` （ 保存データだけで作り直す ）:
+取得の段:
 
-- 引数は ``--rebuild`` 1 個だけ受け付ける。 ほかは 2 で返す
-- Salesforce に接続しない。 レポート定義と項目定義は 保存データ
-  （``data/レポート定義/`` と ``data/項目定義.csv`` ） から読む
-- 件数チェック（ 2000 行チェック ） はしない
-- レポート定義が保存データに無いレポートは、 途中まで作った record を
-  出さず失敗にする（ 実行.bat で取り直してください ）
-- 項目定義が保存データに無いオブジェクトは、 通常の実行で describe が
-  取れなかったときと同じ扱い（ 警告だけ残す。 レポートは失敗にしない ）
-- 保存データ（ レポート定義 / 項目定義 ） は書き換えない。 今回調べない
-  レポートのレポート定義も消さない
+- 解析と同じ経路（``run_fetch``）を通すことで、 必要なオブジェクトを漏れなく保存する
+- API の失敗は保存しない（次の取得でやり直す）。 同じ実行の中では 1 回だけ試す
+- 今回調べないレポートの保存を消すのは取得の段だけ
+
+解析の段:
+
+- 接続しない。 ``site_for`` は ``DOMAIN_URL`` を読むだけで、 サイトクラスを作らない
+- レポートの原本が無いレポートは失敗にする。 オブジェクトの原本が無いのは警告にして進める
+- 保存データは一切書き換えない
 
 `main.py` はこの ``run()`` の戻り値を ``SystemExit`` に流す。
 
@@ -79,22 +85,39 @@ from src.tables import run_tables
 
 logger = logging.getLogger(__name__)
 
-# 今回調べないレポート（管理表から消えた・「有効」が ×・「調査」が ○ でない）の、
-# 貯めたレポート定義を実行の最後に消す。 消すのは ``data/レポート定義/`` の中だけ
-# （``SOQL調査.xlsx`` / ``SOQL資料/`` / ``列名の対応.csv`` / ``項目定義.csv`` には触らない）。
-# 消したものは、 次に調べるときに取り直しになる。
+# 今回調べないレポート（管理表から消えた・「有効」が ×・「調査」が ○ でない）の保存を、
+# 取得の段の最後に消す。 消すのは ``元データ/レポート/`` と ``元データ/件数.csv`` の中だけ
+# （出力ファイルとオブジェクトの原本には触らない）。 消したものは、 次に調べるときに取り直しになる。
 PRUNE_REPORT_STORE: bool = True
 
 
-# 保存データだけで作り直すときのオプション名。 引数はこれ 1 個だけ受け付ける
-# （ ほかは今まで通り 終了コード 2 ）。
-REBUILD_OPTION = "--rebuild"
+FETCH_OPTION = "--fetch"
+FORCE_OPTION = "--force"
+ANALYZE_OPTION = "--analyze"
+
+
+@dataclass(frozen=True)
+class RunMode:
+    """どの段を通すか。"""
+
+    does_fetch: bool
+    does_analyze: bool
+    is_force: bool = False
+
+
+# 受け付ける引数の組み合わせ
+_RUN_MODES: dict[tuple[str, ...], RunMode] = {
+    (): RunMode(does_fetch=True, does_analyze=True),
+    (FETCH_OPTION,): RunMode(does_fetch=True, does_analyze=False),
+    (FETCH_OPTION, FORCE_OPTION): RunMode(does_fetch=True, does_analyze=False, is_force=True),
+    (ANALYZE_OPTION,): RunMode(does_fetch=False, does_analyze=True),
+}
 
 
 @dataclass(frozen=True)
 class FilePaths:
-    """``config.ini [FILES]`` から読むパス。 旧 ``COLUMN_MAP_CSV_PATH`` は
-    互換のため受け取るが、 中身は ``column_fix_xlsx_path`` として保持する。
+    """``config.ini [FILES]`` から読むパス。 ``describe_csv_path`` の親フォルダの下に
+    ``元データ/`` を置く（キーの名前は既存の config.ini を壊さないためそのまま）。
     """
 
     master_xlsx_path: Path
@@ -142,90 +165,97 @@ def _load_column_fix_overrides(
 def _load_manual_child_relationships(
     file_paths: FilePaths,
     *,
-    rebuild: bool,
+    creates_file: bool,
 ) -> tuple[ManualChildRelationship, ...]:
     """``input/子リレーション.csv`` を読んで、 手入力の子リレーションを返す。
 
-    通常の実行では、 ファイルが無ければ見出しだけのファイルを作る。
-    ``--rebuild`` は作らない（ 保存データを書き換えない ） が、 既にあれば
-    読む。 見出しが違うときは ``CSVError`` を上げる（ 停止させる ） 。
+    ``creates_file`` なら、 ファイルが無いときに見出しだけのファイルを作る
+    （取得の段だけ。 解析の段はファイルを作らない）。 見出しが違うときは
+    ``CSVError`` を上げる（停止させる）。
     """
     path = child_relationship_csv.child_relationship_csv_path(file_paths.column_fix_xlsx_path)
-    if not rebuild:
+    if creates_file:
         child_relationship_csv.ensure_child_relationship_file(path)
     return child_relationship_csv.load_manual_child_relationships(path)
 
 
-def _fetch(
-    file_paths: FilePaths,
+def _run_stage(
     entries: list[MasterEntry],
-    column_fix_overrides: dict[tuple[str, str], ColumnFixRow],
-    site_for: SiteFor | None,
     *,
-    rebuild: bool = False,
-    manual_child_relationships: tuple[ManualChildRelationship, ...] = (),
+    column_fix_overrides: dict[tuple[str, str], ColumnFixRow],
+    manual_child_relationships: tuple[ManualChildRelationship, ...],
+    site_for: SiteFor | None,
+    describe_store: DescribeStore,
+    report_store: ReportStore,
+    row_limit: bool,
 ) -> list[FetchOutcome]:
-    """``run_fetch`` を呼び ``outcomes`` を返す。 所要時間と describe の集計ログもここで出す。
-
-    ``rebuild`` が True なら 保存データだけで作り直す（ Salesforce に接続しない。
-    件数チェックもしない。 レポート定義が保存データに無いレポートは 失敗に
-    なる。 項目定義が保存データに無いオブジェクトは、 通常の実行で describe が
-    取れなかったときと同じ扱い（ 警告だけ残して、 そのオブジェクトは不明 ））。
-    """
+    """``run_fetch`` を呼び ``outcomes`` を返す。 取得の段と解析の段で同じ経路を通すための入口。"""
     started_at = time.perf_counter()
-    describe_store = DescribeStore.load(file_paths.describe_csv_path)
-    report_store = ReportStore.load(file_paths.describe_csv_path)
-    refresh_set: set[tuple[str, str]] = set()
-    if rebuild:
-        # 保存データだけで作り直す: 接続しない site_for に差し替える。
-        # 組織は 本来のサイトクラスの ``DOMAIN_URL`` から決めるので、 base の
-        # site_for を包む（ クラスは作るだけで、 ログインはしない ）
-        site_for = offline_site_for(site_for or default_site_for)
-    outcomes = list(
-        run_fetch(
-            entries,
-            related_depth=config.SURVEY.RELATED_DEPTH,
-            related_max=config.SURVEY.RELATED_MAX,
-            row_limit=config.SURVEY.ROW_LIMIT_CHECK == "○" and not rebuild,
-            allow_refresh=not rebuild,
-            pii_keywords=tuple(s.strip() for s in config.PII.KEYWORDS.split(",")),
-            pii_person_objects=tuple(s.strip() for s in config.PII.PERSON_OBJECTS.split(",")),
-            describe_csv_path=file_paths.describe_csv_path,
-            site_for=site_for,
-            describe_store=describe_store,
-            report_store=report_store,
-            refresh_set=refresh_set,
-            column_fix_overrides=column_fix_overrides,
-            manual_child_relationships=manual_child_relationships,
-        )
-    )
-    total_elapsed = time.perf_counter() - started_at
-    ok_count = sum(1 for o in outcomes if o.status == "ok")
-    failed_count = sum(1 for o in outcomes if o.status == "failed")
-    logger.info(
-        "取得終了: 成功=%d 失敗=%d 所要秒=%.1f",
-        ok_count,
-        failed_count,
-        total_elapsed,
+    outcomes = run_fetch(
+        entries,
+        related_depth=config.SURVEY.RELATED_DEPTH,
+        related_max=config.SURVEY.RELATED_MAX,
+        row_limit=row_limit,
+        pii_keywords=tuple(s.strip() for s in config.PII.KEYWORDS.split(",")),
+        pii_person_objects=tuple(s.strip() for s in config.PII.PERSON_OBJECTS.split(",")),
+        site_for=site_for,
+        describe_store=describe_store,
+        report_store=report_store,
+        column_fix_overrides=column_fix_overrides,
+        manual_child_relationships=manual_child_relationships,
     )
     logger.info(
-        "オブジェクトの describe: 保存データから %d 件 / Salesforce から %d 件 / 取り直し %d 件",
-        describe_store.csv_hit_count,
-        describe_store.api_count,
-        describe_store.refresh_count,
+        "処理終了: 成功=%d 失敗=%d 所要秒=%.1f",
+        sum(1 for o in outcomes if o.status == "ok"),
+        sum(1 for o in outcomes if o.status == "failed"),
+        time.perf_counter() - started_at,
     )
-    logger.info(
-        "レポート定義の describe: 保存データから %d 件 / Salesforce から %d 件",
-        report_store.hit_count,
-        report_store.api_count,
-    )
-    if PRUNE_REPORT_STORE and not rebuild:
-        _prune_report_store(report_store, entries)
     return outcomes
 
 
+def _run_fetch_stage(
+    file_paths: FilePaths,
+    entries: list[MasterEntry],
+    *,
+    column_fix_overrides: dict[tuple[str, str], ColumnFixRow],
+    manual_child_relationships: tuple[ManualChildRelationship, ...],
+    site_for: SiteFor | None,
+    is_force: bool,
+) -> bool:
+    """取得の段を通し、 失敗があれば ``True`` を返す。 出力は作らない。"""
+    logger.info("取得の段を始めます%s", "（全部取り直し）" if is_force else "")
+    describe_store = DescribeStore.load(file_paths.describe_csv_path, force=is_force)
+    report_store = ReportStore.load(file_paths.describe_csv_path, force=is_force)
+    outcomes = _run_stage(
+        entries,
+        column_fix_overrides=column_fix_overrides,
+        manual_child_relationships=manual_child_relationships,
+        site_for=site_for,
+        describe_store=describe_store,
+        report_store=report_store,
+        row_limit=config.SURVEY.ROW_LIMIT_CHECK == "○",
+    )
+    logger.info(
+        "API 呼び出し: レポート describe=%d 回 / 件数=%d 回 / オブジェクト describe=%d 回"
+        "（ほか失敗 %d 回）",
+        report_store.api_count,
+        report_store.row_count_api_count,
+        describe_store.api_count,
+        describe_store.failure_count,
+    )
+    logger.info(
+        "保存データから: レポート=%d 件 / オブジェクト=%d 件",
+        report_store.hit_count,
+        describe_store.saved_hit_count,
+    )
+    if PRUNE_REPORT_STORE:
+        _prune_report_store(report_store, entries)
+    has_failed_report = any(o.status == "failed" for o in outcomes)
+    return has_failed_report or report_store.failure_count > 0
+
+
 def _prune_report_store(report_store: ReportStore, entries: list[MasterEntry]) -> None:
-    """今回調べないレポートの、 貯めたレポート定義を消す（出力ファイルや項目定義には触らない）。"""
+    """今回調べないレポートの保存を消す（出力ファイルとオブジェクトの原本には触らない）。"""
     keep_ids: set[str] = set()
     for entry in entries:
         try:
@@ -235,10 +265,42 @@ def _prune_report_store(report_store: ReportStore, entries: list[MasterEntry]) -
     removed = report_store.prune(keep_ids)
     if removed:
         logger.info(
-            "今回調べないレポートの、 貯めたレポート定義を消しました: %d 件（%s）",
+            "今回調べないレポートの保存を消しました: %d 件（%s）",
             len(removed),
             ", ".join(removed),
         )
+
+
+def _run_analyze_stage(
+    file_paths: FilePaths,
+    entries: list[MasterEntry],
+    *,
+    column_fix_overrides: dict[tuple[str, str], ColumnFixRow],
+    manual_child_relationships: tuple[ManualChildRelationship, ...],
+    site_for: SiteFor | None,
+) -> bool:
+    """解析の段を通して出力を作り、 失敗があれば ``True`` を返す。 接続しない。"""
+    logger.info("解析の段を始めます（Salesforce に接続しません）")
+    describe_store = DescribeStore.load(file_paths.describe_csv_path)
+    report_store = ReportStore.load(file_paths.describe_csv_path)
+    outcomes = _run_stage(
+        entries,
+        column_fix_overrides=column_fix_overrides,
+        manual_child_relationships=manual_child_relationships,
+        site_for=offline_site_for(site_for or default_site_for),
+        describe_store=describe_store,
+        report_store=report_store,
+        row_limit=False,
+    )
+    # 取れた record だけから出力を組み立てる。 失敗した ID のファイルは作らず既存も消さない
+    output_failed = _write_output(
+        file_paths=file_paths,
+        records=[o.record for o in outcomes if o.record is not None],
+        ok_keys=[o.entry.key for o in outcomes if o.status == "ok"],
+        column_fix_overrides=column_fix_overrides,
+        describe_store=describe_store,
+    )
+    return output_failed or any(o.status == "failed" for o in outcomes)
 
 
 def _write_output(
@@ -246,6 +308,7 @@ def _write_output(
     records: list[ReportRecord],
     ok_keys: list[str],
     column_fix_overrides: dict[tuple[str, str], ColumnFixRow],
+    describe_store: DescribeStore,
 ) -> bool:
     """``run_tables`` と ``column_fix_xlsx.merge_and_write_after_run`` を順に呼ぶ。
 
@@ -263,6 +326,7 @@ def _write_output(
             xlsx_name=file_paths.xlsx_name,
             markdown_dir=file_paths.markdown_dir,
             diagram_dir=file_paths.diagram_dir,
+            describe_store=describe_store,
         )
     except Exception as exc:
         # xlsx / CSV のどちらも作れていないので、 終了コードは 1 にする
@@ -291,62 +355,51 @@ def run(
 
     Args:
         argv: コマンドライン引数。 ``None`` なら ``sys.argv[1:]`` を使う。
-            ``--rebuild`` 1 個だけを受け付ける（ 保存データだけで作り直す ）。
-            ほかは指定されたら何もしないでエラー終了（終了コード 2）。
+            受け付ける形はモジュールの説明のとおり。 ほかは何もしないで終了コード 2。
         site_for: URL → Salesforce サイトクラスの関数。 テスト用差し替え。
-            ``--rebuild`` のときは 接続しない サイトの土台として使う
-            （ クラス属性 ``DOMAIN_URL`` しか読まない。 ログインはしない ）。
+            解析の段では クラス属性 ``DOMAIN_URL`` しか読まない（ログインしない）。
         file_paths: ``config.ini [FILES]`` の値。 省略時は ``read_file_paths()`` で
             読む。 テストで差し替えるために引数で受ける。
 
     Returns:
         0 … 全件成功
         1 … 失敗した ID が 1 件以上ある / 出力の生成に失敗した
-        2 … 引数が付いた / 管理表に「有効」が ○ の行が無い / config.ini が不正
-            （comken の ``ConfigError`` を 2 にして返す）
+        2 … 引数が違う / 管理表に調べる行が無い / config.ini が不正 / 入力の見出しが違う
     """
     if argv is None:
         argv = sys.argv[1:]
-    rebuild = False
-    if argv:
-        if len(argv) == 1 and argv[0] == REBUILD_OPTION:
-            rebuild = True
-        else:
-            logger.error(
-                "引数は使いません。取るレポートは管理表の『有効』列が ○ の行で決まります"
-                "（%s だけ指定できます）",
-                REBUILD_OPTION,
-            )
-            return 2
+    mode = _RUN_MODES.get(tuple(argv))
+    if mode is None:
+        logger.error(
+            "引数が違います: %s。取るレポートは管理表の『有効』列が ○ の行で決まります"
+            "（指定できるのは %s、%s %s、%s のどれかです）",
+            " ".join(argv),
+            FETCH_OPTION,
+            FETCH_OPTION,
+            FORCE_OPTION,
+            ANALYZE_OPTION,
+        )
+        return 2
 
-    # config.ini のキー欠落 （``ConfigError``） は全て return 2 にまとめる
+    # config.ini のキー欠落 （``ConfigError``） と入力の見出し違いは全て return 2 にまとめる
     try:
         if file_paths is None:
             file_paths = read_file_paths()
 
         all_entries = read_master(file_paths.master_xlsx_path)
         entries = filter_survey_targets(all_entries)
-        enabled_count = sum(1 for entry in all_entries if entry.enabled)
-        target_count = len(entries)
-        total_count = len(all_entries)
 
-        # 設定は ``config.SURVEY.*`` / ``config.PII.*`` を直接読む （
-        # キー欠落ならこの下で ``ConfigError``）
-        if rebuild:
-            logger.info("保存データだけで作り直す。件数チェックはしない")
-        # ROW_LIMIT は 実際の動き（ 作り直すときは 件数チェックをしない ） を書く
-        row_limit_enabled = config.SURVEY.ROW_LIMIT_CHECK == "○" and not rebuild
         logger.info(
-            "取得開始: 管理表=%s 全行数=%d 有効=%d 調査対象=%d 出力先=%s "
+            "開始: 管理表=%s 全行数=%d 有効=%d 調査対象=%d 出力先=%s "
             "RELATED_DEPTH=%d RELATED_MAX=%d ROW_LIMIT=%s SIMILAR=%.2f",
             file_paths.master_xlsx_path,
-            total_count,
-            enabled_count,
-            target_count,
+            len(all_entries),
+            sum(1 for entry in all_entries if entry.enabled),
+            len(entries),
             file_paths.output_dir,
             config.SURVEY.RELATED_DEPTH,
             config.SURVEY.RELATED_MAX,
-            "○" if row_limit_enabled else "×",
+            config.SURVEY.ROW_LIMIT_CHECK,
             config.SURVEY.SIMILAR_COLUMN_THRESHOLD,
         )
 
@@ -360,49 +413,34 @@ def run(
             )
             return 2
 
-        # 列の直しを読む（見出し違いなら ExcelError で止める）
-        try:
-            column_fix_overrides = _load_column_fix_overrides(file_paths)
-        except ExcelError as exc:
-            logger.error("%s", exc)
-            return 2
+        column_fix_overrides = _load_column_fix_overrides(file_paths)
+        manual_child_relationships = _load_manual_child_relationships(
+            file_paths, creates_file=mode.does_fetch
+        )
 
-        # 手入力の子リレーションを読む（見出し違いなら CSVError で止める）
-        try:
-            manual_child_relationships = _load_manual_child_relationships(
-                file_paths, rebuild=rebuild
+        has_failed = False
+        if mode.does_fetch:
+            has_failed = _run_fetch_stage(
+                file_paths,
+                entries,
+                column_fix_overrides=column_fix_overrides,
+                manual_child_relationships=manual_child_relationships,
+                site_for=site_for,
+                is_force=mode.is_force,
             )
-        except CSVError as exc:
-            logger.error("%s", exc)
-            return 2
-
-        # 取得する
-        outcomes = _fetch(
-            file_paths=file_paths,
-            entries=entries,
-            column_fix_overrides=column_fix_overrides,
-            site_for=site_for,
-            rebuild=rebuild,
-            manual_child_relationships=manual_child_relationships,
-        )
-        failed_count = sum(1 for o in outcomes if o.status == "failed")
-
-        ok_keys = [o.entry.key for o in outcomes if o.status == "ok"]
-
-        # 取れた record だけから CSV を組み立てる。 失敗した ID の CSV は作らず
-        # 既存も消さない。
-        records = [o.record for o in outcomes if o.record is not None]
-
-        # 出力する
-        output_failed = _write_output(
-            file_paths=file_paths,
-            records=records,
-            ok_keys=ok_keys,
-            column_fix_overrides=column_fix_overrides,
-        )
-
-        return 1 if (failed_count or output_failed) else 0
-    except ConfigError as exc:
+        if mode.does_analyze:
+            has_failed = (
+                _run_analyze_stage(
+                    file_paths,
+                    entries,
+                    column_fix_overrides=column_fix_overrides,
+                    manual_child_relationships=manual_child_relationships,
+                    site_for=site_for,
+                )
+                or has_failed
+            )
+        return 1 if has_failed else 0
+    except (ConfigError, ExcelError, CSVError) as exc:
         logger.error("%s", exc)
         return 2
 

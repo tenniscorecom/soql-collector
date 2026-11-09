@@ -353,17 +353,19 @@ def test_run_surveys_only_rows_marked_in_survey_column(
         ],
     )
 
-    assert _run_with_fake_fetch(tmp_path, monkeypatch, master) == ["1001"]
+    assert _run_with_fake_fetch(tmp_path, monkeypatch, master) == [
+        "1001",
+        "1001",
+    ]  # 取得の段と解析の段で 1 回ずつ通る
 
 
 def test_run_prunes_stored_report_definitions_of_reports_not_surveyed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """今回調べないレポートの貯めたレポート定義は消し、 調べるレポートのものは残す。
+    """今回調べないレポートの原本は消し、 調べるレポートのものは残す。
 
-    ``SOQL調査.xlsx`` / ``列名の対応.csv`` / ``項目定義.csv`` などの出力には触らない。
+    ``列名の対応.csv`` などの出力には触らない。
     """
-    from src.describe_store import DESCRIBE_CSV_COLUMNS
     from src.report_store import ReportStore
 
     master = tmp_path / "master.xlsx"
@@ -386,22 +388,18 @@ def test_run_prunes_stored_report_definitions_of_reports_not_surveyed(
     )
     slim = {"reportMetadata": {"name": "x"}, "reportExtendedMetadata": {}}
     store = ReportStore.load(tmp_path / "describe.csv")
-    store.put("example.my.salesforce.com", "00O5g00000AAAAA", slim, ())
-    store.put("example.my.salesforce.com", "00O5g00000BBBBB", slim, ())
-    store.put("example.my.salesforce.com", "00O5g00000ZZZZZ", slim, ())  # 管理表に無いレポート
+    store.put("example.my.salesforce.com", "00O5g00000AAAAA", slim)
+    store.put("example.my.salesforce.com", "00O5g00000BBBBB", slim)
+    store.put("example.my.salesforce.com", "00O5g00000ZZZZZ", slim)  # 管理表に無いレポート
     output_keep = tmp_path / "output" / "列名の対応.csv"
     output_keep.parent.mkdir(parents=True)
     output_keep.write_text("残す", encoding="utf-8")
-    describe_csv = tmp_path / "describe.csv"
-    describe_content = ",".join(DESCRIBE_CSV_COLUMNS) + "\n"  # 見出しだけの正しい項目定義
-    describe_csv.write_text(describe_content, encoding="utf-8")
 
     _run_with_fake_fetch(tmp_path, monkeypatch, master)
 
-    remaining = sorted(p.name for p in (tmp_path / "レポート定義").iterdir())
+    remaining = sorted(p.name for p in (tmp_path / "元データ" / "レポート").iterdir())
     assert remaining == ["example.my.salesforce.com__00O5g00000AAAAA.json"]
     assert output_keep.read_text(encoding="utf-8") == "残す"
-    assert describe_csv.read_text(encoding="utf-8") == describe_content
 
 
 def test_run_does_not_prune_when_switched_off(
@@ -417,11 +415,13 @@ def test_run_does_not_prune_when_switched_off(
         [{"ID": "1001", "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view", "有効": "○"}],
     )
     slim = {"reportMetadata": {"name": "x"}, "reportExtendedMetadata": {}}
-    ReportStore.load(tmp_path / "describe.csv").put("org", "00O5g00000ZZZZZ", slim, ())
+    ReportStore.load(tmp_path / "describe.csv").put("org", "00O5g00000ZZZZZ", slim)
 
     _run_with_fake_fetch(tmp_path, monkeypatch, master)
 
-    assert [p.name for p in (tmp_path / "レポート定義").iterdir()] == ["org__00O5g00000ZZZZZ.json"]
+    assert [p.name for p in (tmp_path / "元データ" / "レポート").iterdir()] == [
+        "org__00O5g00000ZZZZZ.json"
+    ]
 
 
 def test_run_filters_disabled_rows(
@@ -452,15 +452,12 @@ def test_run_filters_disabled_rows(
         related_depth=1,
         related_max=40,
         row_limit=True,
-        allow_refresh=True,
         pii_keywords=(),
         pii_person_objects=(),
-        describe_csv_path=None,
         dry_run=False,
         site_for=None,
         describe_store=None,
         report_store=None,
-        refresh_set=None,
         column_fix_overrides=None,
         manual_child_relationships=(),
     ):
@@ -489,7 +486,8 @@ def test_run_filters_disabled_rows(
     code = run_module.run([], site_for=lambda _u: (_ for _ in ()).throw(AssertionError()))
 
     assert code == 0
-    assert captured_keys == ["1001", "1003"]
+    # 取得の段と解析の段で 1 回ずつ通る
+    assert captured_keys == ["1001", "1003", "1001", "1003"]
 
 
 def _record_stub(key: str, summary: str, report_id: str, url: str) -> ReportRecord:
@@ -610,15 +608,12 @@ def test_run_writes_jsons_and_csvs(
         related_depth=1,
         related_max=40,
         row_limit=True,
-        allow_refresh=True,
         pii_keywords=(),
         pii_person_objects=(),
-        describe_csv_path=None,
         dry_run=False,
         site_for=None,
         describe_store=None,
         report_store=None,
-        refresh_set=None,
         column_fix_overrides=None,
         manual_child_relationships=(),
     ):
@@ -692,15 +687,12 @@ def test_run_partial_failure_continues_and_returns_1(
         related_depth=1,
         related_max=40,
         row_limit=True,
-        allow_refresh=True,
         pii_keywords=(),
         pii_person_objects=(),
-        describe_csv_path=None,
         dry_run=False,
         site_for=None,
         describe_store=None,
         report_store=None,
-        refresh_set=None,
         column_fix_overrides=None,
         manual_child_relationships=(),
     ):
@@ -765,15 +757,12 @@ def test_run_returns_1_when_run_tables_raises(
         related_depth=1,
         related_max=40,
         row_limit=True,
-        allow_refresh=True,
         pii_keywords=(),
         pii_person_objects=(),
-        describe_csv_path=None,
         dry_run=False,
         site_for=None,
         describe_store=None,
         report_store=None,
-        refresh_set=None,
         column_fix_overrides=None,
         manual_child_relationships=(),
     ):

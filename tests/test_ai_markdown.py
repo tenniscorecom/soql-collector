@@ -332,11 +332,11 @@ def test_ai_markdown_tabular_full_text() -> None:
         "\n"
         "## 子リレーション（サブクエリの材料）\n"
         "\n"
-        "保存データに無い。実行.bat で取り直すと出る\n"
+        "なし（主オブジェクトの元データに子リレーションが無い）\n"
         "\n"
         "## SOQL を組むときの注意\n"
         "\n"
-        "- 取れなかった列がある\n"
+        "- 取れなかった列がある。項目を追加した直後なら 全部取り直し.bat で取り直す\n"
         "- 複数候補の列がある"
     )
 
@@ -705,10 +705,10 @@ def test_markdown_has_child_relationship_section() -> None:
 
 
 def test_markdown_child_relationship_section_says_missing_when_no_data() -> None:
-    """子リレーションが無いときは 「保存データに無い」 の 1 行。"""
+    """子リレーションが無いときは 「なし」 の 1 行。"""
     rendered = build_markdown(_make_record())
     assert "## 子リレーション（サブクエリの材料）" in rendered
-    assert "保存データに無い。実行.bat で取り直すと出る" in rendered
+    assert "なし（主オブジェクトの元データに子リレーションが無い）" in rendered
 
 
 def test_markdown_child_relationship_section_limits_rows() -> None:

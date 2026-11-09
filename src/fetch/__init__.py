@@ -41,7 +41,7 @@ CSV を組み立てる。 許可リストでレポート describe から落と�
 - ``object_fetch.py``: オブジェクト describe の取得（ストア → API）
 - ``report_slim.py``: レポート・オブジェクト describe の整形
 - ``row_check.py``: 2000 行チェック
-- ``offline.py``: 保存データだけで作り直す（``--rebuild``）用の接続しない client
+- ``offline.py``: 解析の段（保存データだけで出力を作る）用の接続しない client
   と専用例外（``OfflineApiError`` / ``OfflineDescribeMissing``）
 - ``models.py``: データクラス（``ReportRecord`` など）
 """

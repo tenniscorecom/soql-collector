@@ -91,6 +91,8 @@ def build_fetch_outcome(
         cross_filter_objects=state.cross_filter_objects,
         soql_from_object=state.soql_from_object,
         soql_from_relationship=state.soql_from_relationship,
+        org=state.org,
+        source_times=state.source_times,
     )
     return FetchOutcome(
         entry=entry,

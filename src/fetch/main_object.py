@@ -21,7 +21,7 @@ def choose_main(
     slim_report: SlimReport,
     store: DescribeStore,
     warnings: list[str],
-) -> tuple[str | None, dict[str, Any] | None, str | None, set[tuple[str, str]]]:
+) -> tuple[str | None, dict[str, Any] | None, str | None]:
     """``metadata`` から主オブジェクトを決める （2 段: レポートタイプ → 列キー先頭）。
 
     ``reportType.type`` から候補が取れなかったとき （カスタムレポート
@@ -48,30 +48,24 @@ def choose_main(
     (a) (b) ともに全滅したときは (a) の WARNING も積む。
 
     Returns:
-        ``(main_object_name | None, main_describe | None, reason | None,
-        csv_used_keys)``
+        ``(main_object_name | None, main_describe | None, reason | None)``
         - ``main_object_name``: 採用した主オブジェクト名。 describe が取れ
           なかったときは ``None``
         - ``main_describe``: 主オブジェクトの describe dict。 特定・取得に失敗
           したときは ``None``
         - ``reason``: ``main_describe`` が ``None`` のときの理由（``None``
           なら取得成功）
-        - ``csv_used_keys``: このレポートで参照されたオブジェクトのうち、
-          **CSV から読んだもの** （今回 API で取ったものではない） の
-          ``(org, object_lower)`` の集合。 取り直し判定用
     """
     object_name = (slim_report["reportMetadata"].get("reportType") or {}).get("type", "")
-
-    csv_used_keys: set[tuple[str, str]] = set()
 
     # (a) ``reportType.type`` から候補。 失敗 WARNING は一時バッファに
     # 溜め、 (b) が成功したら捨てる (正常な経路扱い) 。
     candidates_a = mapping.report_type_candidates(object_name)
     a_warnings: list[str] = []
     for candidate in candidates_a:
-        describe = fetch_object_cached(client, org, candidate, store, a_warnings, csv_used_keys)
+        describe = fetch_object_cached(client, org, candidate, store, a_warnings)
         if describe is not None:
-            return candidate, describe, None, csv_used_keys
+            return candidate, describe, None
 
     # (b) 列キーの先頭から候補。 こちらは「正常な経路」 なので WARNING を
     # 直接 ``warnings`` に積む。 ただし (b) で出た WARNING は (a) が全滅
@@ -79,16 +73,16 @@ def choose_main(
     candidates_b = _extract_column_key_prefix_candidates(slim_report)
     b_warnings: list[str] = []
     for candidate in candidates_b:
-        describe = fetch_object_cached(client, org, candidate, store, b_warnings, csv_used_keys)
+        describe = fetch_object_cached(client, org, candidate, store, b_warnings)
         if describe is not None:
             warnings.extend(b_warnings)
-            return candidate, describe, None, csv_used_keys
+            return candidate, describe, None
 
     # 両方だめ: (a) の WARNING も積んでから理由を組み立てる
     warnings.extend(a_warnings)
     warnings.extend(b_warnings)
     reason = _main_object_failure_reason(object_name, candidates_a, candidates_b)
-    return None, None, reason, csv_used_keys
+    return None, None, reason
 
 
 def _extract_column_key_prefix_candidates(

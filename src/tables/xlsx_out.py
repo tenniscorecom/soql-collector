@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # 一覧 / 列の対応 シートの 1 行目に出す案内文
 _ANNOUNCEMENT_TEXT = (
-    "直すときは input/列の直し.xlsx の『直したSOQL列名』に書いて、もう一度実行してください。"
+    "直すときは input/列の直し.xlsx の『直したSOQL列名』に書いて、解析.bat を実行してください。"
 )
 
 

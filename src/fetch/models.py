@@ -65,6 +65,15 @@ class RowCheck:
 
 
 @dataclass(frozen=True)
+class SourceTimes:
+    """資料に出す、 元データの取得日時。 分からないものは空文字。"""
+
+    report: str
+    main_object: str
+    row_count: str
+
+
+@dataclass(frozen=True)
 class ReportRecord:
     """1 ID の取得結果をメモリに保持する記録。 ``frozen`` で再代入しない。
 
@@ -110,6 +119,10 @@ class ReportRecord:
     soql_from_object: str | None = None
     #: 子から取る形にしたときの、 子から親へ戻るリレーション名（例 ``Account`` ）。
     soql_from_relationship: str = ""
+    #: 接続先の組織。 AI チャット用の項目定義を保存データから引くときに使う
+    org: str = ""
+    #: 元データの取得日時。 ``None`` のときは資料に出さない
+    source_times: SourceTimes | None = None
 
 
 @dataclass(frozen=True)

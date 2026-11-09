@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src import ai_markdown, mapping, relation_diagram, report_py, similar, soql_similar
+from src.tables.ai_csv import write_ai_chat_files
 from src.tables.column_names_csv import (
     aggregate_resolved_fields,
     merge_column_names_csv,
@@ -25,6 +26,7 @@ from src.tables.survey_rows import (
 from src.tables.xlsx_out import write_xlsx
 
 if TYPE_CHECKING:
+    from src.describe_store import DescribeStore
     from src.fetch import ReportRecord
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,7 @@ def run_tables(
     xlsx_name: str = XLSX_NAME,
     markdown_dir: str = ai_markdown.MARKDOWN_SUBDIR,
     diagram_dir: str = relation_diagram.DIAGRAM_SUBDIR,
+    describe_store: DescribeStore | None = None,
 ) -> TableOutcome:
     """``records`` から ``SOQL調査.xlsx`` と ``列名の対応.csv`` と Markdown を組み立てる。
 
@@ -63,6 +66,7 @@ def run_tables(
             （``config.ini [FILES] MARKDOWN_DIR``）。
         diagram_dir: ``関係図/{主オブジェクト}.md`` を置くフォルダ名
             （``config.ini [FILES] DIAGRAM_DIR``）。
+        describe_store: 保存した原本を引くストア。 渡すと AI チャット用のファイルも書く。
 
     Returns:
         ``TableOutcome``: 書いたファイル一覧。 ``skipped`` は常に空。
@@ -163,6 +167,20 @@ def run_tables(
     if column_names_path.exists():
         wrote.append(column_names_path)
 
+    # AI チャット用のファイル。 分割後のファイル名を Markdown に載せるので、 Markdown より先に書く
+    companion_files: dict[str, tuple[str, ...]] | None = None
+    if describe_store is not None and sorted_records:
+        ai_chat_files = write_ai_chat_files(
+            output_dir,
+            sorted_records,
+            survey_rows=survey_rows,
+            columns_rows=columns_rows,
+            describe_store=describe_store,
+            markdown_dir=markdown_dir,
+        )
+        wrote.extend(ai_chat_files.wrote)
+        companion_files = ai_chat_files.companion_files
+
     # 1 レポート 1 つの Markdown 資料を ``{markdown_dir}/{管理番号}.md`` に書く。
     # AI に SOQL を組ませるときにそのまま渡す用途。 既存のファイルはそのまま
     # 残し、 今回取れた record の分だけ上書きする。 似たレポートの情報を
@@ -177,6 +195,7 @@ def run_tables(
             diagrams=diagrams,
             subdir=markdown_dir,
             diagram_subdir=diagram_dir,
+            companion_files=companion_files,
         )
     )
 

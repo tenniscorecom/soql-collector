@@ -1,4 +1,4 @@
-"""``--rebuild`` （保存データだけで作り直す） 用 のオフライン側の部品。
+"""解析の段（保存データだけで出力を作る） 用 のオフライン側の部品。
 
 Salesforce に接続しない代わりに、 「API が必要になった」 ことを
 ``OfflineApiError`` で知らせる。 レポート定義が無いときは 握りつぶさず、
@@ -6,14 +6,14 @@ Salesforce に接続しない代わりに、 「API が必要になった」 こ
 不完全な record は残さない。
 
 ただし **オブジェクトの項目定義** が無いだけは、 レポート全体を失敗に
-しない。 通常の実行で describe が 404 などになったときと同じ扱い
+しない。 取得の段で describe が 404 などになったときと同じ扱い
 （ 警告を 1 つ残して、 そのオブジェクトは不明のまま ） にする。
-describe の成功したものは必ず CSV に保存されているので、 保存データに無い
-＝ 通常の実行でも取れなかったもの、 とみなせるため。
+describe の成功したものは必ず保存されているので、 保存データに無い
+＝ 取得の段でも取れなかったもの、 とみなせるため。
 
 - ``OfflineApiError``: レポート定義が無いなど、 API が必要になったときの例外
 - ``OfflineDescribeMissing``: オブジェクトの項目定義が保存データに無いときの例外。
-  通常の実行の describe 失敗と同じ経路で処理する
+  取得の段の describe 失敗と同じ経路で処理する
 - ``OfflineClient``: API を呼ぶと ``OfflineApiError`` /
   ``OfflineDescribeMissing`` を出すクライアント
 - ``OfflineSite`` / ``offline_site_for()``: 接続しない ``site_for``
@@ -28,15 +28,15 @@ from comken.exceptions import SalesforceError
 from src.fetch.models import SiteFor
 
 # 足りないもの（= API を呼ばないと取れないもの）の説明
-MISSING_REPORT_DEFINITION = "レポート定義"
+MISSING_REPORT_DEFINITION = "レポートの元データ"
 MISSING_ROW_COUNT = "レポートの行データ（2000件チェック）"
 
 
 class OfflineApiError(SalesforceError):
     """保存データに無いので、 API を呼ぶ必要になったときの例外。
 
-    ``--rebuild`` （保存データだけで作り直す） のときだけ送出される。 普通の
-    実行では出ない。 握りつぶさず、 レポート 1 件を失敗扱いにする。
+    解析の段（保存データだけで出力を作る） のときだけ送出される。 取得の段では
+    出ない。 握りつぶさず、 レポート 1 件を失敗扱いにする。
 
     Attributes:
         missing: 足りなかったもの（ レポート定義 等）。
@@ -44,7 +44,7 @@ class OfflineApiError(SalesforceError):
 
     def __init__(self, missing: str) -> None:
         super().__init__(
-            f"保存データに無いので 実行.bat で取り直してください（足りないもの: {missing}）"
+            f"保存データに無いので 取得.bat で取ってください（足りないもの: {missing}）"
         )
         self.missing = missing
 
@@ -52,7 +52,7 @@ class OfflineApiError(SalesforceError):
 class OfflineDescribeMissing(SalesforceError):
     """オブジェクトの項目定義が保存データに無いときの例外。
 
-    通常の実行で ``describe_object`` が 404 などになったときと同じ扱いにする
+    取得の段で ``describe_object`` が 404 などになったときと同じ扱いにする
     （ ``object_fetch`` 側で ``record_api_failure`` して警告を 1 つ残し、
     ``None`` を返す ）。 レポート全体の失敗にはしない。
 
@@ -62,7 +62,7 @@ class OfflineDescribeMissing(SalesforceError):
 
     def __init__(self, name: str) -> None:
         super().__init__(
-            f"オブジェクト {name} は保存データに無い（実行.bat で取り直すと取れることがあります）"
+            f"オブジェクト {name} は保存データに無い（取得.bat で取れることがあります）"
         )
         self.name = name
 
@@ -83,7 +83,7 @@ class OfflineClient:
     ``report.describe`` を呼ぶと ``OfflineApiError`` を出す（ レポート定義が
     保存データに無いとき。 握りつぶさず、そのレポートを失敗にする ）。
     ``describe_object`` を呼ぶと ``OfflineDescribeMissing`` を出す（ 項目定義が
-    保存データに無いとき。 通常の実行の describe 失敗と同じ扱いにする ）。
+    保存データに無いとき。 取得の段の describe 失敗と同じ扱いにする ）。
     """
 
     def __init__(self) -> None:
@@ -97,7 +97,7 @@ class OfflineSite:
     """``with site_for(url)() as client:`` の形を持つ、 接続しないサイト。
 
     ``DOMAIN_URL`` は本来のサイトクラスのもの。 組織（ describe の保存のキー ）
-    を URL からではなくこの値から決めるために持つ。 通常の実行と同じコードで
+    を URL からではなくこの値から決めるために持つ。 取得の段と同じコードで
     同じ組織になるようにする。
     """
 
@@ -115,9 +115,9 @@ class OfflineSite:
 
 
 def offline_site_for(base_site_for: SiteFor) -> SiteFor:
-    """``--rebuild`` 用 の ``site_for`` を返す。 接続も 認証もしない。
+    """解析の段 用 の ``site_for`` を返す。 接続も 認証もしない。
 
-    ``base_site_for`` は URL → サイトクラス の関数 （ 普通の実行と同じもの ）。
+    ``base_site_for`` は URL → サイトクラス の関数 （ 取得の段と同じもの ）。
     呼び出して クラス属性の ``DOMAIN_URL`` だけを読む。 **クラスは作らない。**
     作ると ログインしてしまう。
 

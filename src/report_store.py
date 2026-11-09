@@ -1,143 +1,165 @@
-"""src/report_store.py — レポート定義（describe）を実行をまたいで JSON に貯める。
+"""src/report_store.py — レポートの describe の原本と件数を保存する。
 
-オブジェクトの describe は ``describe_store.py`` が CSV に貯めて再利用する。 レポートの
-describe は、 以前は毎回 Salesforce に聞いていた。 ``列の直し.xlsx`` を直してもう一度実行する
-たびに、 有効な全レポート分を取り直すことになる。 取れたものは貯めて、 次からは API を呼ばない。
+- ``元データ/レポート/{組織}__{レポートID}.json``: ``client.report.describe`` の返り値そのまま
+- ``元データ/件数.csv``: 組織 / レポートID / 判定 / 行数 / 理由 / 取得日時。 行データは保存しない
 
-- 保存先: ``describe_csv_path`` と同じ ``data/`` の中の ``レポート定義/``
-  （1 レポート 1 ファイル、 ``{組織}__{レポートID}.json``）
-- 貯めるのは ``_slim_report`` で SOQL 組立に要る部分だけに絞った定義と、 そのとき落としたキー名
-  （警告表の「レポート定義の中で使わなかったキー」を、 貯めたものから読んでも変えないため）。
-  レポートの行データは取らない（describe の応答に入っていない）
-- **期限は無い。** 作り直したいときは ``レポート定義/`` フォルダごと（または 1 ファイル）消す。
-  調査はサンドボックスで行い、 本番のレポートを直しながら回す使い方ではない前提
-- 壊れたファイル・書けない場所は、 警告を出して「貯めていない」扱いにする（キャッシュは速くする
-  ためだけのもので、 無くても動く）
+``force=True`` で作ると、 実行の最初に保存を見ない（全部取り直す）。 保存は上書きされ、
+同じ実行の中で一度取ったものはメモリから返す。 取り直しに失敗したものの保存は残る。
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import re
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from comken.core.table import Table
+from comken.exceptions import CSVError
+from comken.toolbox.csv import CSV
+
+from src.raw_store import RAW_DIRNAME, now_iso, raw_file_path, read_original, write_original
+
 logger = logging.getLogger(__name__)
 
-# 保存先のフォルダ名（``describe_csv_path`` の親の下）
-REPORT_STORE_DIRNAME = "レポート定義"
+# 保存先のフォルダ名（``元データ/`` の下）
+REPORT_STORE_DIRNAME = "レポート"
 
-# ファイルの形が変わったときに、 古いファイルを読まずに取り直すための印
-_FORMAT_VERSION = 1
+# 件数を保存する CSV のファイル名（``元データ/`` の下）
+ROW_COUNT_CSV_NAME = "件数.csv"
 
-# ファイル名に使えない文字（組織はホスト名、 レポート ID は英数字だが、 念のため揃える）
-_UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+# 件数の CSV の列（この順）
+ROW_COUNT_CSV_COLUMNS: tuple[str, ...] = (
+    "組織",
+    "レポートID",
+    "判定",
+    "行数",
+    "理由",
+    "取得日時",
+)
 
 
 @dataclass(frozen=True)
-class CachedReport:
-    """貯めてあったレポート定義。
+class SavedRowCount:
+    """保存してあった件数の判定。"""
 
-    ``rows`` は保存した件数。 古いファイルには無いので ``None`` になる
-    （ 件数が分からないので、 row_check を作らない ）。
-    """
-
-    slim_report: dict[str, Any]
-    dropped_keys: tuple[str, ...]
-    rows: int | None = None
+    status: str
+    rows: int | None
+    reason: str | None
+    fetched_at: str
 
 
 class ReportStore:
-    """レポート定義の保存場所。 ``folder`` が ``None`` のときは何も貯めない（毎回 API を使う）。"""
+    """レポートの原本と件数の保存場所。 ``folder`` が ``None`` なら保存せずメモリだけで動く。"""
 
-    def __init__(self, folder: Path | None) -> None:
+    def __init__(
+        self,
+        folder: Path | None,
+        row_count_path: Path | None = None,
+        *,
+        force: bool = False,
+    ) -> None:
         self._folder = folder
-        #: 貯めてあったものを使った件数（実行後のログ用）
+        self._row_count_path = row_count_path
+        self._force = force
+        self._memory: dict[tuple[str, str], dict[str, Any]] = {}
+        self._fetched_at: dict[tuple[str, str], str] = {}
+        self._saved_row_counts: dict[tuple[str, str], SavedRowCount] = (
+            _load_row_counts(row_count_path) if row_count_path is not None else {}
+        )
+        self._refreshed_row_counts: set[tuple[str, str]] = set()
+        #: 保存から読んだ件数（実行後のログ用）
         self.hit_count = 0
-        #: Salesforce から取り直した件数（実行後のログ用）
+        #: ``report.describe`` を呼んだ回数（実行後のログ用）
         self.api_count = 0
+        #: ``report.get`` を呼んだ回数（実行後のログ用）
+        self.row_count_api_count = 0
+        #: レポートの describe に失敗した、 または中身が空だった件数（終了コードの判定に使う）
+        self.failure_count = 0
 
     @classmethod
-    def load(cls, describe_csv_path: Path) -> ReportStore:
-        """``describe_csv_path`` と同じ ``data/`` の中の ``レポート定義/`` を保存場所にする。"""
-        return cls(describe_csv_path.parent / REPORT_STORE_DIRNAME)
+    def load(cls, describe_csv_path: Path, *, force: bool = False) -> ReportStore:
+        """``describe_csv_path`` と同じフォルダの ``元データ/`` を保存場所にする。"""
+        raw_dir = describe_csv_path.parent / RAW_DIRNAME
+        return cls(raw_dir / REPORT_STORE_DIRNAME, raw_dir / ROW_COUNT_CSV_NAME, force=force)
 
     @classmethod
     def empty(cls) -> ReportStore:
-        """何も貯めない保存場所（テストや単発の実行用）。"""
+        """何も保存しない保存場所（テストや単発の実行用）。"""
         return cls(None)
 
-    def get(self, org: str, report_id: str) -> CachedReport | None:
-        """貯めてあれば返す。 無い・壊れているときは ``None``（呼び出し側が API で取る）。"""
-        if self._folder is None:
+    def get(self, org: str, report_id: str) -> dict[str, Any] | None:
+        """レポートの原本を返す。 無い・壊れているときは ``None``（呼び出し側が API で取る）。"""
+        key = (org, report_id)
+        if key in self._memory:
+            return self._memory[key]
+        if self._folder is None or self._force:
             return None
-        path = self._path_for(org, report_id)
-        if not path.exists():
+        saved = read_original(raw_file_path(self._folder, org, report_id))
+        if saved is None:
             return None
-        cached = _read(path)
-        if cached is not None:
-            self.hit_count += 1
-        return cached
+        self.hit_count += 1
+        self._memory[key] = saved.original
+        self._fetched_at[key] = saved.fetched_at
+        return saved.original
 
-    def put(
+    def put(self, org: str, report_id: str, original: dict[str, Any]) -> None:
+        """API で取った原本を保存する。 中身が空（壊れた応答）のときは保存しない。"""
+        self.api_count += 1
+        if not (isinstance(original, dict) and original.get("reportMetadata")):
+            self.failure_count += 1
+            return
+        key = (org, report_id)
+        fetched_at = now_iso()
+        self._memory[key] = original
+        self._fetched_at[key] = fetched_at
+        if self._folder is not None:
+            write_original(raw_file_path(self._folder, org, report_id), org, original, fetched_at)
+
+    def record_failure(self) -> None:
+        """レポートの describe に失敗したことを数える（原本は保存しない）。"""
+        self.api_count += 1
+        self.failure_count += 1
+
+    def fetched_at(self, org: str, report_id: str) -> str:
+        """レポートの原本を取った日時。 分からなければ空文字。"""
+        return self._fetched_at.get((org, report_id), "")
+
+    def get_row_count(self, org: str, report_id: str) -> SavedRowCount | None:
+        """保存した件数の判定を返す。 無いときは ``None``。"""
+        key = (org, report_id)
+        if self._force and key not in self._refreshed_row_counts:
+            return None
+        return self._saved_row_counts.get(key)
+
+    def put_row_count(
         self,
         org: str,
         report_id: str,
-        slim_report: dict[str, Any],
-        dropped_keys: tuple[str, ...],
+        *,
+        status: str,
+        rows: int | None,
+        reason: str | None,
     ) -> None:
-        """API で取り直した定義を貯める。 中身が空（壊れた応答）のときは貯めない。"""
-        self.api_count += 1
-        if self._folder is None or not slim_report.get("reportMetadata"):
-            return
-        document = {
-            "形式": _FORMAT_VERSION,
-            "組織": org,
-            "レポートID": report_id,
-            "取得日時": datetime.now(UTC).isoformat(timespec="seconds"),
-            "落としたキー": list(dropped_keys),
-            "レポート定義": slim_report,
-        }
-        _write(self._path_for(org, report_id), document)
-
-    def save_rows(self, org: str, report_id: str, rows: int) -> None:
-        """保存済みのレポート定義に 「件数」 を書き足す。
-
-        件数は「1000 件以下なら SOQL を作らない」 の判定に使う。 形式番号は
-        変えないので、 古いファイル （ 「件数」 が無い ） もそのまま読める。
-        書けないとき・ファイルが無いときは警告だけ出して無視する。
-        """
-        if self._folder is None:
-            return
-        path = self._path_for(org, report_id)
-        if not path.exists():
-            return
-        try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            logger.warning(
-                "貯めてあったレポート定義を読めないため件数を保存しません: %s（%s）", path, exc
-            )
-            return
-        if not isinstance(document, dict):
-            return
-        document["件数"] = rows
-        _write(path, document)
+        """件数の判定を保存する。 書けないときは警告だけ出す（次の取得でまた取る）。"""
+        key = (org, report_id)
+        self._saved_row_counts[key] = SavedRowCount(status, rows, reason, now_iso())
+        self._refreshed_row_counts.add(key)
+        self._write_row_counts()
 
     def prune(self, keep_report_ids: Collection[str]) -> list[str]:
-        """``keep_report_ids`` に無いレポートのファイルを消し、 消したファイル名を返す。
+        """``keep_report_ids`` に無いレポートの原本と件数を消し、 消したファイル名を返す。
 
         今回調べないレポート（管理表から消えた・「有効」が ``×``・「調査」が ``○`` でない）の
-        貯めたものを残さないための掃除。 消すのはこのストアのフォルダの、 このストアが作る形の
+        保存を残さないための掃除。 消すのはこのストアのフォルダの、 このストアが作る形の
         ファイル名（``{組織}__{レポートID}.json``）だけ。
         ``keep_report_ids`` が空のときは何も消さない（管理表を読み違えても、 全部は消えない）。
         """
-        if self._folder is None or not keep_report_ids or not self._folder.is_dir():
+        if not keep_report_ids:
+            return []
+        self._prune_row_counts(keep_report_ids)
+        if self._folder is None or not self._folder.is_dir():
             return []
         removed: list[str] = []
         for path in sorted(self._folder.glob("*.json")):
@@ -146,69 +168,71 @@ class ReportStore:
             try:
                 path.unlink()
             except OSError as exc:
-                logger.warning("対象外のレポート定義を消せませんでした: %s（%s）", path, exc)
+                logger.warning("対象外のレポートの元データを消せませんでした: %s（%s）", path, exc)
                 continue
             removed.append(path.name)
         return removed
 
-    def _path_for(self, org: str, report_id: str) -> Path:
-        assert self._folder is not None
-        name = _UNSAFE_FILENAME_CHARS.sub("_", f"{org}__{report_id}")
-        return self._folder / f"{name}.json"
+    def _prune_row_counts(self, keep_report_ids: Collection[str]) -> None:
+        kept = {
+            key: value for key, value in self._saved_row_counts.items() if key[1] in keep_report_ids
+        }
+        if len(kept) == len(self._saved_row_counts):
+            return
+        self._saved_row_counts = kept
+        self._write_row_counts()
 
-
-def _read(path: Path) -> CachedReport | None:
-    """1 ファイルを読む。 形が違う・壊れているときは警告を出して ``None``。"""
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        logger.warning("貯めてあったレポート定義を読めないため取り直します: %s（%s）", path, exc)
-        return None
-    slim_report = document.get("レポート定義") if isinstance(document, dict) else None
-    dropped = document.get("落としたキー") if isinstance(document, dict) else None
-    if (
-        not isinstance(document, dict)
-        or document.get("形式") != _FORMAT_VERSION
-        or not isinstance(slim_report, dict)
-        or not isinstance(slim_report.get("reportMetadata"), dict)
-        or not isinstance(slim_report.get("reportExtendedMetadata"), dict)
-        or not isinstance(dropped, list)
-    ):
-        logger.warning("貯めてあったレポート定義の形が違うため取り直します: %s", path)
-        return None
-    return CachedReport(
-        slim_report=slim_report,
-        dropped_keys=tuple(str(key) for key in dropped),
-        rows=_read_rows(document),
-    )
-
-
-def _read_rows(document: dict[str, Any]) -> int | None:
-    """保存された 「件数」 を読む。 無い・読めないときは ``None``。"""
-    if not isinstance(document, dict):
-        return None
-    rows = document.get("件数")
-    if isinstance(rows, bool) or not isinstance(rows, int):
-        return None
-    return rows
-
-
-def _write(path: Path, document: dict[str, Any]) -> None:
-    """途中で止まっても半端なファイルが残らないよう、 一時ファイルに書いてから置き換える。"""
-    temporary = path.with_name(path.name + ".tmp")
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary.write_text(
-            json.dumps(document, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        os.replace(temporary, path)
-    except OSError as exc:
-        logger.warning(
-            "レポート定義を貯められませんでした（次回も API で取ります）: %s（%s）", path, exc
-        )
+    def _write_row_counts(self) -> None:
+        if self._row_count_path is None:
+            return
+        rows = [
+            {
+                "組織": org,
+                "レポートID": report_id,
+                "判定": saved.status,
+                "行数": "" if saved.rows is None else str(saved.rows),
+                "理由": saved.reason or "",
+                "取得日時": saved.fetched_at,
+            }
+            for (org, report_id), saved in sorted(self._saved_row_counts.items())
+        ]
         try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass  # 一時ファイルの後片付けに失敗しても、 取得は止めない
+            self._row_count_path.parent.mkdir(parents=True, exist_ok=True)
+            with CSV(self._row_count_path, columns=list(ROW_COUNT_CSV_COLUMNS)) as csv:
+                csv.replace(Table(list(ROW_COUNT_CSV_COLUMNS), rows))
+        except (OSError, CSVError) as exc:
+            logger.warning(
+                "件数を保存できませんでした（次の取得でまた取ります）: %s（%s）",
+                self._row_count_path,
+                exc,
+            )
+
+
+def _load_row_counts(path: Path) -> dict[tuple[str, str], SavedRowCount]:
+    """``件数.csv`` を読む。 無ければ空。 見出しが違うときは ``CSVError``。"""
+    if not path.exists():
+        return {}
+    with CSV(path) as csv:
+        table = csv.read()
+    if list(table.columns) != list(ROW_COUNT_CSV_COLUMNS):
+        raise CSVError(
+            f"{path.name} の見出しが想定と違います: {path}\n"
+            f"期待: {list(ROW_COUNT_CSV_COLUMNS)}\n"
+            f"実際: {list(table.columns)}\n"
+            "対処: ファイルを別名に退避してから、取得.bat で取り直してください。"
+        )
+    result: dict[tuple[str, str], SavedRowCount] = {}
+    for row in table.to_rows():
+        rows_text = row["行数"].strip()
+        if rows_text and not rows_text.isdigit():
+            logger.warning(
+                "件数.csv の行数が数字でないので読み飛ばします: レポートID=%s", row["レポートID"]
+            )
+            continue
+        result[(row["組織"], row["レポートID"])] = SavedRowCount(
+            status=row["判定"],
+            rows=int(rows_text) if rows_text else None,
+            reason=row["理由"] or None,
+            fetched_at=row["取得日時"],
+        )
+    return result

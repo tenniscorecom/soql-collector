@@ -209,7 +209,6 @@ def test_e2e_run_tables_writes_overview_and_columns_sheet(tmp_path: Path) -> Non
     from src.master import MasterEntry
     from src.tables import run_tables
 
-    describe_csv_path = tmp_path / "describe.csv"
     pii_keywords = pii.DEFAULT_KEYWORDS
     pii_person_objects = pii.DEFAULT_PERSON_OBJECTS
 
@@ -239,7 +238,6 @@ def test_e2e_run_tables_writes_overview_and_columns_sheet(tmp_path: Path) -> Non
         row_limit=ROW_LIMIT_ENABLED,
         pii_keywords=pii_keywords,
         pii_person_objects=pii_person_objects,
-        describe_csv_path=describe_csv_path,
         site_for=site_for,
     )[0]
     assert outcome_1001.status == "ok"
@@ -266,7 +264,6 @@ def test_e2e_run_tables_writes_overview_and_columns_sheet(tmp_path: Path) -> Non
         row_limit=ROW_LIMIT_ENABLED,
         pii_keywords=pii_keywords,
         pii_person_objects=pii_person_objects,
-        describe_csv_path=describe_csv_path,
         site_for=_site_for(client2),
     )[0]
     assert outcome_1002.status == "ok"
@@ -316,7 +313,6 @@ def test_e2e_single_record_no_similar_text(tmp_path: Path) -> None:
     from src.master import MasterEntry
     from src.tables import run_tables
 
-    describe_csv_path = tmp_path / "describe.csv"
     pii_keywords = pii.DEFAULT_KEYWORDS
     pii_person_objects = pii.DEFAULT_PERSON_OBJECTS
     client = _FakeClient(
@@ -336,7 +332,6 @@ def test_e2e_single_record_no_similar_text(tmp_path: Path) -> None:
         row_limit=ROW_LIMIT_ENABLED,
         pii_keywords=pii_keywords,
         pii_person_objects=pii_person_objects,
-        describe_csv_path=describe_csv_path,
         site_for=_site_for(client),
     )[0]
     assert outcome.record is not None
@@ -361,7 +356,6 @@ def test_e2e_columns_sheet_resolves_related_email(tmp_path: Path) -> None:
     from src.master import MasterEntry
     from src.tables import run_tables
 
-    describe_csv_path = tmp_path / "describe.csv"
     pii_keywords = pii.DEFAULT_KEYWORDS
     pii_person_objects = pii.DEFAULT_PERSON_OBJECTS
     client = _FakeClient(
@@ -383,7 +377,6 @@ def test_e2e_columns_sheet_resolves_related_email(tmp_path: Path) -> None:
         row_limit=ROW_LIMIT_ENABLED,
         pii_keywords=pii_keywords,
         pii_person_objects=pii_person_objects,
-        describe_csv_path=describe_csv_path,
         site_for=_site_for(client),
     )[0]
     assert outcome.record is not None

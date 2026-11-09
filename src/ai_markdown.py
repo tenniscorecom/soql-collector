@@ -30,6 +30,7 @@ from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
     from src.fetch import RelationRecord, ReportRecord
+    from src.fetch.models import SourceTimes
     from src.soql_similar import SimilarSoql
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,15 @@ _SCOPE_MY = "my"
 # 「ほか N 件」 の 1 行にまとめる
 MARKDOWN_CHILD_RELATIONSHIP_MAX_ROWS: int = 100
 
+# 会社の AI チャットに渡せる 1 ファイルの上限（バイト）
+AI_FILE_MAX_BYTES: int = 100_000
+
+# 分割したとき先頭に足す 「続き」 の案内のぶん、 上限より小さく分ける
+_SPLIT_RESERVED_BYTES: int = 2_000
+
+# 「一緒に渡すファイル」 の節の見出し
+COMPANION_FILES_HEADING = "## このレポートで一緒に渡すファイル"
+
 
 def write_ai_markdowns(
     output_dir: Any,
@@ -61,6 +71,7 @@ def write_ai_markdowns(
     diagrams: dict[str, relation_diagram.Diagram] | None = None,
     subdir: str = MARKDOWN_SUBDIR,
     diagram_subdir: str = relation_diagram.DIAGRAM_SUBDIR,
+    companion_files: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[Any, ...]:
     """``records`` の各 ``ReportRecord`` について
     ``output_dir/{subdir}/{key}.md`` を書く（``subdir`` は ``config.ini [FILES] MARKDOWN_DIR``）。
@@ -74,6 +85,9 @@ def write_ai_markdowns(
     ``similar_soql_lookup`` は ``{管理番号: [似た SOQL の相手, ...]}`` 。
     Markdown の 「似たSOQL」 セクションに反映される。
 
+    ``companion_files`` は ``{管理番号: (OUTPUT_DIR から見た相対パス, ...)}`` 。
+    冒頭の 「このレポートで一緒に渡すファイル」 に載せる。 ``None`` なら節を出さない。
+
     ``record`` が ``None`` のもの （失敗したもの） は書かない。 既存の
     ファイル （今回取れなかった管理番号のファイルや、 古い失敗ファイル） は
     そのまま残す。 書き出し先ディレクトリが無ければ作る
@@ -81,8 +95,10 @@ def write_ai_markdowns(
     target_dir = output_dir / subdir
     target_dir.mkdir(parents=True, exist_ok=True)
     wrote: list[Any] = []
+    all_keys = {record.key for record in records}
     for record in records:
         diagram = (diagrams or {}).get(record.main_object or "")
+        _remove_previous_split_files(target_dir, record.key, all_keys)
         path = write_ai_markdown(
             target_dir,
             record,
@@ -90,6 +106,9 @@ def write_ai_markdowns(
             similar_soql_lookup=similar_soql_lookup,
             diagram=diagram,
             diagram_subdir=diagram_subdir,
+            companion_files=(
+                None if companion_files is None else companion_files.get(record.key, ())
+            ),
         )
         if path is not None:
             wrote.append(path)
@@ -106,8 +125,13 @@ def write_ai_markdown(
     similar_soql_lookup: dict[str, list[SimilarSoql]] | None = None,
     diagram: relation_diagram.Diagram | None = None,
     diagram_subdir: str = relation_diagram.DIAGRAM_SUBDIR,
+    companion_files: tuple[str, ...] | None = None,
 ) -> Any | None:
-    """1 record ぶんの Markdown を ``target_dir/{key}.md`` に書く。"""
+    """1 record ぶんの Markdown を ``target_dir/{key}.md`` に書く。
+
+    AI チャットの上限を超えるときは ``## `` の切れ目で ``{key}_2.md`` 以降へ分け、
+    分けたファイル名を 「一緒に渡すファイル」 に足す。 戻り値は 1 つ目のファイル。
+    """
     key = record.key
     if not key:
         return None
@@ -118,9 +142,78 @@ def write_ai_markdown(
         similar_soql_lookup=similar_soql_lookup,
         diagram=diagram,
         diagram_subdir=diagram_subdir,
+        companion_files=companion_files,
     )
-    path.write_text(content, encoding=_ENCODING, newline=_NEWLINE)
+    parts = split_markdown(content, AI_FILE_MAX_BYTES - _SPLIT_RESERVED_BYTES)
+    if len(parts) > 1:
+        parts = _add_split_notes(parts, key)
+    for index, part in enumerate(parts, start=1):
+        part_path = path if index == 1 else target_dir / f"{key}_{index}.md"
+        part_path.write_text(part, encoding=_ENCODING, newline=_NEWLINE)
+        if len(part.encode(_ENCODING)) > AI_FILE_MAX_BYTES:
+            logger.warning(
+                "1 行が %d バイトを超えていて分けられません。AI チャットに渡せない可能性: %s",
+                AI_FILE_MAX_BYTES,
+                part_path,
+            )
     return path
+
+
+def split_markdown(content: str, max_bytes: int) -> list[str]:
+    """Markdown を ``## `` の切れ目で ``max_bytes`` 以内に分ける。
+
+    1 節が上限を超えるときだけ、 その節を行の切れ目で分ける（1 行が超えるならそのまま）。
+    分けないで済むときは ``content`` をそのまま返す（出力を変えないため）。
+    """
+    if len(content.encode(_ENCODING)) <= max_bytes:
+        return [content]
+    sections: list[str] = []
+    for line in content.split(_NEWLINE):
+        if line.startswith("## ") or not sections:
+            sections.append(line)
+        else:
+            sections[-1] += _NEWLINE + line
+    pieces: list[str] = []
+    for section in sections:
+        if len(section.encode(_ENCODING)) <= max_bytes:
+            pieces.append(section)
+        else:
+            pieces.extend(section.split(_NEWLINE))
+    parts: list[str] = [""]
+    for piece in pieces:
+        joined = f"{parts[-1]}{_NEWLINE}{piece}" if parts[-1] else piece
+        if parts[-1] and len(joined.encode(_ENCODING)) > max_bytes:
+            parts.append(piece)
+        else:
+            parts[-1] = joined
+    return parts
+
+
+def _add_split_notes(parts: list[str], key: str) -> list[str]:
+    """分割したファイル名を 1 つ目の 「一緒に渡すファイル」 に足し、 2 つ目以降に印を付ける。"""
+    rest_names = [f"{key}_{index}.md" for index in range(2, len(parts) + 1)]
+    note = f"- このレポートの続き: {', '.join(rest_names)}"
+    heading = f"{COMPANION_FILES_HEADING}{_NEWLINE}"
+    if heading in parts[0]:
+        first = parts[0].replace(heading, f"{heading}{note}{_NEWLINE}", 1)
+    else:
+        first = f"{note}{_NEWLINE}{_NEWLINE}{parts[0]}"
+    rest = [
+        f"（{key}.md の続き {index}/{len(parts)}）{_NEWLINE}{_NEWLINE}{part}"
+        for index, part in enumerate(parts[1:], start=2)
+    ]
+    return [first, *rest]
+
+
+def _remove_previous_split_files(target_dir: Any, key: str, all_keys: set[str]) -> None:
+    """前回の ``{key}_2.md`` などを消す。 分割の数が減ったときに古い続きを残さないため。
+
+    別のレポートの管理番号と同じ名前のファイルは消さない。
+    """
+    for path in target_dir.glob(f"{key}_*.md"):
+        suffix = path.stem[len(key) + 1 :]
+        if suffix.isdigit() and path.stem not in all_keys:
+            path.unlink()
 
 
 def build_markdown(
@@ -130,6 +223,7 @@ def build_markdown(
     similar_soql_lookup: dict[str, list[SimilarSoql]] | None = None,
     diagram: relation_diagram.Diagram | None = None,
     diagram_subdir: str = relation_diagram.DIAGRAM_SUBDIR,
+    companion_files: tuple[str, ...] | None = None,
 ) -> str:
     """1 record ぶんの Markdown 文字列を組み立てる （純粋関数） 。
 
@@ -147,6 +241,8 @@ def build_markdown(
     ``similar_soql_lookup`` は ``{管理番号: [似た SOQL の相手, ...]}`` 。
     ``tables.run_tables`` が ``soql_similar.find_similar_soql`` の結果から
     組み立てる。 ``None`` のときは 「似たSOQL」 セクションは 「なし」 だけ出す
+
+    ``companion_files`` が ``None`` のときは 「一緒に渡すファイル」 の節を出さない
     """
     metadata = _report_metadata(record)
     fmt = metadata.get("reportFormat", "")
@@ -164,13 +260,11 @@ def build_markdown(
     parts.append(_title(record))
     parts.append("")
 
-    # ヘッダー （5 行のメタ）
-    parts.append(f"- レポートID: {record.report_id}")
-    parts.append(f"- 主オブジェクト: {_format_main_object(record)}")
-    parts.append(f"- レポート形式: {fmt}")
-    parts.append(f"- 2000件超: {_format_row_check(record)}")
-    parts.append(f"- 個人情報: {_format_pii(record)}")
+    parts.extend(_build_meta_lines(record, fmt))
     parts.append("")
+
+    if companion_files is not None:
+        parts.extend(_build_companion_section(companion_files))
 
     # 列の対応
     parts.append("## 列の対応")
@@ -295,6 +389,39 @@ def _ai_instruction_header() -> str:
         "> このファイルを丸ごと AI に貼ってください。"
         "SOQL の下書きを、下の資料と照らして直すよう頼みます。"
     )
+
+
+def _build_meta_lines(record: ReportRecord, fmt: str) -> list[str]:
+    """タイトルの下に並べるメタ情報。"""
+    lines = [
+        f"- レポートID: {record.report_id}",
+        f"- 主オブジェクト: {_format_main_object(record)}",
+        f"- レポート形式: {fmt}",
+        f"- 2000件超: {_format_row_check(record)}",
+        f"- 個人情報: {_format_pii(record)}",
+    ]
+    if record.source_times is not None:
+        lines.append(f"- 元データの取得日時: {_format_source_times(record.source_times)}")
+    return lines
+
+
+def _format_source_times(source_times: SourceTimes) -> str:
+    """元データの取得日時を 1 行にする。"""
+    return (
+        f"レポート {source_times.report or '不明'}"
+        f" / 主オブジェクト {source_times.main_object or '不明'}"
+        f" / 件数 {source_times.row_count or '不明'}"
+    )
+
+
+def _build_companion_section(companion_files: tuple[str, ...]) -> list[str]:
+    """「このレポートで一緒に渡すファイル」 の節。 パスは資料から見た相対パスにする。"""
+    lines = [COMPANION_FILES_HEADING]
+    lines.extend(f"- ../{path}" for path in companion_files)
+    if not companion_files:
+        lines.append("なし")
+    lines.append("")
+    return lines
 
 
 def _title(record: ReportRecord) -> str:
@@ -842,9 +969,9 @@ def _build_child_relationship_section(record: ReportRecord) -> list[str]:
     1 行だけにする。
     """
     lines: list[str] = ["## 子リレーション（サブクエリの材料）", ""]
-    relationships = _record_child_relationships(record)
+    relationships = record_child_relationships(record)
     if not relationships:
-        lines.append("保存データに無い。実行.bat で取り直すと出る")
+        lines.append("なし（主オブジェクトの元データに子リレーションが無い）")
         lines.append("")
         return lines
 
@@ -857,7 +984,7 @@ def _build_child_relationship_section(record: ReportRecord) -> list[str]:
                     relationship.get("relationshipName", ""),
                     relationship.get("childSObject", ""),
                     relationship.get("field", ""),
-                    _child_relationship_source(relationship),
+                    relationship_source(relationship),
                 ]
             )
         )
@@ -872,12 +999,12 @@ def _build_child_relationship_section(record: ReportRecord) -> list[str]:
     return lines
 
 
-def _child_relationship_source(relationship: dict[str, Any]) -> str:
+def relationship_source(relationship: dict[str, Any]) -> str:
     """子リレーションの出どころ。 手入力なら 「手入力」 、 以外は 「Salesforce」 。"""
     return "手入力" if relationship.get("手入力") else "Salesforce"
 
 
-def _record_child_relationships(record: ReportRecord) -> list[dict[str, Any]]:
+def record_child_relationships(record: ReportRecord) -> list[dict[str, Any]]:
     """主オブジェクトの describe から 子リレーションのリストを取り出す。"""
     main_object = record.main_object
     if not main_object:
@@ -902,7 +1029,7 @@ def _build_notes(record: ReportRecord, metadata: dict[str, Any]) -> list[str]:
     has_multiple = any("複数候補あり" in col["備考"] for col in record.column_map)
 
     if has_unresolved:
-        notes.append("- 取れなかった列がある")
+        notes.append("- 取れなかった列がある。項目を追加した直後なら 全部取り直し.bat で取り直す")
     if has_multiple:
         notes.append("- 複数候補の列がある")
 

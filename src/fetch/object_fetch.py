@@ -1,4 +1,4 @@
-"""オブジェクトの describe をストア（メモリ → CSV）か API から取る。"""
+"""オブジェクトの describe をストア（メモリ → 保存した原本）か API から取る。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ def make_overrides_fetcher(
     org: str,
     store: DescribeStore,
     objects: dict[str, dict[str, Any]],
-    csv_used_keys: set[tuple[str, str]],
 ) -> Callable[[str], dict[str, Any] | None]:
     """列キーのたどりと ``apply_overrides`` に渡す fetcher を作る。
 
@@ -34,10 +33,10 @@ def make_overrides_fetcher(
     取得順序は ``fetch_object_cached`` と同じ:
 
     1. ``objects`` に有ればそれを返す （API を叩かない）
-    2. ``DescribeStore`` （メモリ → CSV） を見る
-    3. 無ければ API を呼ぶ。 成功時はメモリと CSV に保存
+    2. ``DescribeStore`` （メモリ → 保存した原本） を見る
+    3. 無ければ API を呼ぶ。 成功時はメモリに載せて原本を保存
 
-    保存データに無いとき（ ``--rebuild`` ）も、 HTTP エラーのときと同じく
+    保存データに無いとき（ 解析の段 ）も、 HTTP エラーのときと同じく
     失敗をメモリにだけ覚えて ``None`` を返す。
 
     取れた describe は ``make_slim_object`` で整えて ``objects[name]`` に入れる。
@@ -54,16 +53,13 @@ def make_overrides_fetcher(
             if describe is None:
                 # 失敗記録だけのエントリは取りに行かない
                 return None
-            # CSV から読んだものは取り直し候補に入れる
-            if cached.get("source") == "csv":
-                csv_used_keys.add((org.lower(), name.strip().lower()))
             objects[name] = make_slim_object(describe)
             return objects[name]
         # 3) API 呼び出し
         try:
             describe = client.describe_object(name)
         except OfflineDescribeMissing as exc:
-            # 保存データに無い（ --rebuild ）。 通常の実行で 404 などになったときと
+            # 保存データに無い（ 解析の段 ）。 取得の段で 404 などになったときと
             # 同じ扱いにする: 失敗をメモリにだけ覚えて None を返す
             store.record_api_failure(org, name, str(exc))
             return None
@@ -91,21 +87,17 @@ def fetch_object_cached(
     name: str,
     store: DescribeStore,
     warnings: list[str],
-    csv_used_keys: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    """オブジェクトの describe をストア（メモリ → CSV）か API から取り、 整えて返す。
+    """オブジェクトの describe をストア（メモリ → 保存）か API から取り、 整えて返す。
 
     戻り値:
         成功時は ``make_slim_object`` で整えた describe。 失敗時（HTTP エラー /
         ``ValueError``）は ``None``。 401 / 403 は ``SalesforceRequestError`` を
         そのまま上位へ送出する（呼び出し側で ID 全体を失敗扱い）。 ストアには
-        生の describe を書く（項目定義.csv の列のため）。
+        原本のまま保存する。
 
-    保存データに無いとき（ ``--rebuild`` ）も、 HTTP エラーのときと同じ扱い
+    保存データに無いとき（ 解析の段 ）も、 HTTP エラーのときと同じ扱い
     （ 失敗をメモリにだけ覚えて 警告を 1 つ残して ``None`` ） にする。
-
-    ``csv_used_keys`` を渡すと、 CSV から読んだ （今回 API で取ったものではない）
-    ``(org, object_lower)`` のキーをそこに追加する。 取り直しの判定に使う。
     """
     cached = store.lookup(org, name)
     if cached is not None:
@@ -113,14 +105,12 @@ def fetch_object_cached(
         warning = cached.get("warning")
         if warning:
             warnings.append(warning)
-        if csv_used_keys is not None and cached.get("source") == "csv":
-            csv_used_keys.add((org.lower(), name.strip().lower()))
         return None if describe is None else make_slim_object(describe)
 
     try:
         describe = client.describe_object(name)
     except OfflineDescribeMissing as exc:
-        # 保存データに無い（ --rebuild ）。 通常の実行の describe 失敗
+        # 保存データに無い（ 解析の段 ）。 取得の段の describe 失敗
         # （ 404 など ） と同じ扱いにする: 警告を 1 つ残して None を返す
         warning = str(exc)
         store.record_api_failure(org, name, warning)
@@ -141,18 +131,3 @@ def fetch_object_cached(
 
     store.record_api_success(org, name, describe)
     return make_slim_object(describe)
-
-
-def object_key(org: str, object_name: str) -> tuple[str, str]:
-    """``(org, object)`` をストレージ用の正規化キーにする （``DescribeStore._key``
-    と同じ正規化）。"""
-    return (org.strip().lower(), object_name.strip().lower())
-
-
-def api_name_from_store(store: DescribeStore, key: tuple[str, str]) -> str | None:
-    """``(org, object_lower)`` に対応する describe がストアにあれば ``name`` を返す。
-    取り直しの API 呼び出しで正しい API 名 （大文字小文字そのまま） を渡すために必要。
-    """
-    entry = store.memory_cache.get(key) or {}
-    describe = entry.get("describe") or store.csv_index.get(key) or {}
-    return describe.get("name") or None

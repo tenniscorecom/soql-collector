@@ -537,7 +537,7 @@ def test_fetch_objects_with_org_url_skips_master_scan(
 def test_fetch_objects_writes_to_describe_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """取得した describe は ``[FILES] DESCRIBE_CSV_PATH`` に書き込まれ、 次の
+    """取得した describe は ``元データ/オブジェクト/`` に保存され、 次の
     ``DescribeStore.load().lookup`` で読める。"""
     from src.describe_store import DescribeStore
     from trial import fetch_objects
@@ -565,12 +565,11 @@ def test_fetch_objects_writes_to_describe_cache(
 
     assert code == 0
     describe_csv = tmp_path / "data" / "項目定義.csv"
-    assert describe_csv.exists()
 
     store = DescribeStore.load(describe_csv)
     cached = store.lookup("example--sandbox.sandbox.my.salesforce.com", "Account")
     assert cached is not None
-    assert cached.get("source") == "csv"
+    assert cached.get("source") == "saved"
     describe = cached.get("describe")
     assert isinstance(describe, dict)
     assert describe.get("name") == "Account"
@@ -587,7 +586,7 @@ def test_fetch_objects_refreshes_existing_cache(
     壊す系 （``record_api_success`` を呼ばない） にするとこのテストが落ちる
     ことを、 実装を書くときに一度確かめる。
     """
-    from src.describe_store import DescribeStore, upsert_object_rows
+    from src.describe_store import DescribeStore
     from trial import fetch_objects
 
     master = tmp_path / "master.xlsx"
@@ -608,13 +607,10 @@ def test_fetch_objects_refreshes_existing_cache(
         "fields": [{"name": "OldField", "label": "旧項目", "type": "string"}],
     }
     describe_csv = tmp_path / "data" / "項目定義.csv"
-    describe_csv.parent.mkdir(parents=True, exist_ok=True)
-    upsert_object_rows(
-        describe_csv,
+    DescribeStore.load(describe_csv).record_api_success(
         "example--sandbox.sandbox.my.salesforce.com",
         "Account",
         old_describe,
-        fetched_at="2020-01-01T00:00:00+00:00",
     )
 
     # 新しく fetch_objects を実行
@@ -644,9 +640,7 @@ def test_fetch_objects_refreshes_existing_cache(
     # 古い項目は消え、 新しい 4 項目になっている
     field_names = [field.get("name") for field in fields if isinstance(field, dict)]
     assert "OldField" not in field_names
-    # ``DescribeStore.upsert_object_rows`` は API 名で安定ソートするので、
-    # 新しい 4 項目は API 名の昇順で並ぶ
-    assert field_names == ["Name", "OwnerId", "Phone", "Type"]
+    assert sorted(field_names) == ["Name", "OwnerId", "Phone", "Type"]
 
 
 def test_fetch_objects_partial_failure_returns_1(
@@ -847,7 +841,6 @@ def test_fetch_objects_broken_no_cache_write_fails_test(
 
     # ただしキャッシュには何も書かれていない
     describe_csv = tmp_path / "data" / "項目定義.csv"
-    if describe_csv.exists():
-        store = DescribeStore.load(describe_csv)
-        cached = store.lookup("example--sandbox.sandbox.my.salesforce.com", "Account")
-        assert cached is None, "no-op にしたらキャッシュは空のはず"
+    store = DescribeStore.load(describe_csv)
+    cached = store.lookup("example--sandbox.sandbox.my.salesforce.com", "Account")
+    assert cached is None, "no-op にしたらキャッシュは空のはず"

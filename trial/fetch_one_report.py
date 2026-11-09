@@ -75,13 +75,10 @@ def main(argv: list[str] | None = None, *, site_for: SiteFor | None = None) -> i
     from src.describe_store import DescribeStore
 
     describe_store = DescribeStore.load(file_paths.describe_csv_path)
-    refresh_set: set[tuple[str, str]] = set()
     outcomes = run_fetch(
         [entry],
-        describe_csv_path=file_paths.describe_csv_path,
         site_for=site_for,
         describe_store=describe_store,
-        refresh_set=refresh_set,
     )
 
     ok_keys: list[str] = []
