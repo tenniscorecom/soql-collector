@@ -530,3 +530,122 @@ def test_child_column_key_prefix_is_accepted(column_key: str) -> None:
     assert result.switched is True
     rows = {row["列キー"]: row for row in result.column_map}
     assert rows[column_key]["対応フィールドAPI名"] == "LastName"
+
+
+# ── 解決済みの列も子の列として扱う ─────────────────────────────────────────
+
+
+def _name_label_describes() -> tuple[dict[str, Any], dict[str, Any]]:
+    """表示名が 「名前」 で同じ、 親（ Account ） と子（ Contact ） の describe。
+
+    子の ``Contact.Name`` が表示名の照合で親の ``Account.Name`` に解決される
+    状況を再現する。
+    """
+    parent_describe = _account_describe()
+    for field in parent_describe["fields"]:
+        if field["name"] == "Name":
+            field["label"] = "名前"
+    child_describe = _contact_describe()
+    child_describe["fields"].append({"name": "Name", "label": "名前", "type": "string"})
+    return parent_describe, child_describe
+
+
+def test_resolved_child_column_switches_to_the_child() -> None:
+    """表示名で親に解決済みの列も、 子の列として扱って切り替える。"""
+    parent_describe, child_describe = _name_label_describes()
+    column_map = [
+        _row("Account.Name", "Name"),
+        # 子の列が、 表示名の照合で親の Name に解決された状態
+        _row("Contact.Name", "Name"),
+    ]
+    result = apply_child_base(
+        column_map=column_map,
+        main_object="Account",
+        main_describe=parent_describe,
+        fetch_object=_fetcher({"Contact": child_describe}),
+    )
+    assert result.switched is True
+    rows = {row["列キー"]: row for row in result.column_map}
+    # 子の列は、 子の Name になる （ 親の列ではない ）
+    assert rows["Contact.Name"]["対応フィールドAPI名"] == "Name"
+    assert rows["Contact.Name"]["所属オブジェクト"] == "Contact"
+    assert "子から取る" in rows["Contact.Name"]["備考"]
+    # 親の列は、 子から親へ戻るリレーション名が付く
+    assert rows["Account.Name"]["対応フィールドAPI名"] == "Account.Name"
+
+
+def test_resolved_child_column_selects_the_child_field() -> None:
+    """解決済みの子の列でも、 SOQL は親の Account.Name ではなく子の Name になる。"""
+    parent_describe, child_describe = _name_label_describes()
+    column_map = [
+        _row("Account.Name", "Name"),
+        _row("Contact.Name", "Name"),
+    ]
+    result = apply_child_base(
+        column_map=column_map,
+        main_object="Account",
+        main_describe=parent_describe,
+        fetch_object=_fetcher({"Contact": child_describe}),
+    )
+    record = _record(
+        result.column_map,
+        soql_from_object=result.child_object,
+        soql_from_relationship=result.relationship_name,
+    )
+    draft = build_soql(record)
+    assert draft.soql == "SELECT Account.Name,\n  Name\nFROM Contact"
+
+
+def test_child_column_that_cannot_be_resolved_becomes_unknown() -> None:
+    """子の describe で解決できない列は、 親の値を残さず (不明) にする。"""
+    column_map = [
+        _row("Account.Name", "Name"),
+        # 子の describe に無い項目が、 親の項目に解決されていた状態
+        _row("Contact.NoSuchField", "Name"),
+    ]
+    result = apply_child_base(
+        column_map=column_map,
+        main_object="Account",
+        main_describe=_account_describe(),
+        fetch_object=_fetcher({"Contact": _contact_describe()}),
+    )
+    assert result.switched is True
+    rows = {row["列キー"]: row for row in result.column_map}
+    assert rows["Contact.NoSuchField"]["対応フィールドAPI名"] == "(不明)"
+    assert "見つかりません" in rows["Contact.NoSuchField"]["備考"]
+
+
+def test_two_columns_of_the_same_child_are_not_ambiguous() -> None:
+    """同じ子への列が複数あっても、 切り替えを妨げない。"""
+    column_map = [
+        _row("Account.Name", "Name"),
+        _row("Contact.LastName", "(不明)", field_type="", note="対応フィールドなし"),
+        _row("Contact.FirstName", "(不明)", field_type="", note="対応フィールドなし"),
+    ]
+    result = apply_child_base(
+        column_map=column_map,
+        main_object="Account",
+        main_describe=_account_describe(),
+        fetch_object=_fetcher({"Contact": _contact_describe()}),
+    )
+    assert result.switched is True
+    rows = {row["列キー"]: row for row in result.column_map}
+    assert rows["Contact.LastName"]["対応フィールドAPI名"] == "LastName"
+    assert rows["Contact.FirstName"]["対応フィールドAPI名"] == "FirstName"
+
+
+def test_reference_field_name_is_case_insensitive() -> None:
+    """手入力の子リレーションの項目名は、 大文字小文字を無視して照合する。"""
+    describe = _account_describe(
+        child_relationships=[
+            {"childSObject": "Contact", "field": "accountid", "relationshipName": "Contacts"}
+        ]
+    )
+    result = apply_child_base(
+        column_map=_column_map(),
+        main_object="Account",
+        main_describe=describe,
+        fetch_object=_fetcher({"Contact": _contact_describe()}),
+    )
+    assert result.switched is True
+    assert result.relationship_name == "Account"

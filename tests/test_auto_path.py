@@ -113,6 +113,23 @@ def test_shortest_path_is_adopted() -> None:
     assert row["備考"].startswith(AUTO_PATH_NOTE)
 
 
+def test_adopted_candidate_is_not_in_the_other_candidates() -> None:
+    """採用した候補は、 「他の候補」 に出ない。"""
+    metadata = _metadata(["NAME"], {"NAME": "名前"})
+    main = _describe("Opportunity", [_field("Name", "名前")])
+    rows = mapping.build_column_map(
+        metadata,
+        main,
+        None,
+        related_describes={"Account": _describe("Account", [_field("Name", "名前")])},
+        relations=[_Relation("Opportunity", "AccountId", "Account", "Account", 1)],
+        main_object="Opportunity",
+    )
+    row = next(r for r in rows if r["列キー"] == "NAME")
+    assert row["備考"] == f"{AUTO_PATH_NOTE}: 採用 Name / 他の候補: Account.Name（Account 名前）"
+    assert mapping.column_candidates(row) == "Account.Name"
+
+
 def test_same_depth_keeps_multiple_candidates() -> None:
     """同じ段数の候補が並んだら、 従来どおり 「複数候補あり」 で止める。"""
     metadata = _metadata(["NAME"], {"NAME": "名前"})

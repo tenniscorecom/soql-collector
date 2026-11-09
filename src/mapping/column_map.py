@@ -1116,10 +1116,13 @@ def _match_from_shortest_path(
     """
     owner, soql_chain, field, terminal_describe = adopted
     soql_name = f"{soql_chain}.{field['name']}" if soql_chain else field["name"]
+    # 採用した候補は 3 要素 （ 所属オブジェクト / 鎖 / 項目 ） で比べる。
+    # 4 要素で比べると必ず違い、 採用した候補が 「他の候補」 にも出る
+    adopted_key = (owner, soql_chain, field)
     others = [
         _format_one_candidate(candidate_owner, candidate_chain, candidate_field)
         for candidate_owner, candidate_chain, candidate_field, _describe in pool
-        if (candidate_owner, candidate_chain, candidate_field) != adopted
+        if (candidate_owner, candidate_chain, candidate_field) != adopted_key
     ]
     note = f"{AUTO_PATH_NOTE}: 採用 {soql_name}"
     if others:

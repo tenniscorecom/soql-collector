@@ -9,12 +9,16 @@
 違い、 レポートと同じ 1 行 1 子の粒になり、 Bulk API 2.0 のまま取れるし、
 ダウンローダーの変更も要らない。
 
-発動条件は 「(不明) の列のうち、 列キーの最初の ``.`` より前が 主オブジェクトの
+発動条件は 「列キーの最初の ``.`` より前が 主オブジェクトの
 ``childRelationships`` の ``childSObject`` か ``relationshipName`` に
-大文字小文字無視で一致するものがある」 とき。 切り替えられるのは、
-レポートの列が指している直接の子オブジェクトが **1 つだけ** のときだけ。
-2 つ以上 （ あるいは同じ子への参照が複数 ） なら切り替えず、 列は ``(不明)``
-のまま理由を残し、 【未完成】 にする。
+大文字小文字無視で一致し、 かつ主オブジェクト名と一致しない行が 1 つでも
+ある」 とき。 解決済みかどうかには依存しない。 子の列が表示名の照合で
+親の項目 （ 親の ``Name`` など ） に解決されると、 親の値を取り違えるので、
+切り替え前に子の列として作り直す。
+
+切り替えられるのは、 レポートの列が指している直接の子オブジェクトが
+**1 つだけ** のときだけ。 2 つ以上 （ あるいは同じ子への参照が複数 ） なら
+切り替えず、 列は ``(不明)`` のまま理由を残し、 【未完成】 にする。
 """
 
 from __future__ import annotations
@@ -94,15 +98,11 @@ def apply_child_base(
     if not main_object:
         return ChildBaseResult(switched=False, column_map=column_map)
 
-    unknown_rows = [row for row in column_map if _is_unknown(row)]
-    if not unknown_rows:
-        return ChildBaseResult(switched=False, column_map=column_map)
-
     relationships = _child_relationships(main_describe)
     if not relationships:
         return ChildBaseResult(switched=False, column_map=column_map)
 
-    matched, matched_rows = _collect_matching_children(unknown_rows, relationships)
+    matched, matched_rows = _collect_matching_children(column_map, relationships, main_object)
     if not matched:
         return ChildBaseResult(switched=False, column_map=column_map)
 
@@ -142,6 +142,7 @@ def apply_child_base(
         relationship_name=relationship_name,
         child_describe=child_describe,
         fetch_object=fetch_object,
+        main_object=main_object,
     )
     return ChildBaseResult(
         switched=True,
@@ -157,19 +158,27 @@ def apply_child_base(
 
 
 def _collect_matching_children(
-    unknown_rows: list[dict[str, str]],
+    rows: list[dict[str, str]],
     relationships: list[dict[str, Any]],
+    main_object: str,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, str]]]]:
-    """(不明) の列が指す子オブジェクトと、 その子リレーションを集める。
+    """子の列が指す子オブジェクトと、 その子リレーションを集める。
+
+    対象は 「列キーの最初の ``.`` より前が子に一致し、 かつ主オブジェクト名と
+    一致しない行」 。 解決済みかどうかには依存しない。
 
     戻り値は ``(子オブジェクト名 -> リレーションのリスト, 子オブジェクト名 ->
     対象にした列のリスト)`` 。
     """
     matched: dict[str, list[dict[str, Any]]] = {}
     matched_rows: dict[str, list[dict[str, str]]] = {}
-    for row in unknown_rows:
-        prefix = _column_prefix(row.get("列キー", ""))
-        if not prefix:
+    seen: dict[str, set[tuple[str, str, str]]] = {}
+    for row in rows:
+        column_key = row.get("列キー", "")
+        if "." not in column_key:
+            continue
+        prefix = _column_prefix(column_key)
+        if not prefix or _is_main_object_prefix(prefix, main_object):
             continue
         for relationship in relationships:
             if not _relationship_matches_prefix(relationship, prefix):
@@ -177,9 +186,27 @@ def _collect_matching_children(
             child = _child_sobject(relationship)
             if not child:
                 continue
-            matched.setdefault(child, []).append(relationship)
+            key = _relationship_key(relationship)
+            keys = seen.setdefault(child, set())
+            if key not in keys:
+                keys.add(key)
+                matched.setdefault(child, []).append(relationship)
             matched_rows.setdefault(child, []).append(row)
     return matched, matched_rows
+
+
+def _relationship_key(relationship: dict[str, Any]) -> tuple[str, str, str]:
+    """リレーションの同一性を表すキー。"""
+    return (
+        _child_sobject(relationship),
+        str(relationship.get("relationshipName") or "").strip().lower(),
+        str(relationship.get("field") or "").strip().lower(),
+    )
+
+
+def _is_main_object_prefix(prefix: str, main_object: str) -> bool:
+    """列キーの接頭辞が主オブジェクト名か。 大文字小文字は無視する。"""
+    return bool(prefix) and prefix.strip().lower() == main_object.strip().lower()
 
 
 def _relationship_matches_prefix(relationship: dict[str, Any], prefix: str) -> bool:
@@ -209,15 +236,17 @@ def _relationship_to_parent(child_describe: dict[str, Any], reference_field: str
     """子の項目から、 親へ戻るリレーション名を得る。
 
     ``childRelationships`` の ``field`` （ 親を参照する子の項目名 ） が子の
-    describe に無ければ ``None`` を返す。
+    describe に無ければ ``None`` を返す。 項目名の比較は大文字小文字を無視する
+    （ ``childRelationships`` の ``field`` は手入力の値もあるため ）。
     """
     if not reference_field:
         return None
+    target = reference_field.strip().lower()
     fields = child_describe.get("fields") or []
     matched = [
         field
         for field in fields
-        if isinstance(field, dict) and str(field.get("name") or "") == reference_field
+        if isinstance(field, dict) and str(field.get("name") or "").strip().lower() == target
     ]
     if not matched:
         return None
@@ -238,16 +267,20 @@ def _rewrite_column_map(
     relationship_name: str,
     child_describe: dict[str, Any],
     fetch_object: Callable[[str], dict[str, Any] | None] | None,
+    main_object: str,
 ) -> list[dict[str, str]]:
     """列対応表を 「子から取る形」 に書き換える。
 
-    - (不明) の列 … 子の describe で解決し直す。 解決できなければ (不明) のまま
-    - 解決済みの列 … 親の列なので、 リレーション名を頭に付ける
+    - 子の列 … 解決済みかどうかに関係なく、 子の describe で解決し直す。
+      解決できなければ (不明) にして理由を書く
+    - 親の列（ 解決済み ） … リレーション名を頭に付ける
+    - 親の列（ 未解決 ） … そのまま残す（ 親の値も無いので ）
     """
+    child_prefixes = _child_prefixes(child_object, parent_side_name)
     rewritten: list[dict[str, str]] = []
     for row in column_map:
         new_row = dict(row)
-        if _is_unknown(row):
+        if _is_child_row(new_row, child_prefixes=child_prefixes, main_object=main_object):
             _rewrite_child_column(
                 new_row,
                 child_object=child_object,
@@ -255,13 +288,43 @@ def _rewrite_column_map(
                 child_describe=child_describe,
                 fetch_object=fetch_object,
             )
-        else:
+        elif not _is_unknown(row):
             _prefix_parent_column(
                 new_row,
                 relationship_name=relationship_name,
             )
         rewritten.append(new_row)
     return rewritten
+
+
+def _child_prefixes(child_object: str, parent_side_name: str) -> set[str]:
+    """子の列の接頭辞候補 （ 子オブジェクト名 / リレーション名 ） を小文字で集める。"""
+    prefixes: set[str] = set()
+    for value in (child_object, parent_side_name):
+        text = value.strip().lower()
+        if text:
+            prefixes.add(text)
+    return prefixes
+
+
+def _is_child_row(
+    row: dict[str, str],
+    *,
+    child_prefixes: set[str],
+    main_object: str,
+) -> bool:
+    """行が子の列かどうか。
+
+    列キーの最初の ``.`` より前が子に一致し、 かつ主オブジェクト名と一致
+    しないときが子の列。 解決済みかどうかには依存しない。
+    """
+    column_key = row.get("列キー", "")
+    if "." not in column_key:
+        return False
+    prefix = _column_prefix(column_key).strip().lower()
+    if not prefix or prefix not in child_prefixes:
+        return False
+    return prefix != main_object.strip().lower()
 
 
 def _rewrite_child_column(
@@ -272,7 +335,7 @@ def _rewrite_child_column(
     child_describe: dict[str, Any],
     fetch_object: Callable[[str], dict[str, Any] | None] | None,
 ) -> None:
-    """(不明) の列を、 子の項目として解決し直す。"""
+    """列を、 子の項目として解決し直す。"""
     column_key = row.get("列キー", "")
     child_key = _child_column_key(column_key, child_object, parent_side_name)
     soql_name, field_type, failure_note, _id_column = resolve_column_key_to_soql(
@@ -283,6 +346,9 @@ def _rewrite_child_column(
         max_depth=COLUMN_KEY_PATH_MAX_DEPTH,
     )
     if not soql_name:
+        # 親の値を残すと別の値を取ってしまうので、 (不明) にして理由を書く
+        row["対応フィールドAPI名"] = "(不明)"
+        row["型"] = ""
         row["備考"] = failure_note or "子から取れません"
         return
     row["対応フィールドAPI名"] = soql_name
@@ -339,6 +405,12 @@ def _apply_note(
     rows: list[dict[str, str]],
     note: str,
 ) -> None:
-    """対象にした列の備考に理由を書く。"""
+    """対象にした列の備考に理由を書く。
+
+    対象にした列は子の列 （ 親のままでは別の値を取る ） なので、 対応
+    フィールドは ``(不明)`` にして親の値を残さない。
+    """
     for row in rows:
+        row["対応フィールドAPI名"] = "(不明)"
+        row["型"] = ""
         row["備考"] = note
