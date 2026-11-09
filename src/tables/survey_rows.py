@@ -13,6 +13,7 @@ from src.soql_builder import (
     CROSS_FILTER_LINK_DIRECT,
     CROSS_FILTER_LINK_NOT_DIRECT,
     CROSS_FILTER_LINK_UNVERIFIED,
+    STATUS_SKIPPED,
 )
 
 if TYPE_CHECKING:
@@ -59,6 +60,9 @@ def soql_fetch_method_for_record(record: ReportRecord) -> str:
     """
     draft = record.soql_draft
     if draft is None:
+        return ""
+    if draft.status == STATUS_SKIPPED:
+        # SOQL が無いので、 取り方は無い
         return ""
     if draft.use_bulk:
         return "Bulk"

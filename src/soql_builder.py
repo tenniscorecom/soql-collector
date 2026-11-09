@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any
 
 from src import mapping
 from src.mapping.owner import OWNER_POLYMORPHIC_NOTE
+from src.mapping.row_status import auto_path_parts
+from src.row_check_status import ROW_CHECK_UNDER
 from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
@@ -41,6 +43,12 @@ STATUS_CREATED = "作成済み"
 STATUS_NEEDS_CHECK = "要確認"
 STATUS_PARTIAL = "一部作れず"
 STATUS_NONE = "作れず"
+
+# SOQL にしないレポートの状態。 件数が少ないので SOQL を作らない
+STATUS_SKIPPED = "対象外（1000件以下）"
+
+# この件数以下なら SOQL を作らない。 ちょうど 1000 件なら飛ばし、 1001 件は作る
+SOQL_SKIP_MAX_ROWS = 1000
 
 # 未完成 SOQL の 1 行目に置く印。 ダウンローダーがこの印を見て実行前に止める。
 # 変えるときはダウンローダーと同時に。 この行があると Salesforce に投げても
@@ -71,6 +79,14 @@ CROSS_FILTER_CHECK_PREFIX: str = (
 CROSS_FILTER_LINK_DIRECT: str = "直接"
 CROSS_FILTER_LINK_NOT_DIRECT: str = "直接でない"
 CROSS_FILTER_LINK_UNVERIFIED: str = "確認できず"
+
+# FROM を子オブジェクトに切り替えたレポートで、 クロスフィルタを副問い合わせに
+# できない理由
+CROSS_FILTER_CHILD_BASE_REASON: str = "子から取るレポートのクロスフィルタは未対応"
+
+# 手入力 （ ``input/子リレーション.csv`` ） の子リレーションを使ったときの、
+# 判定理由の頭に付ける言葉
+CROSS_FILTER_MANUAL_REASON: str = "手入力の子リレーション"
 
 # 組立式が壊れて WHERE 全体を出さないときの、 副問い合わせに入れなかった理由
 BROKEN_BOOLEAN_FILTER_REASON: str = "組立式の条件が壊れたため WHERE 全体を出さない"
@@ -360,6 +376,7 @@ def format_cross_filter_link_comment(link: CrossFilterLink, *, main_object: str 
 
     ``直接`` で SOQL に入れたときは 繋がり （ リレーション名: 子オブジェクト.
     結合項目 → 主側項目 ） を、 入れていないときは 理由 を入れる。
+    入れたときの理由 （ 手入力の子リレーションなど ） も有れば 添える。
 
     Args:
         link: 判定結果。
@@ -375,7 +392,10 @@ def format_cross_filter_link_comment(link: CrossFilterLink, *, main_object: str 
             primary = f"{main_object}.{primary}"
         detail = f"{link.relationship_name or link.child_object}: "
         detail += f"{link.child_object}.{link.join_field} → {primary}"
-        return f"# クロスフィルタ {link.index}: {link.status}（{detail}）SOQL に入れた"
+        text = f"# クロスフィルタ {link.index}: {link.status}（{detail}）SOQL に入れた"
+        if link.reason:
+            text += f"（{link.reason}）"
+        return text
     reason = link.reason or "理由不明"
     return f"# クロスフィルタ {link.index}: {link.status}（{reason}）SOQL に入れていない"
 
@@ -1066,6 +1086,7 @@ def _build_where_clause(
     column_lookup: dict[str, dict[str, str]],
     *,
     judgements: list[_CrossFilterJudgement],
+    allow_cross_filter_conversion: bool = True,
 ) -> tuple[list[str], list[str], list[str], bool, list[CrossFilterLink]]:
     """``reportFilters`` / ``standardDateFilter`` / ``standardFilters`` /
     ``crossFilters`` から WHERE 句を組み立てる。
@@ -1083,6 +1104,8 @@ def _build_where_clause(
 
     クロスフィルタは副問い合わせ （ ``IN`` / ``NOT IN`` ） にして 1 行ずつ
     足す。 作れないものは ``missing`` にして、 従来どおり WHERE 全体は捨てない。
+    ``allow_cross_filter_conversion`` が False のときは、 判定だけ残して
+    副問い合わせにはしない （ FROM を子に切り替えたとき ） 。
 
     Returns:
         ``(top-level lines, missing, 追加 checks, 副問い合わせを使ったか,
@@ -1099,6 +1122,7 @@ def _build_where_clause(
         judgements,
         missing=missing,
         checks=checks,
+        allow_conversion=allow_cross_filter_conversion,
     )
     lines, ok = _combine_filter_conditions(
         metadata,
@@ -1441,17 +1465,21 @@ def _judge_cross_filter(
     relationship = matched[0]
     relationship_name = _coerce_str(relationship.get("relationshipName"))
     child_name = _coerce_str(relationship.get("childSObject"))
+    # 手入力 （ ``input/子リレーション.csv`` ） の子リレーションかどうか
+    is_manual = bool(relationship.get("手入力"))
 
     # 子オブジェクトの describe と、 結合項目の解決
     child_describe = _find_cross_filter_object(cross_filter_objects, child_name)
     if child_describe is None:
-        return judged(
-            CROSS_FILTER_LINK_UNVERIFIED,
-            f"relatedEntity {related_raw!r} の子オブジェクト {child_name!r} の describe が無い",
-            primary=primary_name,
-            child=child_name,
-            join=join_raw,
-            relationship=relationship_name,
+        return _judge_manual_child_relationship(
+            judged,
+            cf,
+            is_manual=is_manual,
+            related_raw=related_raw,
+            primary_name=primary_name,
+            child_name=child_name,
+            join_raw=join_raw,
+            relationship_name=relationship_name,
         )
     join = _resolve_child_field(
         join_raw,
@@ -1469,9 +1497,12 @@ def _judge_cross_filter(
         )
     join_name, _join_type = join
 
+    reason = ""
+    if is_manual:
+        reason = f"{CROSS_FILTER_MANUAL_REASON}（子の describe で確認した）"
     result = judged(
         CROSS_FILTER_LINK_DIRECT,
-        "",
+        reason,
         primary=primary_name,
         child=child_name,
         join=join_name,
@@ -1481,6 +1512,58 @@ def _judge_cross_filter(
     result.join_name = join_name
     result.child_name = child_name
     result.child_describe = child_describe
+    return result
+
+
+def _judge_manual_child_relationship(
+    judged: Callable[..., _CrossFilterJudgement],
+    cf: Any,
+    *,
+    is_manual: bool,
+    related_raw: str,
+    primary_name: str,
+    child_name: str,
+    join_raw: str,
+    relationship_name: str,
+) -> _CrossFilterJudgement:
+    """子の describe が無いときの判定。
+
+    手入力 （ ``input/子リレーション.csv`` ） の子リレーションは、 結合項目の
+    describe 確認を省略してよい。 ただし criteria （ 絞り込みの列 ） が空の
+    ときだけ副問い合わせにできる。 criteria があると列の型が分からないため
+    確認できない。
+    """
+    if not is_manual:
+        return judged(
+            CROSS_FILTER_LINK_UNVERIFIED,
+            f"relatedEntity {related_raw!r} の子オブジェクト {child_name!r} の describe が無い",
+            primary=primary_name,
+            child=child_name,
+            join=join_raw,
+            relationship=relationship_name,
+        )
+    if not _criteria_is_empty(cf):
+        return judged(
+            CROSS_FILTER_LINK_UNVERIFIED,
+            f"{CROSS_FILTER_MANUAL_REASON}: 子の describe が無く、"
+            "criteria の列の型が分からないため確認できない",
+            primary=primary_name,
+            child=child_name,
+            join=join_raw,
+            relationship=relationship_name,
+        )
+    result = judged(
+        CROSS_FILTER_LINK_DIRECT,
+        f"{CROSS_FILTER_MANUAL_REASON}（子の describe が無い。結合項目は手入力の値を使う）",
+        primary=primary_name,
+        child=child_name,
+        join=join_raw,
+        relationship=relationship_name,
+    )
+    result.primary_name = primary_name
+    result.join_name = join_raw
+    result.child_name = child_name
+    result.child_describe = None
     return result
 
 
@@ -1504,11 +1587,18 @@ def _mark_not_converted(link: CrossFilterLink, reason: str) -> CrossFilterLink:
     return dc_replace(link, converted=False, reason=combined)
 
 
+def _with_reason(link: CrossFilterLink, reason: str) -> CrossFilterLink:
+    """``converted=False`` にして、 理由を重ねる。 既に False でも理由は足す。"""
+    combined = f"{link.reason} / {reason}" if link.reason else reason
+    return dc_replace(link, converted=False, reason=combined)
+
+
 def _build_cross_filter_lines(
     judgements: list[_CrossFilterJudgement],
     *,
     missing: list[str],
     checks: list[str],
+    allow_conversion: bool = True,
 ) -> tuple[list[str], list[CrossFilterLink]]:
     """判定済みのクロスフィルタを SOQL の副問い合わせ （ ``IN`` / ``NOT IN`` ） にする。
 
@@ -1516,6 +1606,7 @@ def _build_cross_filter_lines(
     ``missing`` に元の値と理由を入れて、 従来どおり 【未完成】 にする。
     副問い合わせは 1 文に ``CROSS_FILTER_MAX_SUBQUERIES`` 個までで、 超えた分も
     判定だけ残して ``converted=False`` にする。
+    ``allow_conversion`` が False のときは判定だけ残し、 副問い合わせにはしない。
 
     Returns:
         ``(副問い合わせの条件式のリスト, 判定のリスト)`` 。
@@ -1531,6 +1622,14 @@ def _build_cross_filter_lines(
                 f"(副問い合わせにできない: {link.reason})"
             )
             links.append(link)
+            continue
+        if not allow_conversion:
+            reason = CROSS_FILTER_CHILD_BASE_REASON
+            missing.append(
+                f"クロスフィルタ {judgement.index}: {judgement.cf!r} "
+                f"(副問い合わせにできない: {reason})"
+            )
+            links.append(_with_reason(link, reason))
             continue
         if len(lines) >= CROSS_FILTER_MAX_SUBQUERIES:
             reason = f"副問い合わせは 1 文に {CROSS_FILTER_MAX_SUBQUERIES} 個まで"
@@ -1729,6 +1828,18 @@ def _build_cross_filter_criteria(
         conditions.append(condition)
         checks.extend(extra_checks)
     return conditions, "", checks
+
+
+def _criteria_is_empty(cf: Any) -> bool:
+    """クロスフィルタの ``criteria`` が空 （ ``[]`` ） かどうか。
+
+    空リストだけが 「条件なし」 とみなす。 キーが無い ``None`` は
+    「絞り込みが消えて件数が増える」 危険があるので条件なしとは扱わない。
+    """
+    if not isinstance(cf, dict):
+        return False
+    criteria = cf.get("criteria")
+    return isinstance(criteria, list) and not criteria
 
 
 def _describe_fields(describe: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -1994,12 +2105,17 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
 
     status の判定ルール:
 
+    - ``対象外（1000件以下）`` … 件数が ``SOQL_SKIP_MAX_ROWS`` 以下だった
+      とき。 SOQL は作らない
     - ``作れず`` … 主オブジェクト不明 (``main_object`` が空 / ``None``) または
       SELECT に入れられる列が 1 つも無い ( 全列 ``(不明)`` または全列
       ``missing`` のため SELECT から落ちた ) 。
     - ``一部作れず`` … ``missing`` に 1 件以上ある (SOQL から省いた部分がある)
     - ``要確認`` … ``missing`` は無いが ``checks`` に 1 件以上ある。
     - ``作成済み`` … ``missing`` も ``checks`` も無い。
+
+    FROM は ``record.soql_from_object`` があればそちらを、 無ければ主オブジェクトを
+    使う （ 子から取る形にしたときだけ違う ） 。
 
     取り方 (``use_bulk``) はサブクエリを出したかどうかで決める。 文字列を
     後からパースしない。
@@ -2013,11 +2129,22 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
             checks=(),
         )
 
+    # 件数が少ないレポートは SOQL にしない
+    skip_reason = _soql_skip_reason(record)
+    if skip_reason is not None:
+        return SoqlDraft(
+            soql="",
+            status=STATUS_SKIPPED,
+            missing=(),
+            checks=(skip_reason,),
+        )
+
     # ``record.report`` は入口（``make_slim_report``）で形をそろえてある
     metadata = record.report["reportMetadata"]
     column_lookup = _build_column_lookup(record.column_map)
     main_describe = _record_main_describe(record, main_object)
     cross_filter_objects = record.cross_filter_objects
+    from_object = record.soql_from_object or main_object
 
     missing: list[str] = []
     checks: list[str] = []
@@ -2045,16 +2172,20 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
         metadata,
         column_lookup,
         judgements=judgements,
+        # FROM を子に切り替えたときは、 副問い合わせの左辺が変わるので変換しない
+        allow_cross_filter_conversion=not record.soql_from_object,
     )
     missing.extend(where_missing)
     checks.extend(where_checks)
     _collect_scope_check(metadata, checks)
     _collect_owner_polymorphic_checks(metadata, column_lookup, checks)
+    _collect_auto_path_checks(metadata, column_lookup, checks)
+    _collect_child_base_check(record, checks)
     order_by_clause, order_missing, order_checks = _build_order_by_clause(metadata, column_lookup)
     missing.extend(order_missing)
     checks.extend(order_checks)
 
-    soql, count_soql = _assemble_soql_text(select_lines, where_lines, order_by_clause, main_object)
+    soql, count_soql = _assemble_soql_text(select_lines, where_lines, order_by_clause, from_object)
     status = _decide_status(missing, checks)
     soql, count_soql = _apply_incomplete_marker(soql, count_soql, status)
 
@@ -2080,6 +2211,27 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
         bulk_blockers=tuple(bulk_blockers),
         cross_filter_links=tuple(links),
     )
+
+
+def _soql_skip_reason(record: ReportRecord) -> str | None:
+    """SOQL を作らない理由。 作るなら ``None`` 。
+
+    ``row_check.status`` が 「超えていない」 で、 件数が
+    ``SOQL_SKIP_MAX_ROWS`` 以下なら SOQL を作らない。 件数が分からないもの
+    （ 「超えている」 / 「判定不可」 / 未実施 / ``row_check`` なし ） は作る。
+    件数の分からないものを飛ばすとレポート以上の範囲を取る事故を防げないため。
+    """
+    row_check = getattr(record, "row_check", None)
+    if row_check is None:
+        return None
+    if row_check.status != ROW_CHECK_UNDER:
+        return None
+    rows = row_check.rows
+    if rows is None:
+        return None
+    if rows > SOQL_SKIP_MAX_ROWS:
+        return None
+    return f"1000件以下（{rows}件）なので SOQL にしない"
 
 
 def _record_main_describe(record: ReportRecord, main_object: str) -> dict[str, Any] | None:
@@ -2195,6 +2347,43 @@ def _collect_owner_polymorphic_checks(
             continue
         field_api = column_info.get("対応フィールドAPI名") or ""
         checks.append(f"{OWNER_POLYMORPHIC_NOTE}: {field_api}")
+
+
+def _collect_auto_path_checks(
+    metadata: dict[str, Any],
+    column_lookup: dict[str, dict[str, str]],
+    checks: list[str],
+) -> None:
+    """複数候補から自動で確定した列の注意書きを checks に 1 列 1 件積む。
+
+    SELECT・絞り込み・並び順のどれかに使われている列だけを対象にする。
+    件数比較では値の違いを検出できないため、 人が確かめる必要がある。
+    """
+    for column_key in _used_column_keys(metadata):
+        column_info = column_lookup.get(column_key)
+        if column_info is None:
+            continue
+        parts = auto_path_parts(column_info.get("備考") or "")
+        if parts is None:
+            continue
+        adopted, others = parts
+        label = column_info.get("表示名") or column_key
+        checks.append(
+            f"列 {label} は候補から自動で確定した: {adopted}"
+            f"（他の候補: {others}）。値がレポートと同じか確かめる"
+        )
+
+
+def _collect_child_base_check(record: ReportRecord, checks: list[str]) -> None:
+    """FROM を子オブジェクトに切り替えたときの注意書きを checks に積む。"""
+    if not record.soql_from_object:
+        return
+    parent_object = record.main_object or ""
+    relationship_name = record.soql_from_relationship or ""
+    checks.append(
+        f"子から取る形にした（親 {parent_object}、子 {record.soql_from_object}、"
+        f"経路 {relationship_name}）。子を持たない親の行は出ない。レポートと件数を確かめる"
+    )
 
 
 def _used_column_keys(metadata: dict[str, Any]) -> list[str]:

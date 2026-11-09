@@ -43,6 +43,7 @@ from src.mapping.owner import (
     is_owner_user_field,
     owner_first_reference_targets,
 )
+from src.mapping.row_status import AUTO_PATH_NOTE
 
 # ═════════════════════════════════════════════════════════════════════
 # 公開 API
@@ -655,6 +656,10 @@ def _try_resolve_by_reference_prefix(
                 terminal_describe=terminal_describe,
             )
         )
+    # 経路が最短の候補が 1 つに決まるなら、 自動で採用する
+    auto = _pick_shortest_path(candidates)
+    if auto is not None:
+        return _match_from_shortest_path(candidates, auto)
     return ResolverResult(multi_note=_render_multiple_candidates(candidates))
 
 
@@ -1066,8 +1071,69 @@ def _try_resolve_by_label(
         )
 
     pool = filtered if filtered else candidates
+    # 経路が最短の候補が 1 つに決まるなら、 自動で採用する
+    auto = _pick_shortest_path(pool)
+    if auto is not None:
+        return _match_from_shortest_path(pool, auto)
     rendered = _render_multiple_candidates(pool)
     return ResolverResult(multi_note=rendered)
+
+
+def _chain_depth(soql_chain: str) -> int:
+    """経路の段数。 主オブジェクトの項目は 0 段、 関連 1 段目は 1 段。"""
+    if not soql_chain:
+        return 0
+    return len(soql_chain.split("."))
+
+
+def _pick_shortest_path(
+    pool: list[tuple[str, str, dict[str, Any], dict[str, Any]]],
+) -> tuple[str, str, dict[str, Any], dict[str, Any]] | None:
+    """候補プールから、 経路が最短の候補が **1 つだけ** ならそれを返す。
+
+    同じ段数の候補が複数あれば、 決められないので ``None`` を返す
+    （ 従来どおり 「複数候補あり」 で止める ） 。
+    """
+    if len(pool) < 2:
+        return None
+    depths = [_chain_depth(soql_chain) for _owner, soql_chain, _field, _describe in pool]
+    shortest_depth = min(depths)
+    shortest = [
+        candidate for candidate, depth in zip(pool, depths, strict=True) if depth == shortest_depth
+    ]
+    if len(shortest) != 1:
+        return None
+    return shortest[0]
+
+
+def _match_from_shortest_path(
+    pool: list[tuple[str, str, dict[str, Any], dict[str, Any]]],
+    adopted: tuple[str, str, dict[str, Any], dict[str, Any]],
+) -> ResolverResult:
+    """経路が最短の候補を自動で採用したときの ``ResolvedMatch`` を作る。
+
+    備考は ``AUTO_PATH_NOTE`` で始め、 採用したものと他の候補を書く。
+    """
+    owner, soql_chain, field, terminal_describe = adopted
+    soql_name = f"{soql_chain}.{field['name']}" if soql_chain else field["name"]
+    others = [
+        _format_one_candidate(candidate_owner, candidate_chain, candidate_field)
+        for candidate_owner, candidate_chain, candidate_field, _describe in pool
+        if (candidate_owner, candidate_chain, candidate_field) != adopted
+    ]
+    note = f"{AUTO_PATH_NOTE}: 採用 {soql_name}"
+    if others:
+        note += f" / 他の候補: {', '.join(others)}"
+    return ResolverResult(
+        match=ResolvedMatch(
+            note=note,
+            owner=owner,
+            soql_chain=soql_chain,
+            soql_name=soql_name,
+            field=field,
+            terminal_describe=terminal_describe,
+        )
+    )
 
 
 def _collect_label_candidates(

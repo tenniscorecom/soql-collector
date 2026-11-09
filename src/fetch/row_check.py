@@ -14,6 +14,7 @@ from comken.exceptions import (
 
 from src.fetch.models import RowCheck
 from src.fetch.offline import OfflineApiError
+from src.row_check_status import ROW_CHECK_OVER, ROW_CHECK_UNDER, ROW_CHECK_UNKNOWN
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +23,8 @@ logger = logging.getLogger(__name__)
 _ERROR_REASON_MAX_LENGTH = 200
 
 
-# レポート row check の状態定数
-ROW_CHECK_OVER = "超えている"
-
-
-ROW_CHECK_UNDER = "超えていない"
-
-
-ROW_CHECK_UNKNOWN = "判定不可"
+# レポート row check の状態定数は ``src.row_check_status`` に置いている
+# （ ``src.soql_builder`` からも使うので、 循環 import を避けるため ）
 
 
 def check_row_count(client: Any, report_id: str) -> RowCheck:

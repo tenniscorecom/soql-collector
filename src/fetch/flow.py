@@ -16,6 +16,7 @@ from comken.exceptions import (
 from comken.toolbox.salesforce.report import report_id_from_url
 
 from src import pii
+from src.child_relationship_csv import ManualChildRelationship
 from src.describe_store import DescribeStore, org_from_url
 from src.fetch.models import FetchOutcome, SiteFor
 from src.fetch.offline import OfflineApiError
@@ -73,6 +74,7 @@ def run_fetch(
     report_store: ReportStore | None = None,
     refresh_set: set[tuple[str, str]] | None = None,
     column_fix_overrides: dict[tuple[str, str], Any] | None = None,
+    manual_child_relationships: tuple[ManualChildRelationship, ...] = (),
 ) -> list[FetchOutcome]:
     """``entries`` の各エントリについて、 describe を取り ``ReportRecord`` を返す。
 
@@ -110,6 +112,9 @@ def run_fetch(
             ``(主オブジェクト小文字, 列キー)`` → ``ColumnMapRow`` の dict。
             ``_fetch_one`` に渡して ``column_map`` の ``対応フィールドAPI名``
             等を差し替える。 空 dict なら何もしない
+        manual_child_relationships: 人が ``input/子リレーション.csv`` に
+            手入力した子リレーション。 主オブジェクトの ``childRelationships``
+            に足してから、 クロスフィルタの判定と FROM の切り替えに使う
 
     Returns:
         入力と同じ順の ``FetchOutcome`` リスト。失敗 ID を含む個別では continue する。
@@ -168,6 +173,7 @@ def run_fetch(
             report_store=report_store,
             refresh_set=refresh_set,
             column_fix_overrides=column_fix_overrides,
+            manual_child_relationships=manual_child_relationships,
         )
         elapsed = time.perf_counter() - started_at
         if outcome.status == "ok":
@@ -208,6 +214,7 @@ def _fetch_one(
     report_store: ReportStore | None = None,
     column_fix_overrides: dict[tuple[str, str], Any] | None = None,
     allow_refresh: bool = True,
+    manual_child_relationships: tuple[ManualChildRelationship, ...] = (),
 ) -> FetchOutcome:
     """1 ID の describe を取り、 ``ReportRecord`` を組み立てて返す。
 
@@ -242,6 +249,7 @@ def _fetch_one(
                 column_fix_overrides=column_fix_overrides,
                 state=state,
                 allow_refresh=allow_refresh,
+                manual_child_relationships=manual_child_relationships,
             )
     except OfflineApiError as exc:
         # 保存データに無いので API が必要になった。 途中まで作った record は

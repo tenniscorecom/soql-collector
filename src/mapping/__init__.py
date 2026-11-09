@@ -49,7 +49,13 @@ from src.mapping.owner import (
     owner_first_reference_targets,
 )
 from src.mapping.report_type import candidate_failure_reason, report_type_candidates
-from src.mapping.row_status import column_candidates, column_source, column_status
+from src.mapping.row_status import (
+    AUTO_PATH_NOTE,
+    auto_path_parts,
+    column_candidates,
+    column_source,
+    column_status,
+)
 
 __all__ = [
     # --- report_type ---
@@ -83,6 +89,8 @@ __all__ = [
     "column_source",
     "column_status",
     "column_candidates",
+    "AUTO_PATH_NOTE",
+    "auto_path_parts",
     # --- 互換用エイリアス ---
     "_resolve_column_key_to_soql",
 ]

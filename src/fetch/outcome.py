@@ -66,7 +66,11 @@ def build_fetch_outcome(
             relations=tuple(state.relations),
             column_map=state.column_map,
             warnings=tuple(warnings),
+            # 件数が 1000 件以下なら SOQL を作らないので、 必ず渡す
+            row_check=state.row_check,
             cross_filter_objects=state.cross_filter_objects,
+            soql_from_object=state.soql_from_object,
+            soql_from_relationship=state.soql_from_relationship,
         )
     )
 
@@ -85,6 +89,8 @@ def build_fetch_outcome(
         pii=pii_result,
         soql_draft=soql_draft,
         cross_filter_objects=state.cross_filter_objects,
+        soql_from_object=state.soql_from_object,
+        soql_from_relationship=state.soql_from_relationship,
     )
     return FetchOutcome(
         entry=entry,

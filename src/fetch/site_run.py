@@ -10,7 +10,7 @@ from typing import Any
 
 from comken.exceptions import SalesforceRequestError
 
-from src import column_fix_xlsx, mapping
+from src import child_relationship_csv, column_fix_xlsx, mapping
 from src.describe_store import DescribeStore
 from src.fetch.main_object import choose_main
 from src.fetch.models import RelatedNode, RelationRecord, RowCheck
@@ -28,8 +28,10 @@ from src.fetch.report_slim import (
     make_slim_report,
 )
 from src.fetch.row_check import check_row_count, log_row_check
+from src.mapping.child_base import apply_child_base
 from src.master import MasterEntry
 from src.report_store import ReportStore
+from src.row_check_status import ROW_CHECK_UNDER
 from src.soql_builder import find_child_object_name
 from src.text_utils import coerce_str as _coerce_str
 
@@ -61,6 +63,10 @@ class FetchState:
     #: クロスフィルタの副問い合わせに使う子オブジェクトの describe。
     #: ``objects`` には入れない（関係図・関連表・対応表の出力を変えないため）。
     cross_filter_objects: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
+    #: SOQL の FROM に使うオブジェクト名。 子から取る形にしたときだけ入る
+    soql_from_object: str | None = None
+    #: 子から取る形にしたときの、 子から親へ戻るリレーション名
+    soql_from_relationship: str = ""
 
 
 # レポートが見つからないとき（HTTP 404）に、 警告へ足す説明
@@ -85,12 +91,17 @@ def run_within_site(
     column_fix_overrides: dict[tuple[str, str], Any],
     state: FetchState,
     allow_refresh: bool = True,
+    manual_child_relationships: tuple[child_relationship_csv.ManualChildRelationship, ...] = (),
 ) -> None:
     """``with site_class() as client:`` の中で行う一連の取得・組み立てを行う。
 
     ``allow_refresh`` が ``False`` のときは、 取り直し （API で describe を
     取り直す） をしない。 保存データだけで作り直す（``--rebuild``） ときは
     API を呼ばないので、 取り直しもしない。
+
+    ``manual_child_relationships`` は人が ``input/子リレーション.csv`` に
+    手入力した子リレーション。 主オブジェクトの子リレーションに足してから
+    クロスフィルタの判定と FROM の切り替えに使う。
     """
     # 境界: レポート定義はここで 1 回だけ整え、 以後は整えた値だけを使う。
     # 貯めてあればそれを使い（期限は無い。 作り直すときは ``レポート定義/`` を消す）、
@@ -99,6 +110,7 @@ def run_within_site(
     if cached is not None:
         state.slim_report = cached.slim_report
         state.dropped_keys = cached.dropped_keys
+        cached_rows = cached.rows
     else:
         try:
             metadata = client.report.describe(report_id)
@@ -111,10 +123,21 @@ def run_within_site(
         state.slim_report = make_slim_report(metadata)
         state.dropped_keys = collect_dropped_keys(metadata)
         report_store.put(org, report_id, state.slim_report, state.dropped_keys)
+        cached_rows = None
 
-    # 2000 行チェック: ``row_limit`` が True のときだけ実行
-    state.row_check = check_row_count(client, report_id) if row_limit else None
+    # 2000 行チェック: ``row_limit`` が True のときだけ実行。
+    # チェックしないとき（ ``--rebuild`` ）は、 保存した件数から同じ判定を作る
+    if row_limit:
+        state.row_check = check_row_count(client, report_id)
+    elif cached_rows is not None:
+        state.row_check = RowCheck(status=ROW_CHECK_UNDER, rows=cached_rows, reason=None)
+    else:
+        state.row_check = None
     log_row_check(state.row_check)
+
+    # 件数を保存する（通常の実行だけ。 ``--rebuild`` は保存データを書き換えない）
+    if allow_refresh and state.row_check is not None and state.row_check.rows is not None:
+        report_store.save_rows(org, report_id, state.row_check.rows)
 
     # 主オブジェクトの解決。 ``describe_object`` が 401 / 403 を返したら
     # ``fetch_object_cached`` がそのまま上位へ ``SalesforceRequestError``
@@ -186,6 +209,11 @@ def run_within_site(
             fetcher=fetcher,
         )
 
+    # 手入力 （ ``input/子リレーション.csv`` ） の子リレーションを主オブジェクトの
+    # describe へ合わせる。 取り直しのあと（ ``main_describe`` が変わるため ） に行う。
+    # 保存データ （ ``data/子リレーション.csv`` ） には手入力の値を書き込まない
+    _apply_manual_child_relationships(state, manual_child_relationships)
+
     # クロスフィルタの副問い合わせに使う子オブジェクトの describe を取りに行く。
     # 取り直しのあと（ ``main_describe`` が変わるため ） に行う。
     # ``objects`` には入れない（関係図・関連表・対応表の出力を変えないため）。
@@ -196,15 +224,77 @@ def run_within_site(
         store=store,
     )
 
-    # 人が ``列の直し.xlsx`` に入れた値で ``column_map`` を上書きする
+    # レポートの列が子オブジェクトの項目のときは、 SOQL の FROM を子に切り替える。
+    # 列対応表ができたあと、 ``列の直し`` の上書きの前に行う
+    _apply_child_base_switch(state=state, fetcher=fetcher)
+
+    # 人が ``列の直し.xlsx`` に入れた値で ``column_map`` を上書きする。
+    # FROM を子に切り替えたときは、 主オブジェクトとして子を渡す
     state.column_map = column_fix_xlsx.apply_overrides(
         column_map_rows=state.column_map,
         existing=column_fix_overrides,
-        main_object=main_object_name or "",
+        main_object=state.soql_from_object or main_object_name or "",
         objects=state.objects,
         warnings=state.warnings,
         fetch_object=fetcher,
     )
+
+
+def _apply_manual_child_relationships(
+    state: FetchState,
+    manual_child_relationships: tuple[child_relationship_csv.ManualChildRelationship, ...],
+) -> None:
+    """手入力の子リレーションを主オブジェクトの describe へ足す。
+
+    主オブジェクトの describe が無いときは何もしない。 保存データ
+    （ ``data/子リレーション.csv`` ） には手入力の値を書き込まない。
+    """
+    main_object_name = state.main_object_name
+    if not main_object_name or not manual_child_relationships:
+        return
+    main_describe = state.main_describe
+    if not isinstance(main_describe, dict):
+        return
+    merged = child_relationship_csv.merge_manual_child_relationships(
+        child_relationships=list(main_describe.get("childRelationships") or []),
+        manual_rows=manual_child_relationships,
+        parent_object=main_object_name,
+    )
+    if merged == list(main_describe.get("childRelationships") or []):
+        return
+    main_describe["childRelationships"] = merged
+    # ``state.objects`` の主オブジェクトは ``state.main_describe`` と同じ dict
+    state.objects[main_object_name] = main_describe
+
+
+def _apply_child_base_switch(
+    *,
+    state: FetchState,
+    fetcher: Callable[[str], dict[str, Any] | None] | None,
+) -> None:
+    """レポートの列が子の項目のとき、 列対応表を 子から取る形 に書き換える。
+
+    切り替えたときは、 子の describe を ``state.objects`` に入れ、 FROM に使う
+    子オブジェクト名を ``state.soql_from_object`` に記録する。
+    """
+    main_object_name = state.main_object_name
+    if not main_object_name or not state.column_map:
+        return
+    result = apply_child_base(
+        column_map=state.column_map,
+        main_object=main_object_name,
+        main_describe=state.main_describe,
+        fetch_object=fetcher,
+    )
+    for note in result.notes:
+        state.warnings.append(note)
+    if not result.switched:
+        return
+    state.column_map = result.column_map
+    state.soql_from_object = result.child_object
+    state.soql_from_relationship = result.relationship_name
+    if result.child_describe is not None:
+        state.objects[result.child_object] = result.child_describe
 
 
 def _collect_cross_filter_objects(

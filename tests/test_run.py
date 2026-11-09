@@ -119,7 +119,7 @@ def _make_file_paths(tmp_path: Path, master: Path) -> Any:
         master_xlsx_path=master,
         output_dir=tmp_path / "output",
         describe_csv_path=tmp_path / "describe.csv",
-        column_fix_xlsx_path=tmp_path / "column_fix.xlsx",
+        column_fix_xlsx_path=tmp_path / "input" / "column_fix.xlsx",
         xlsx_name="SOQL調査.xlsx",
         markdown_dir="SOQL資料",
         diagram_dir="関係図",
@@ -462,6 +462,7 @@ def test_run_filters_disabled_rows(
         report_store=None,
         refresh_set=None,
         column_fix_overrides=None,
+        manual_child_relationships=(),
     ):
         captured_keys.extend(entry.key for entry in entries)
         outcomes = []
@@ -619,6 +620,7 @@ def test_run_writes_jsons_and_csvs(
         report_store=None,
         refresh_set=None,
         column_fix_overrides=None,
+        manual_child_relationships=(),
     ):
         outcomes = []
         for entry in entries:
@@ -700,6 +702,7 @@ def test_run_partial_failure_continues_and_returns_1(
         report_store=None,
         refresh_set=None,
         column_fix_overrides=None,
+        manual_child_relationships=(),
     ):
         rec = _record_stub(key=entries[0].key, summary="", report_id="00O", url=entries[0].url)
         return [
@@ -772,6 +775,7 @@ def test_run_returns_1_when_run_tables_raises(
         report_store=None,
         refresh_set=None,
         column_fix_overrides=None,
+        manual_child_relationships=(),
     ):
         rec = _record_stub(key=entries[0].key, summary="", report_id="00O", url=entries[0].url)
         return [

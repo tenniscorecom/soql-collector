@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import csv
 import importlib.util
 import sys
 from pathlib import Path
@@ -242,6 +243,58 @@ def test_run_e2e_first_run_creates_all_outputs(tmp_path: Path) -> None:
     assert (out / "SOQL資料" / "1001.md").exists()
     assert (out / "列名の対応.csv").exists()
     assert (proj / "input" / "列の直し.xlsx").exists()
+
+
+def test_run_e2e_creates_manual_child_relationship_csv(tmp_path: Path) -> None:
+    """実行すると、 ``input/子リレーション.csv`` が見出しだけで作られる。"""
+    describe, objs = _scenario_describe_and_objects()
+    client = _FakeClient(describe, objs)
+    proj = _setup_project(tmp_path, client)
+
+    assert _do_run(proj, client) == 0
+
+    path = proj / "input" / "子リレーション.csv"
+    assert path.exists()
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert rows == [["親オブジェクト", "リレーション名", "子オブジェクト", "参照項目", "メモ"]]
+
+
+def test_run_e2e_skips_soql_for_small_reports(tmp_path: Path) -> None:
+    """1000 件以下のレポートは SOQL を作らず、 .py も作らない。"""
+
+    class _SmallClient(_FakeClient):
+        def __init__(self, describe: dict, objs: dict) -> None:
+            super().__init__(describe, objs)
+            self.report = _SmallReportStub(describe)
+
+    class _SmallReportStub:
+        def __init__(self, describe: dict) -> None:
+            self._describe = describe
+
+        def describe(self, report_id: str) -> dict:
+            return self._describe
+
+        def get(
+            self, report_id: str, filters: object = None, allow_truncated: bool = False
+        ) -> object:
+            return [{}] * 10
+
+    describe, objs = _scenario_describe_and_objects()
+    client = _SmallClient(describe, objs)
+    proj = _setup_project(tmp_path, client)
+
+    assert _do_run(proj, client) == 0
+
+    # SOQL レポートの .py は作られない
+    assert not (proj / "output" / "SOQLレポート").exists()
+    # Markdown は作られ、 SOQL の節は 「1000件以下なので SOQL にしない」
+    markdown = (proj / "output" / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
+    assert "1000件以下なので SOQL にしない" in markdown
+    # 一覧の 「SOQLの状態」 にも出る
+    sheets = _read_xlsx(proj / "output" / "SOQL調査.xlsx")
+    overview = {r["管理番号"]: r for r in sheets["一覧"]}
+    assert overview["1001"]["SOQLの状態"] == "対象外（1000件以下）"
 
 
 def test_run_e2e_first_run_resolves_fullwidth_colon_and_related(tmp_path: Path) -> None:

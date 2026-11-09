@@ -52,11 +52,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from comken import config
-from comken.exceptions import ConfigError, ExcelError, SalesforceReportIDNotFoundError
+from comken.exceptions import (
+    ConfigError,
+    CSVError,
+    ExcelError,
+    SalesforceReportIDNotFoundError,
+)
 from comken.runtime import is_dry_run
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src import column_fix_xlsx
+from src import child_relationship_csv, column_fix_xlsx
+from src.child_relationship_csv import ManualChildRelationship
 from src.column_fix_xlsx import ColumnFixRow
 from src.describe_store import DescribeStore
 from src.fetch import (
@@ -133,6 +139,23 @@ def _load_column_fix_overrides(
     return overrides
 
 
+def _load_manual_child_relationships(
+    file_paths: FilePaths,
+    *,
+    rebuild: bool,
+) -> tuple[ManualChildRelationship, ...]:
+    """``input/子リレーション.csv`` を読んで、 手入力の子リレーションを返す。
+
+    通常の実行では、 ファイルが無ければ見出しだけのファイルを作る。
+    ``--rebuild`` は作らない（ 保存データを書き換えない ） が、 既にあれば
+    読む。 見出しが違うときは ``CSVError`` を上げる（ 停止させる ） 。
+    """
+    path = child_relationship_csv.child_relationship_csv_path(file_paths.column_fix_xlsx_path)
+    if not rebuild:
+        child_relationship_csv.ensure_child_relationship_file(path)
+    return child_relationship_csv.load_manual_child_relationships(path)
+
+
 def _fetch(
     file_paths: FilePaths,
     entries: list[MasterEntry],
@@ -140,6 +163,7 @@ def _fetch(
     site_for: SiteFor | None,
     *,
     rebuild: bool = False,
+    manual_child_relationships: tuple[ManualChildRelationship, ...] = (),
 ) -> list[FetchOutcome]:
     """``run_fetch`` を呼び ``outcomes`` を返す。 所要時間と describe の集計ログもここで出す。
 
@@ -172,6 +196,7 @@ def _fetch(
             report_store=report_store,
             refresh_set=refresh_set,
             column_fix_overrides=column_fix_overrides,
+            manual_child_relationships=manual_child_relationships,
         )
     )
     total_elapsed = time.perf_counter() - started_at
@@ -342,6 +367,15 @@ def run(
             logger.error("%s", exc)
             return 2
 
+        # 手入力の子リレーションを読む（見出し違いなら CSVError で止める）
+        try:
+            manual_child_relationships = _load_manual_child_relationships(
+                file_paths, rebuild=rebuild
+            )
+        except CSVError as exc:
+            logger.error("%s", exc)
+            return 2
+
         # 取得する
         outcomes = _fetch(
             file_paths=file_paths,
@@ -349,6 +383,7 @@ def run(
             column_fix_overrides=column_fix_overrides,
             site_for=site_for,
             rebuild=rebuild,
+            manual_child_relationships=manual_child_relationships,
         )
         failed_count = sum(1 for o in outcomes if o.status == "failed")
 

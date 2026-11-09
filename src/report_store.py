@@ -41,10 +41,15 @@ _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]")
 
 @dataclass(frozen=True)
 class CachedReport:
-    """貯めてあったレポート定義。"""
+    """貯めてあったレポート定義。
+
+    ``rows`` は保存した件数。 古いファイルには無いので ``None`` になる
+    （ 件数が分からないので、 row_check を作らない ）。
+    """
 
     slim_report: dict[str, Any]
     dropped_keys: tuple[str, ...]
+    rows: int | None = None
 
 
 class ReportStore:
@@ -100,6 +105,30 @@ class ReportStore:
         }
         _write(self._path_for(org, report_id), document)
 
+    def save_rows(self, org: str, report_id: str, rows: int) -> None:
+        """保存済みのレポート定義に 「件数」 を書き足す。
+
+        件数は「1000 件以下なら SOQL を作らない」 の判定に使う。 形式番号は
+        変えないので、 古いファイル （ 「件数」 が無い ） もそのまま読める。
+        書けないとき・ファイルが無いときは警告だけ出して無視する。
+        """
+        if self._folder is None:
+            return
+        path = self._path_for(org, report_id)
+        if not path.exists():
+            return
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "貯めてあったレポート定義を読めないため件数を保存しません: %s（%s）", path, exc
+            )
+            return
+        if not isinstance(document, dict):
+            return
+        document["件数"] = rows
+        _write(path, document)
+
     def prune(self, keep_report_ids: Collection[str]) -> list[str]:
         """``keep_report_ids`` に無いレポートのファイルを消し、 消したファイル名を返す。
 
@@ -150,7 +179,18 @@ def _read(path: Path) -> CachedReport | None:
     return CachedReport(
         slim_report=slim_report,
         dropped_keys=tuple(str(key) for key in dropped),
+        rows=_read_rows(document),
     )
+
+
+def _read_rows(document: dict[str, Any]) -> int | None:
+    """保存された 「件数」 を読む。 無い・読めないときは ``None``。"""
+    if not isinstance(document, dict):
+        return None
+    rows = document.get("件数")
+    if isinstance(rows, bool) or not isinstance(rows, int):
+        return None
+    return rows
 
 
 def _write(path: Path, document: dict[str, Any]) -> None:

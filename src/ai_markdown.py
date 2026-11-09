@@ -25,6 +25,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from src import mapping, relation_diagram, soql_similar
+from src.soql_builder import STATUS_SKIPPED
 from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
@@ -727,6 +728,9 @@ def _build_soql_section(record: ReportRecord) -> list[str]:
             "この下書きを、下の資料と照らして直してください。"
             "作れなかった部分は資料から補ってください。"
         )
+    elif draft.status == STATUS_SKIPPED:
+        # 件数が少ないので SOQL を作らなかった
+        lines.append("SOQL: 1000件以下なので SOQL にしない")
     else:
         # ``作れず`` は本文が無いので、 「なし」 の代わりに理由を残す
         lines.append("SOQL: なし")
@@ -756,6 +760,11 @@ def _build_fetch_method_section(record: ReportRecord) -> list[str]:
         return []
 
     lines: list[str] = ["## 取り方", ""]
+    if record.soql_from_object:
+        lines.append(
+            f"- FROM は子オブジェクトの {record.soql_from_object} にした"
+            f"（親 {record.main_object or ''}、経路 {record.soql_from_relationship or ''}）"
+        )
     if draft.use_bulk:
         lines.append("- Bulk API 2.0 で取る（USE_BULK = True）")
         lines.append(
@@ -839,8 +848,8 @@ def _build_child_relationship_section(record: ReportRecord) -> list[str]:
         lines.append("")
         return lines
 
-    lines.append("| リレーション名 | 子オブジェクト | 参照項目 |")
-    lines.append("| --- | --- | --- |")
+    lines.append("| リレーション名 | 子オブジェクト | 参照項目 | 出どころ |")
+    lines.append("| --- | --- | --- | --- |")
     for relationship in relationships[:MARKDOWN_CHILD_RELATIONSHIP_MAX_ROWS]:
         lines.append(
             _md_table_row(
@@ -848,6 +857,7 @@ def _build_child_relationship_section(record: ReportRecord) -> list[str]:
                     relationship.get("relationshipName", ""),
                     relationship.get("childSObject", ""),
                     relationship.get("field", ""),
+                    _child_relationship_source(relationship),
                 ]
             )
         )
@@ -860,6 +870,11 @@ def _build_child_relationship_section(record: ReportRecord) -> list[str]:
     lines.append("SELECT の中に書いたら USE_BULK を False にする")
     lines.append("")
     return lines
+
+
+def _child_relationship_source(relationship: dict[str, Any]) -> str:
+    """子リレーションの出どころ。 手入力なら 「手入力」 、 以外は 「Salesforce」 。"""
+    return "手入力" if relationship.get("手入力") else "Salesforce"
 
 
 def _record_child_relationships(record: ReportRecord) -> list[dict[str, Any]]:

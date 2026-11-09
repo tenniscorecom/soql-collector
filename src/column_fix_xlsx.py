@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 from comken.exceptions import ExcelError
 
 from src import mapping, xlsx_style
+from src.soql_builder import STATUS_SKIPPED
 
 if TYPE_CHECKING:
     from src.fetch import ReportRecord
@@ -261,6 +262,9 @@ def merge_and_write(
         elif had_user_fix:
             status = STATUS_OK
         elif candidates_text and "複数候補あり" in candidates_text:
+            status = STATUS_NEEDS_CHECK
+        elif mapping.auto_path_parts(obs.note) is not None:
+            # 複数候補から自動で確定した行。 人に直せるので要確認
             status = STATUS_NEEDS_CHECK
         elif auto_resolved:
             status = STATUS_OK
@@ -773,22 +777,29 @@ def merge_and_write_after_run(
     observed: list[ObservedAutoRow] = []
     report_keys: dict[tuple[str, str], set[str]] = {}
     for record in records:
-        if not record.main_object:
+        # 主オブジェクトは SOQL の FROM と同じものにする（列の直しのキーは
+        # 「列の直しの適用」 と同じ主オブジェクトに揃えるため）
+        main_object = record.soql_from_object or record.main_object
+        if not main_object:
+            continue
+        # 1000 件以下で SOQL にしなかったレポートは、 未解決の列を新たに
+        # 追加しない（ 人の作業が増えないようにするため ）
+        if record.soql_draft is not None and record.soql_draft.status == STATUS_SKIPPED:
             continue
         for row in record.column_map:
             note = row["備考"]
             observed.append(
                 ObservedAutoRow(
-                    main_object=record.main_object,
+                    main_object=main_object,
                     column_key=row["列キー"],
                     display_name=row["表示名"],
                     # 人の値で上書きした行は、 上書き前の自動の値を見せる
                     soql_name=row.get("自動の値", row["対応フィールドAPI名"]),
-                    candidates=note if "複数候補あり" in note else "",
+                    candidates=_candidates_text(note),
                     note=note,
                 )
             )
-            key = _normalize_key(record.main_object, row["列キー"])
+            key = _normalize_key(main_object, row["列キー"])
             report_keys.setdefault(key, set()).add(record.key)
 
     try:
@@ -804,6 +815,20 @@ def merge_and_write_after_run(
             "列の直し.xlsx を書けませんでした（Excel などで開いていないか確認）: %s",
             exc,
         )
+
+
+def _candidates_text(note: str) -> str:
+    """備考から、 候補の欄に出す文字列を作る。
+
+    「複数候補あり」 のときはその候補、 複数候補から自動で確定した行では
+    採用しなかった側の候補を返す。 それ以外は空文字。
+    """
+    if "複数候補あり" in note:
+        return note.replace("複数候補あり: ", "")
+    parts = mapping.auto_path_parts(note)
+    if parts is not None:
+        return parts[1]
+    return ""
 
 
 def today_local() -> date:

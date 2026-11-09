@@ -98,7 +98,9 @@ class _ReportStub:
         return self._describe
 
     def get(self, report_id: str, filters: object = None, allow_truncated: bool = False) -> object:
-        return []
+        # 1000 件以下のレポートは SOQL を作らない（ 対象外 ） なので、
+        # SOQL を作る前提のテストは 1001 件以上を返す
+        return [{}] * 1001
 
 
 class _FakeClient:

@@ -44,7 +44,9 @@ def aggregate_resolved_fields(
     groups: dict[tuple[str, str], list[tuple[str, dict, str]]] = {}
     for record in records:
         key = record.key
-        main_object_text = record.main_object or "(不明)"
+        # 主オブジェクトは SOQL の FROM と同じものにする（ダウンローダーが
+        # 「最初の FROM」 から主オブジェクトを引くため）
+        main_object_text = record.soql_from_object or record.main_object or "(不明)"
         column_map = record.column_map
         pii_lookup = pii_lookups.get(key, {})
         for col in column_map:

@@ -104,6 +104,12 @@ class ReportRecord:
     #: childRelationships}`` の slim な dict。 ``objects`` には **入れない**
     #: （関係図・関連表・対応表の出力を変えないため） 。
     cross_filter_objects: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
+    #: SOQL の FROM に使うオブジェクト名。 レポートの列が子オブジェクトの項目の
+    #: ときは子オブジェクト名が入る。 ``None`` のときは主オブジェクト。
+    #: ``main_object`` はレポートの親のまま変えない（資料の「主オブジェクト」）。
+    soql_from_object: str | None = None
+    #: 子から取る形にしたときの、 子から親へ戻るリレーション名（例 ``Account`` ）。
+    soql_from_relationship: str = ""
 
 
 @dataclass(frozen=True)
