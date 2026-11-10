@@ -143,6 +143,7 @@ def _make_record(
     relations: tuple[RelationRecord, ...] = (),
     warnings: tuple[str, ...] = (),
     row_check: RowCheck | None = None,
+    exceeds_row_limit: bool | None = None,
     pii_status: str = "なし",
     report_metadata_override: dict | None = None,
     soql_draft: object | None = None,
@@ -222,6 +223,7 @@ def _make_record(
         row_check=row_check,
         pii=pii.ReportPIIResult(status=pii_status, matching_columns=()),
         soql_draft=soql_draft,
+        exceeds_row_limit=exceeds_row_limit,
     )
 
 
@@ -885,6 +887,23 @@ def test_markdown_notes_for_rest_with_too_many_rows() -> None:
     rendered = build_markdown(record)
     assert "- 2000件超だが REST で取る（ページ送りで全件取れる。往復は増える）" in rendered
     assert "- 2000件超なので Bulk で取る" not in rendered
+
+
+def test_markdown_notes_use_master_over_2000_column() -> None:
+    """管理表が 2000 件超なら、 サンドボックスの行数が 50 件でも注意文を出す。"""
+    record = _make_record(
+        exceeds_row_limit=True,
+        row_check=RowCheck(status="超えていない", rows=50, reason=None),
+        soql_draft=SoqlDraft(
+            soql="SELECT Subject FROM Task",
+            status="作成済み",
+            missing=(),
+            checks=(),
+            use_bulk=True,
+        ),
+    )
+    rendered = build_markdown(record)
+    assert "- 2000件超なので Bulk で取る" in rendered
 
 
 def test_markdown_notes_for_cross_filter_and_aggregate() -> None:

@@ -68,6 +68,8 @@ def build_fetch_outcome(
             warnings=tuple(warnings),
             # 件数は件数比較 （ 一覧の 「行数」 列など ） でも使うので、 必ず渡す
             row_check=state.row_check,
+            # 管理表の「2000件超」列。 取り方 （ Bulk / 通常 SOQL ） の判定に使う
+            exceeds_row_limit=entry.exceeds_row_limit,
             cross_filter_objects=state.cross_filter_objects,
             soql_from_object=state.soql_from_object,
             soql_from_relationship=state.soql_from_relationship,
@@ -93,6 +95,7 @@ def build_fetch_outcome(
         soql_from_relationship=state.soql_from_relationship,
         org=state.org,
         source_times=state.source_times,
+        exceeds_row_limit=entry.exceeds_row_limit,
     )
     return FetchOutcome(
         entry=entry,

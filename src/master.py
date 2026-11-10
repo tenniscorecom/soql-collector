@@ -1,10 +1,10 @@
 """レポート管理表（Excel）から、管理番号ごとの最小行 dict を読む。
 
 soql-collector が管理表で必要とする列は ``ID``・``概要``・``Salesforce URL``・
-``有効`` の4つと、あれば ``調査``。ダウンローダーはもっと広い列を読む前提なので、ここでは
-最小の読み取りを直接書く。comken の ``Excel`` 経由で開くので、シートは
-``PY_管理表`` を探す（comken の ``Excel.data_sheet('管理表')`` が ``PY_`` プレ
-フィックスを自動で補う）。
+``有効`` の4つと、あれば ``調査`` と ``2000件超``。ダウンローダーはもっと広い列を
+読む前提なので、ここでは最小の読み取りを直接書く。comken の ``Excel`` 経由で開くので、
+シートは ``PY_管理表`` を探す（comken の ``Excel.data_sheet('管理表')`` が ``PY_``
+プレフィックスを自動で補う）。
 
 「有効」が ``×`` の行は ``filter_survey_targets`` で落とす。
 **``調査`` 列がある管理表では**、 さらに「調査」が ``○`` でない行
@@ -12,6 +12,11 @@ soql-collector が管理表で必要とする列は ``ID``・``概要``・``Sale
 ``調査`` 列が無い管理表は、 今までどおり「有効」だけで決まる。URL が壊れている行は
 行ごと読み込みエラーにせず、``fetch`` 側で個別に失敗として扱う（他の ID を止め
 ない）。
+
+``2000件超`` 列は任意。 本番の件数が 2000 件を超えるかどうかは、 サンドボックスの
+2000 行チェックでは分からない（ サンドボックスで 2000 件以下でも本番では超えることが
+ある） ので、 本番を知っている人が書く。 値は ``○`` / ``×`` で読み、 列が無い・セルが
+空のときは「不明」（ ``None`` ） として扱う。
 """
 
 from __future__ import annotations
@@ -35,6 +40,8 @@ COL_URL = "Salesforce URL"
 COL_ENABLED = "有効"
 # 任意の列。 あれば「有効」のうち今回調べる行を ``○`` で選ぶ（downloader の「有効」と意味を分ける）
 COL_SURVEY = "調査"
+# 任意の列。 本番の件数が 2000 件を超えるかどうか。 本当の件数を知っている人が書く
+COL_EXCEEDS_ROW_LIMIT = "2000件超"
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,9 @@ class MasterEntry:
     enabled: bool
     #: 今回調べる行か。 ``調査`` 列が無い管理表では、 すべて ``True``
     survey: bool = True
+    #: 本番の件数が 2000 件を超えるか。 管理表に「2000件超」列が無い・セルが空の
+    #: ときは ``None`` （ 「不明」 ）
+    exceeds_row_limit: bool | None = None
 
 
 def read_master(path: Path) -> list[MasterEntry]:
@@ -61,6 +71,7 @@ def read_master(path: Path) -> list[MasterEntry]:
         table = sheet.table().read()
     raw_rows = list(table)
     has_survey_column = COL_SURVEY in table.columns
+    has_exceeds_column = COL_EXCEEDS_ROW_LIMIT in table.columns
     entries: list[MasterEntry] = []
     for raw in raw_rows:
         if all(raw.get(col) in (None, "") for col in (COL_KEY, COL_SUMMARY, COL_URL, COL_ENABLED)):
@@ -73,8 +84,18 @@ def read_master(path: Path) -> list[MasterEntry]:
         enabled_text = str(raw.get(COL_ENABLED) or "")
         enabled = _is_enabled(enabled_text)
         survey = _is_enabled(raw.get(COL_SURVEY)) if has_survey_column else True
+        exceeds_row_limit = (
+            _read_exceeds_row_limit(raw.get(COL_EXCEEDS_ROW_LIMIT)) if has_exceeds_column else None
+        )
         entries.append(
-            MasterEntry(key=key, summary=summary, url=url, enabled=enabled, survey=survey)
+            MasterEntry(
+                key=key,
+                summary=summary,
+                url=url,
+                enabled=enabled,
+                survey=survey,
+                exceeds_row_limit=exceeds_row_limit,
+            )
         )
     logger.info("レポート管理表読込完了: path=%s, 件数=%d", path, len(entries))
     return entries
@@ -95,3 +116,17 @@ def _is_enabled(value: object) -> bool:
     ローダー`` の ``report_master._to_bool`` とも語集合をそろえる。
     """
     return is_enabled_mark(value)
+
+
+def _read_exceeds_row_limit(value: object) -> bool | None:
+    """管理表の「2000件超」列の値を ``True`` / ``False`` / ``None`` に直す。
+
+    セルが空のときは ``None`` （ 「本番の件数は分からない」 ） 。 値があると
+    きは ``_is_enabled`` （ ``is_enabled_mark`` ） で真偽を判定する。 判定の
+    語集合を「有効」列とそろえるため、 別の判定は作らない。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return _is_enabled(value)

@@ -19,7 +19,7 @@ import pytest
 from comken.exceptions import SalesforceReportIDNotFoundError
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src.fetch import ReportRecord
+from src.fetch import ReportRecord, RowCheck
 from src.report_py import (
     REPORT_PY_DIR,
     USE_BULK_LINE,
@@ -70,6 +70,8 @@ def _make_record(
     cross_filters: list[dict] | None = None,
     objects: dict[str, dict] | None = None,
     cross_filter_objects: dict[str, dict] | None = None,
+    row_check: RowCheck | None = None,
+    exceeds_row_limit: bool | None = None,
     url: str = "https://example.my.salesforce.com/lightning/r/Report/00O000000000001/view",
 ) -> ReportRecord:
     """SOQL の下書きまで済んだ ``ReportRecord`` を作る。
@@ -79,6 +81,8 @@ def _make_record(
     ``report_name`` を渡すと、 ``reportMetadata.name`` に入れる。 渡さない
     （ ``None`` ） ときは ``name`` キー自体が無い状態にする。
     ``url`` は管理表の URL。 レポート ID はこの URL から取り出す。
+    ``row_check`` は 2000 行チェックの結果、 ``exceeds_row_limit`` は管理表の
+    「2000件超」列の値。 取り方 （ Bulk / 通常 SOQL ） の判定に使う。
     """
     detail_columns = list(detail_columns or ["Name"])
     metadata: dict = {
@@ -125,6 +129,8 @@ def _make_record(
         column_map=column_map,
         warnings=(),
         cross_filter_objects=cross_filter_objects or {},
+        row_check=row_check,
+        exceeds_row_limit=exceeds_row_limit,
     )
     return ReportRecord(
         key=record.key,
@@ -139,6 +145,8 @@ def _make_record(
         warnings=record.warnings,
         soql_draft=build_soql(record),
         cross_filter_objects=record.cross_filter_objects,
+        row_check=record.row_check,
+        exceeds_row_limit=record.exceeds_row_limit,
     )
 
 
@@ -669,6 +677,43 @@ def test_use_bulk_line_is_unchanged_without_subquery() -> None:
     record = _make_record(report_name="売上レポート", url=REPORT_URL)
     source = build_report_py_source(record, class_name="Report1001")
     assert source is not None
+    assert USE_BULK_LINE in source.splitlines()
+
+
+def test_generated_class_has_use_bulk_false_for_small_rows() -> None:
+    """件数が 1000 件以下のレポートの ``USE_BULK`` は False で、 理由が付く。"""
+    record = _make_record(
+        report_name="売上レポート",
+        url=REPORT_URL,
+        exceeds_row_limit=False,
+        row_check=RowCheck(status="超えていない", rows=50, reason=None),
+    )
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.USE_BULK is False  # type: ignore[attr-defined]
+    # 理由がコメントに出ている
+    use_bulk_line = next(line for line in source.splitlines() if "USE_BULK" in line)
+    assert use_bulk_line.startswith("    USE_BULK = False  # ")
+    assert "1000 件以下" in use_bulk_line
+    # 根拠（ 管理表かサンドボックスか ） も書く
+    assert "管理表" in use_bulk_line
+
+
+def test_generated_class_has_use_bulk_true_for_over_2000_rows() -> None:
+    """管理表が 2000 件超なら、 サンドボックスの行数が少なくても ``USE_BULK`` は True。"""
+    record = _make_record(
+        report_name="売上レポート",
+        url=REPORT_URL,
+        exceeds_row_limit=True,
+        row_check=RowCheck(status="超えていない", rows=50, reason=None),
+    )
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    namespace = _load_generated(source)
+    report_class = namespace["Report1001"]
+    assert report_class.USE_BULK is True  # type: ignore[attr-defined]
     assert USE_BULK_LINE in source.splitlines()
 
 

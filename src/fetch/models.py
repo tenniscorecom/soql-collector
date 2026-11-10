@@ -123,6 +123,9 @@ class ReportRecord:
     org: str = ""
     #: 元データの取得日時。 ``None`` のときは資料に出さない
     source_times: SourceTimes | None = None
+    #: 本番の件数が 2000 件を超えるか。 管理表の「2000件超」列の値。
+    #: ``None`` は「不明」（ 管理表に列が無い・セルが空 ）
+    exceeds_row_limit: bool | None = None
 
 
 @dataclass(frozen=True)

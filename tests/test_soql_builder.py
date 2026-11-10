@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from src.fetch import ReportRecord
+from src.fetch import ReportRecord, RowCheck
 from src.mapping.owner import OWNER_POLYMORPHIC_NOTE
 from src.soql_builder import (
     CROSS_FILTER_LINK_DIRECT,
@@ -52,6 +52,8 @@ def _make_record(
     report_metadata: dict[str, Any] | None = None,
     objects: dict[str, dict[str, Any]] | None = None,
     cross_filter_objects: dict[str, dict[str, Any]] | None = None,
+    row_check: RowCheck | None = None,
+    exceeds_row_limit: bool | None = None,
 ) -> ReportRecord:
     """テスト用の ``ReportRecord`` を作る。
 
@@ -61,6 +63,8 @@ def _make_record(
     ``report_metadata`` を渡すと ``detailColumns`` 等を組み立てる前に
     ベース dict として使う ( 既存のキーを保ったまま、 渡された
     ``detail_columns`` 等の派生値もマージする ) 。
+    ``row_check`` は 2000 行チェックの結果、 ``exceeds_row_limit`` は管理表の
+    「2000件超」列の値。 取り方 ( Bulk / 通常 SOQL ) の判定に使う。
     """
     detail_columns = detail_columns or []
     if column_map is None:
@@ -127,6 +131,8 @@ def _make_record(
         column_map=column_map,
         warnings=(),
         cross_filter_objects=cross_filter_objects or {},
+        row_check=row_check,
+        exceeds_row_limit=exceeds_row_limit,
     )
 
 
@@ -3345,3 +3351,177 @@ def test_date_value_without_zero_padding_is_normalized() -> None:
     )
     draft = build_soql(record)
     assert "WHERE CloseDate = 2024-01-05" in draft.soql
+
+
+# ── 取り方（ Bulk / 通常 SOQL ） ──────────────────────────────────────────
+
+
+def _row_check(status: str, rows: int | None = None) -> RowCheck:
+    """2000 行チェックの結果を作る。"""
+    return RowCheck(status=status, rows=rows, reason=None)
+
+
+def _simple_record(**kwargs: Any) -> ReportRecord:
+    """副問い合わせの無い record を作る。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    return _make_record(detail_columns=["Name"], column_map=column_map, **kwargs)
+
+
+def test_bulk_when_master_says_over_2000_even_if_row_check_is_small() -> None:
+    """管理表が ○ なら、 サンドボックスの行数が 50 件でも Bulk で取る。
+
+    # なぜ: サンドボックスの 2000 件チェックは本番の件数ではないため、
+    # 管理表の「2000件超」列を先に読む
+    """
+    record = _simple_record(
+        exceeds_row_limit=True,
+        row_check=_row_check("超えていない", 50),
+    )
+    draft = build_soql(record)
+
+    assert draft.use_bulk is True
+    assert draft.bulk_blockers == ()
+
+
+def test_rest_when_master_says_not_over_and_row_count_is_small() -> None:
+    """管理表が × で、 サンドボックスの行数が 1000 件以下なら通常 SOQL で取る。"""
+    record = _simple_record(
+        exceeds_row_limit=False,
+        row_check=_row_check("超えていない", 50),
+    )
+    draft = build_soql(record)
+
+    assert draft.use_bulk is False
+    assert len(draft.bulk_blockers) == 1
+    reason = draft.bulk_blockers[0]
+    assert "1000 件以下" in reason
+    # 根拠（ 管理表かサンドボックスか ） も書く
+    assert "管理表" in reason
+    assert "50 件" in reason
+
+
+def test_bulk_when_row_count_is_over_1000() -> None:
+    """管理表が × でも、 サンドボックスの行数が 1000 件超なら Bulk で取る。"""
+    record = _simple_record(
+        exceeds_row_limit=False,
+        row_check=_row_check("超えていない", 1500),
+    )
+    draft = build_soql(record)
+
+    assert draft.use_bulk is True
+    assert draft.bulk_blockers == ()
+
+
+def test_bulk_when_row_check_says_over_2000() -> None:
+    """管理表が無くても、 2000 行チェックが「超えている」なら Bulk で取る。"""
+    record = _simple_record(row_check=_row_check("超えている"))
+    draft = build_soql(record)
+
+    assert draft.use_bulk is True
+    assert draft.bulk_blockers == ()
+
+
+def test_bulk_when_master_cross_and_row_check_says_over_2000() -> None:
+    """管理表が × でも、 2000 行チェックが「超えている」なら 1000 件超 として Bulk で取る。"""
+    record = _simple_record(
+        exceeds_row_limit=False,
+        row_check=_row_check("超えている"),
+    )
+    draft = build_soql(record)
+
+    assert draft.use_bulk is True
+    assert draft.bulk_blockers == ()
+
+
+def test_rest_when_only_row_check_says_small() -> None:
+    """管理表が無くても、 2000 行チェックの行数が 1000 件以下なら通常 SOQL で取る。"""
+    record = _simple_record(row_check=_row_check("超えていない", 50))
+    draft = build_soql(record)
+
+    assert draft.use_bulk is False
+    assert len(draft.bulk_blockers) == 1
+    reason = draft.bulk_blockers[0]
+    assert "1000 件以下" in reason
+    # 管理表の列が無ければ、 根拠はサンドボックスだけ
+    assert "管理表" not in reason
+    assert "サンドボックス" in reason
+
+
+def test_bulk_when_count_is_unknown() -> None:
+    """件数が分からないときは Bulk で取る（ 今までどおり ）。"""
+    for row_check in (None, _row_check("判定不可")):
+        record = _simple_record(row_check=row_check)
+        draft = build_soql(record)
+
+        assert draft.use_bulk is True
+        assert draft.bulk_blockers == ()
+
+
+def test_subquery_is_always_rest() -> None:
+    """副問い合わせ （ クロスフィルタ ） があるときは、 件数に関係なく通常 SOQL で取る。"""
+    record = _cross_filter_record([_cross_filter()], row_check=_row_check("超えていない", 50))
+    draft = build_soql(record)
+
+    assert draft.use_bulk is False
+    assert any("副問い合わせ" in reason for reason in draft.bulk_blockers)
+
+
+def test_subquery_with_over_2000_adds_check_to_split_soql() -> None:
+    """副問い合わせがあり 2000 件超のときは、 5000 件を超えるなら SOQL を分ける注意を足す。"""
+    record = _cross_filter_record([_cross_filter()], exceeds_row_limit=True)
+    draft = build_soql(record)
+
+    assert draft.use_bulk is False
+    assert any("5000 件を超えるなら SOQL を分ける" in check for check in draft.checks)
+
+
+def test_subquery_with_unknown_count_adds_check_to_split_soql() -> None:
+    """副問い合わせがあり件数が不明のときも、 5000 件に関する注意を足す。"""
+    record = _cross_filter_record([_cross_filter()])
+    draft = build_soql(record)
+
+    assert draft.use_bulk is False
+    assert any("5000 件を超えるなら SOQL を分ける" in check for check in draft.checks)
+
+
+def test_subquery_with_row_check_over_adds_check_to_split_soql() -> None:
+    """副問い合わせがあり 2000 行チェックが「超えている」ときも、 5000 件の注意を足す。"""
+    record = _cross_filter_record([_cross_filter()], row_check=_row_check("超えている"))
+    draft = build_soql(record)
+
+    assert draft.use_bulk is False
+    assert any("5000 件を超えるなら SOQL を分ける" in check for check in draft.checks)
+
+
+def test_subquery_with_small_count_has_no_split_check() -> None:
+    """副問い合わせがあり 1000 件以下のときは、 5000 件の注意は出さない。
+
+    件数が 1000 件以下だと分かっているので、 5000 件を超える可能性は無い
+    """
+    record = _cross_filter_record(
+        [_cross_filter()],
+        exceeds_row_limit=False,
+        row_check=_row_check("超えていない", 50),
+    )
+    draft = build_soql(record)
+
+    assert draft.use_bulk is False
+    assert not any("5000 件" in check for check in draft.checks)
+    # 通常 SOQL にした理由は 副問い合わせ と 件数 の 2 件
+    assert len(draft.bulk_blockers) == 2
+    assert any("副問い合わせ" in reason for reason in draft.bulk_blockers)
+    assert any("1000 件以下" in reason for reason in draft.bulk_blockers)
+
+
+def test_subquery_with_row_count_over_1000_has_no_split_check() -> None:
+    """副問い合わせがあり 1000 件超 2000 件以下のときは、 5000 件の注意は出さない。"""
+    record = _cross_filter_record(
+        [_cross_filter()],
+        row_check=_row_check("超えていない", 1500),
+    )
+    draft = build_soql(record)
+
+    assert draft.use_bulk is False
+    assert not any("5000 件" in check for check in draft.checks)
+    # 件数は 1000 件以下ではないので、 通常 SOQL の理由には数えない
+    assert len(draft.bulk_blockers) == 1

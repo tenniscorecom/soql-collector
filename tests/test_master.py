@@ -39,6 +39,9 @@ def _build_master(path: Path, rows: list[dict]) -> None:
     # 「調査」列は任意。 行のどれかが「調査」を持つときだけ、 列を足す
     if any("調査" in row for row in rows):
         headers.append("調査")
+    # 「2000件超」列も任意。 同じ様に、 行のどれかが持つときだけ足す
+    if any("2000件超" in row for row in rows):
+        headers.append("2000件超")
     sheet.append(headers)
     for row in rows:
         sheet.append([row.get(col, "") for col in headers])
@@ -281,3 +284,80 @@ def test_is_enabled_delegates_to_is_enabled_mark() -> None:
     assert _is_enabled(False) is False
     assert _is_enabled(1) is True
     assert _is_enabled(0) is False
+
+
+# ── 「2000件超」列 ───────────────────────────────────────────────────────
+
+
+def test_read_master_exceeds_row_limit_column(tmp_path: Path) -> None:
+    """「2000件超」列は ○ で真、 × で偽、 空なら不明（ ``None`` ） として読む。"""
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {
+                "ID": "1",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
+                "有効": "○",
+                "2000件超": "○",
+            },
+            {
+                "ID": "2",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view",
+                "有効": "○",
+                "2000件超": "×",
+            },
+            {
+                "ID": "3",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000CCCCC/view",
+                "有効": "○",
+                "2000件超": "",
+            },
+        ],
+    )
+
+    entries = read_master(path)
+
+    assert [entry.exceeds_row_limit for entry in entries] == [True, False, None]
+
+
+def test_read_master_without_exceeds_row_limit_column(tmp_path: Path) -> None:
+    """「2000件超」列が無い管理表では、 全部 不明（ ``None`` ） として読む。"""
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {"ID": "1", "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view", "有効": "○"},
+            {"ID": "2", "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view", "有効": "×"},
+        ],
+    )
+
+    entries = read_master(path)
+
+    assert [entry.exceeds_row_limit for entry in entries] == [None, None]
+
+
+def test_read_master_exceeds_row_limit_uses_same_words_as_enabled(tmp_path: Path) -> None:
+    """「2000件超」列の判定は 「有効」列と同じ語集合（ ``is_enabled_mark`` ） を使う。"""
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {
+                "ID": "1",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
+                "有効": "○",
+                "2000件超": "true",
+            },
+            {
+                "ID": "2",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view",
+                "有効": "○",
+                "2000件超": "いいえ",
+            },
+        ],
+    )
+
+    entries = read_master(path)
+
+    assert [entry.exceeds_row_limit for entry in entries] == [True, False]

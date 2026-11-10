@@ -25,6 +25,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from src import mapping, relation_diagram, soql_similar
+from src.row_size import decide_row_size
 from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
@@ -1035,13 +1036,18 @@ def _build_notes(record: ReportRecord, metadata: dict[str, Any]) -> list[str]:
     if metadata.get("standardDateFilter"):
         notes.append("- 日時の条件はタイムゾーンに注意")
 
-    row_check = record.row_check
-    if row_check is not None and row_check.status == "超えている":
+    # 件数の判定は管理表の「2000件超」列と 2000 行チェックの 3 段判定。
+    # 管理表が分かっているときは、 サンドボックスの 2000 行チェックより
+    # 管理表を採る
+    row_size = decide_row_size(record.exceeds_row_limit, record.row_check)
+    if row_size.over_2000:
         draft = record.soql_draft
         if draft is None or draft.use_bulk:
-            notes.append("- 2000件超なので Bulk で取る")
+            notes.append(f"- {row_size.size}なので Bulk で取る")
         else:
-            notes.append("- 2000件超だが REST で取る（ページ送りで全件取れる。往復は増える）")
+            notes.append(
+                f"- {row_size.size}だが REST で取る（ページ送りで全件取れる。往復は増える）"
+            )
 
     cross_filters = metadata.get("crossFilters")
     cross_links = _cross_filter_links(record)

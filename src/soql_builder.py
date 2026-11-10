@@ -30,6 +30,12 @@ from typing import TYPE_CHECKING, Any
 from src import mapping
 from src.mapping.owner import OWNER_POLYMORPHIC_NOTE
 from src.mapping.row_status import auto_path_parts
+from src.row_size import (
+    BULK_MIN_ROWS,
+    REST_MAX_ROWS_WITH_SUBQUERY,
+    RowSize,
+    decide_row_size,
+)
 from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
@@ -58,6 +64,17 @@ CROSS_FILTER_MAX_SUBQUERIES: int = 2
 # するときの理由。 ``SoqlDraft.bulk_blockers`` に入る。
 BULK_BLOCKER_SUBQUERY: str = (
     "WHERE の副問い合わせを Bulk API 2.0 で動作確認していないため REST で取る"
+)
+
+# 件数が 1000 件以下なので、 通常 SOQL で取るときの理由。 根拠（ 管理表か
+# サンドボックスか ） も一緒に書く。 ``SoqlDraft.bulk_blockers`` に入る。
+BULK_BLOCKER_SMALL_ROWS: str = "件数が {} 件以下のため"
+
+# 副問い合わせ （ クロスフィルタ ） があるとき、 本番の件数が
+# ``REST_MAX_ROWS_WITH_SUBQUERY`` を超えるなら SOQL を分ける必要があるときの
+# 注意。 ``SoqlDraft.checks`` に入る。
+SUBQUERY_ROWS_CHECK: str = (
+    f"通常 SOQL で取るが、 本番の件数が {REST_MAX_ROWS_WITH_SUBQUERY} 件を超えるなら SOQL を分ける"
 )
 
 # クロスフィルタを副問い合わせにしたときの checks メッセージの頭
@@ -428,10 +445,12 @@ class SoqlDraft:
         order_by: ``ORDER BY ...`` （ 末尾に ``LIMIT N`` を含む ） の文字列。
             無ければ空文字。 「似た SOQL」 の判定に使う。
         use_bulk: 取り方。 ``True`` = Bulk API 2.0、 ``False`` = REST の
-            ``query()`` 。 副問い合わせ （ クロスフィルタ ） を出したときだけ
-            ``False`` になる。 SOQL 文字列を後からパースして判定しない。
+            ``query()`` 。 副問い合わせ （ クロスフィルタ ） を出したとき、
+            または件数が 1000 件以下のときに ``False`` になる。 SOQL 文字列を
+            後からパースして判定しない。
         bulk_blockers: REST にした理由 （ 1 件 1 要素 ）。 ``use_bulk`` が
-            ``True`` のときは空。
+            ``True`` のときは空。 理由には件数の根拠（ 管理表かサンドボックスか ）
+            を書く。
         cross_filter_links: クロスフィルタ 1 個ずつの繋がりの判定。
             ``crossFilters`` が無ければ空のタプル。
     """
@@ -2221,7 +2240,9 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
     FROM は ``record.soql_from_object`` があればそちらを、 無ければ主オブジェクトを
     使う （ 子から取る形にしたときだけ違う ） 。
 
-    取り方 (``use_bulk``) はサブクエリを出したかどうかで決める。 文字列を
+    取り方 (``use_bulk``) は、 副問い合わせ （ クロスフィルタ ） を出したかどうかと
+    件数で決める。 件数は管理表の「2000件超」列とサンドボックスの 2000 行チェック
+    から 3 段で判定する（ ``src.row_size.decide_row_size`` ）。 文字列を
     後からパースしない。
     """
     main_object = record.main_object
@@ -2279,16 +2300,17 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
     missing.extend(order_missing)
     checks.extend(order_checks)
 
+    # 取り方: 件数と副問い合わせの有無で決める
+    row_size = decide_row_size(record.exceeds_row_limit, record.row_check)
+    use_bulk, bulk_blockers = _decide_use_bulk(has_subquery, row_size)
+    if has_subquery and row_size.over_2000 is not False:
+        # 2000 件超 か 分からないときは、 本番の件数が 5000 件を超えると
+        # SOQL を分ける必要がある
+        checks.append(SUBQUERY_ROWS_CHECK)
+
     soql, count_soql = _assemble_soql_text(select_lines, where_lines, order_by_clause, from_object)
     status = _decide_status(missing, checks)
     soql, count_soql = _apply_incomplete_marker(soql, count_soql, status)
-
-    # 取り方: 副問い合わせ （ クロスフィルタ ） を出したときは REST にする
-    use_bulk = True
-    bulk_blockers: list[str] = []
-    if has_subquery:
-        use_bulk = False
-        bulk_blockers.append(BULK_BLOCKER_SUBQUERY)
 
     return SoqlDraft(
         soql=soql,
@@ -2314,6 +2336,33 @@ def _record_main_describe(record: ReportRecord, main_object: str) -> dict[str, A
     内側では形の確認をしない。
     """
     return record.objects.get(main_object)
+
+
+def _decide_use_bulk(has_subquery: bool, row_size: RowSize) -> tuple[bool, list[str]]:
+    """取り方 （ Bulk / 通常 SOQL ） と、 通常 SOQL にした理由を決める。
+
+    - 副問い合わせ （ クロスフィルタ ） があるときは、 件数に関係なく通常 SOQL
+    - 副問い合わせが無いときは、 件数が 1000 件以下なら通常 SOQL、 1000 件超
+      （ 2000 件超 を含む） なら Bulk
+    - 件数が分からないときは Bulk にする（ 今までどおり ）
+
+    Returns:
+        ``(use_bulk, bulk_blockers)`` 。 ``bulk_blockers`` は 通常 SOQL に
+        した理由 （ 1 件 1 要素） 。
+    """
+    if has_subquery:
+        blockers = [BULK_BLOCKER_SUBQUERY]
+        if row_size.over_1000 is False:
+            blockers.append(_small_rows_reason(row_size))
+        return False, blockers
+    if row_size.over_1000 is False:
+        return False, [_small_rows_reason(row_size)]
+    return True, []
+
+
+def _small_rows_reason(row_size: RowSize) -> str:
+    """件数が 1000 件以下なので通常 SOQL で取るときの理由。"""
+    return f"{BULK_BLOCKER_SMALL_ROWS.format(BULK_MIN_ROWS)}（根拠: {row_size.basis}）"
 
 
 def _build_select_lines(

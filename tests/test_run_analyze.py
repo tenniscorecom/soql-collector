@@ -47,6 +47,9 @@ def _build_master(path: Path, rows: list[dict[str, str]]) -> None:
         workbook.remove(active)
     sheet = workbook.create_sheet("PY_管理表")
     headers = ["ID", "概要", "Salesforce URL", "有効"]
+    # 「2000件超」列は任意。 行のどれかが持つときだけ、 列を足す
+    if any("2000件超" in row for row in rows):
+        headers.append("2000件超")
     sheet.append(headers)
     for row in rows:
         sheet.append([row.get(col, "") for col in headers])
@@ -189,6 +192,19 @@ def _save_object_describe(file_paths: Any, describe: dict[str, Any], *, org: str
     """オブジェクトの原本を 保存データ に書く。"""
     store = DescribeStore.load(file_paths.describe_csv_path)
     store.record_api_success(org, describe["name"], describe)
+
+
+def _save_row_count(
+    file_paths: Any,
+    report_id: str,
+    *,
+    status: str,
+    rows: int | None,
+    org: str = ORG,
+) -> None:
+    """件数の判定を 保存データ （ ``元データ/件数.csv`` ） に書く。"""
+    store = ReportStore.load(file_paths.describe_csv_path)
+    store.put_row_count(org, report_id, status=status, rows=rows, reason=None)
 
 
 def _write_column_fix(path: Path, rows: list[dict[str, str]]) -> None:
@@ -878,3 +894,57 @@ def test_analyze_cross_filter_without_child_describe_is_incomplete(tmp_path: Pat
     assert any("クロスフィルタ" in message for message in record.soql_draft.missing)
     # 取り方は Bulk のまま
     assert record.soql_draft.use_bulk is True
+
+
+# ── 管理表の「2000件超」列 ────────────────────────────────────────────────
+
+
+def _master_row_with_exceeds(mark: str) -> list[dict[str, str]]:
+    """「2000件超」列の値が入った管理表の行。"""
+    rows = _one_report_row()
+    rows[0]["2000件超"] = mark
+    return rows
+
+
+def _one_column_metadata() -> dict[str, Any]:
+    """列が 1 本 （ 件名 ） だけのレポート describe 相当。"""
+    metadata = _report_metadata(detail_columns=("SUBJECT",))
+    # ``make_slim_report`` が残すのは dict の値だけ。 表示名で解決させる
+    metadata["reportExtendedMetadata"]["detailColumnInfo"] = {"SUBJECT": {"label": "件名"}}
+    return metadata
+
+
+def _prepare_analyze(tmp_path: Path, monkeypatch: Any, rows: list[dict[str, str]]) -> Any:
+    """管理表・保存データを用意して ``FilePaths`` を返す。"""
+    file_paths = _setup(tmp_path, monkeypatch, rows)
+    _save_report_definition(file_paths, REPORT_ID, _one_column_metadata())
+    _save_object_describe(file_paths, _task_describe())
+    # サンドボックスの 2000 行チェックの結果。 50 件で「超えていない」
+    _save_row_count(file_paths, REPORT_ID, status="超えていない", rows=50)
+    return file_paths
+
+
+def test_analyze_uses_master_over_2000_column(tmp_path: Path, monkeypatch: Any) -> None:
+    """解析の段（ 接続しない ） でも管理表の「2000件超」列が取り方に効く。
+
+    サンドボックスの行数が 50 件でも、 管理表が ○ なら Bulk で取る
+    """
+    file_paths = _prepare_analyze(tmp_path, monkeypatch, _master_row_with_exceeds("○"))
+
+    assert _run_analyze(file_paths) == 0
+
+    sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
+    overview = {row["管理番号"]: row for row in sheets["一覧"]}
+    assert overview["1001"]["取り方"] == "Bulk"
+
+
+def test_analyze_uses_master_not_over_2000_column(tmp_path: Path, monkeypatch: Any) -> None:
+    """管理表が × で サンドボックスの行数が 50 件なら、 通常 SOQL で取る。"""
+    file_paths = _prepare_analyze(tmp_path, monkeypatch, _master_row_with_exceeds("×"))
+
+    assert _run_analyze(file_paths) == 0
+
+    sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
+    overview = {row["管理番号"]: row for row in sheets["一覧"]}
+    assert overview["1001"]["取り方"].startswith("REST（")
+    assert "1000 件以下" in overview["1001"]["取り方"]
