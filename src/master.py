@@ -16,7 +16,7 @@ soql-collector が管理表で必要とする列は ``ID``・``概要``・``Sale
 ``2000件超`` 列は任意。 本番の件数が 2000 件を超えるかどうかは、 サンドボックスの
 2000 行チェックでは分からない（ サンドボックスで 2000 件以下でも本番では超えることが
 ある） ので、 本番を知っている人が書く。 値は ``○`` / ``×`` で読み、 列が無い・セルが
-空のときは「不明」（ ``None`` ） として扱う。
+空のとき・``不明`` と書かれたときは「不明」（ ``None`` ） として扱う。
 """
 
 from __future__ import annotations
@@ -43,6 +43,11 @@ COL_SURVEY = "調査"
 # 任意の列。 本番の件数が 2000 件を超えるかどうか。 本当の件数を知っている人が書く
 COL_EXCEEDS_ROW_LIMIT = "2000件超"
 
+# 「2000件超」列に「本番の件数が分からない」と書くときの印。 空欄と同じ扱い
+# （ ``None`` ） にする。 「×」は「2000 件以下だと分かっている」を表すので、
+# 分からないという意思是別の語が要る
+UNKNOWN_MARK = "不明"
+
 
 @dataclass(frozen=True)
 class MasterEntry:
@@ -55,7 +60,7 @@ class MasterEntry:
     #: 今回調べる行か。 ``調査`` 列が無い管理表では、 すべて ``True``
     survey: bool = True
     #: 本番の件数が 2000 件を超えるか。 管理表に「2000件超」列が無い・セルが空の
-    #: ときは ``None`` （ 「不明」 ）
+    #: とき・セルが「不明」のときは ``None`` （ 「不明」 ）
     exceeds_row_limit: bool | None = None
 
 
@@ -121,12 +126,15 @@ def _is_enabled(value: object) -> bool:
 def _read_exceeds_row_limit(value: object) -> bool | None:
     """管理表の「2000件超」列の値を ``True`` / ``False`` / ``None`` に直す。
 
-    セルが空のときは ``None`` （ 「本番の件数は分からない」 ） 。 値があると
-    きは ``_is_enabled`` （ ``is_enabled_mark`` ） で真偽を判定する。 判定の
+    セルが空のときは ``None`` （ 「本番の件数は分からない」 ） 。 ``不明``
+    （ 前後の空白は無視） と書かれたときも同じ扱い。 値があるときは
+    ``_is_enabled`` （ ``is_enabled_mark`` ） で真偽を判定する。 判定の
     語集合を「有効」列とそろえるため、 別の判定は作らない。
     """
     if value is None:
         return None
-    if isinstance(value, str) and not value.strip():
-        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text == UNKNOWN_MARK:
+            return None
     return _is_enabled(value)

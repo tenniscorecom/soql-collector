@@ -12,7 +12,11 @@ from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from src.master import MasterEntry, _is_enabled, filter_survey_targets, read_master
+from src.fetch.models import ReportRecord, RowCheck
+from src.master import UNKNOWN_MARK, MasterEntry, _is_enabled, filter_survey_targets, read_master
+from src.row_check_status import ROW_CHECK_OVER, ROW_CHECK_UNDER
+from src.row_size import decide_row_size
+from src.soql_builder import build_soql
 
 DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
 
@@ -361,3 +365,129 @@ def test_read_master_exceeds_row_limit_uses_same_words_as_enabled(tmp_path: Path
     entries = read_master(path)
 
     assert [entry.exceeds_row_limit for entry in entries] == [True, False]
+
+
+def test_read_master_exceeds_row_limit_unknown_mark(tmp_path: Path) -> None:
+    """「2000件超」列の「不明」は、 空欄と同じ扱い（ ``None`` ） として読む。
+
+    前後の空白は无视する。 「○」 / 「×」 / 空欄の扱いは変えない。
+    """
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {
+                "ID": "1",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
+                "有効": "○",
+                "2000件超": UNKNOWN_MARK,
+            },
+            {
+                "ID": "2",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view",
+                "有効": "○",
+                "2000件超": f" {UNKNOWN_MARK} ",
+            },
+            {
+                "ID": "3",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000CCCCC/view",
+                "有効": "○",
+                "2000件超": "○",
+            },
+            {
+                "ID": "4",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000DDDDD/view",
+                "有効": "○",
+                "2000件超": "×",
+            },
+            {
+                "ID": "5",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000EEEEE/view",
+                "有効": "○",
+                "2000件超": "",
+            },
+        ],
+    )
+
+    entries = read_master(path)
+
+    assert [entry.exceeds_row_limit for entry in entries] == [None, None, True, False, None]
+
+
+def _record_for_fetch_method(
+    exceeds_row_limit: bool | None,
+    row_check: RowCheck,
+) -> ReportRecord:
+    """取り方（ Bulk / 通常 SOQL ）だけを見るための最小限の record を作る。"""
+    column_map = [
+        {
+            "列キー": "Name",
+            "表示名": "Name",
+            "所属オブジェクト": "Opportunity",
+            "対応フィールドAPI名": "Name",
+            "型": "string",
+            "参照先オブジェクト": "",
+            "リレーション名": "",
+            "備考": "",
+        }
+    ]
+    return ReportRecord(
+        key="1001",
+        summary="テスト",
+        report_id="00O000000000001",
+        url=f"{DOMAIN}/00O000000000001/view",
+        main_object="Opportunity",
+        report={
+            "reportMetadata": {
+                "reportType": {"type": "Opportunity"},
+                "reportFormat": "TABULAR",
+                "detailColumns": ["Name"],
+            },
+            "reportExtendedMetadata": {},
+        },
+        objects={},
+        relations=(),
+        column_map=column_map,
+        warnings=(),
+        row_check=row_check,
+        exceeds_row_limit=exceeds_row_limit,
+    )
+
+
+def test_unknown_mark_decides_fetch_method_like_missing_column(tmp_path: Path) -> None:
+    """「不明」は、 列が無い管理表と同じ判定になる。
+
+    サンドボックスの 2000 行チェックが「超えていない」で 50 件なら通常 SOQL、
+    「超えている」なら Bulk。 取り方（ Bulk / 通常 SOQL ） まで確かめる。
+
+    # なぜ: 「不明」は「2000 件以下だと分かっている」（ × ） ではない。
+    分からないという意思是、 列が無いときと同じ扱いにしたい
+    """
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {
+                "ID": "1",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
+                "有効": "○",
+                "2000件超": UNKNOWN_MARK,
+            }
+        ],
+    )
+
+    entries = read_master(path)
+    exceeds = entries[0].exceeds_row_limit
+    under = RowCheck(status=ROW_CHECK_UNDER, rows=50, reason=None)
+    over = RowCheck(status=ROW_CHECK_OVER, rows=None, reason=None)
+
+    # 「不明」は、 列が無いとき（ ``None`` ） と同じ件数判定・取り方になる
+    for row_check in (under, over):
+        assert decide_row_size(exceeds, row_check) == decide_row_size(None, row_check)
+        unknown_draft = build_soql(_record_for_fetch_method(exceeds, row_check))
+        no_column_draft = build_soql(_record_for_fetch_method(None, row_check))
+        assert unknown_draft.use_bulk == no_column_draft.use_bulk
+
+    # 50 件なら通常 SOQL、 2000 件超なら Bulk
+    assert build_soql(_record_for_fetch_method(exceeds, under)).use_bulk is False
+    assert build_soql(_record_for_fetch_method(exceeds, over)).use_bulk is True
