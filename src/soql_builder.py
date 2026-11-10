@@ -187,6 +187,11 @@ _RELATIVE_DATE_N_SUFFIX_PATTERN = re.compile(
     r"|N_(?:DAYS|WEEKS|MONTHS|QUARTERS|YEARS|FISCAL_QUARTERS|FISCAL_YEARS)_AGO:\d+)$"
 )
 
+# 「翌 N 日」 の相対日付リテラル （ 日単位だけ ）。 レポートの 「翌 N 日」 は
+# 当日を含めて N 日 （ 当日 〜 N-1 日後 ） だが、 SOQL の ``NEXT_N_DAYS:N`` は
+# 翌日から N 日なので、 ``TODAY`` を足した形に組み立て直す
+_NEXT_N_DAYS_LITERAL_PATTERN = re.compile(r"^NEXT_N_DAYS:(?P<days>\d+)$")
+
 # 相対日付の表記ゆれを吸収する変換表。 全角の ASCII 文字 （ 全角数字や
 # 全角空白を含む） を半角にする
 _RELATIVE_DATE_FULLWIDTH_TABLE = str.maketrans(
@@ -268,9 +273,9 @@ _RELATIVE_DATE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"last(?P<count>\d+)(?P<unit>[a-z]+)"), "last"),
     (re.compile(r"next(?P<count>\d+)(?P<unit>[a-z]+)"), "next"),
     (re.compile(r"(?P<count>\d+)(?P<unit>[a-z]+)ago"), "ago"),
-    # 日本語: ``過去60日間`` / ``次の30日間`` / ``60日前``
+    # 日本語: ``過去60日間`` / ``次の30日間`` / ``翌60日間`` / ``60日前``
     (re.compile(r"過去(?P<count>\d+)(?P<unit>[^0-9]+)"), "last"),
-    (re.compile(r"(?:次の|今後)(?P<count>\d+)(?P<unit>[^0-9]+)"), "next"),
+    (re.compile(r"(?:次の|今後|翌)(?P<count>\d+)(?P<unit>[^0-9]+)"), "next"),
     (re.compile(r"(?P<count>\d+)(?P<unit>[^0-9]+)前"), "ago"),
 )
 
@@ -610,6 +615,59 @@ def _relative_date_checks(raw_value: str, literal: str) -> list[str]:
     ]
 
 
+def _next_n_days_count(literal: str) -> int | None:
+    """リテラルが 「翌 N 日」 （ ``NEXT_N_DAYS:n`` ） なら n を返す。 違えば ``None`` 。"""
+    match = _NEXT_N_DAYS_LITERAL_PATTERN.fullmatch(literal)
+    if match is None:
+        return None
+    return int(match.group("days"))
+
+
+def _is_next_n_days(literal: str) -> bool:
+    """リテラルが 「翌 N 日」 （ ``NEXT_N_DAYS:n`` ） かどうか。 日単位だけ。"""
+    return _next_n_days_count(literal) is not None
+
+
+def _build_relative_date_condition(
+    field_api: str,
+    literal: str,
+    op: str,
+) -> tuple[str, list[str]]:
+    """相対日付リテラルを等号・不等号の条件式にする。
+
+    「翌 N 日」 （ ``NEXT_N_DAYS:n`` ） はレポートでは当日を含めて n 日
+    （ 当日 〜 n-1 日後 ） である。 SOQL の ``NEXT_N_DAYS:n`` は翌日から n 日
+    なので、 当日を表す ``TODAY`` を足した形にする。 n が 2 以上のときは
+    ``( f = TODAY OR f = NEXT_N_DAYS:n-1 )`` 、 n が 1 のときは当日だけなので
+    ``f = TODAY`` （ 括弧なし ） にする。 それ以外のリテラルはそのまま
+    ``f = リテラル`` にする。
+
+    Args:
+        field_api: SOQL 上の項目名。
+        literal: 正規化済みの相対日付リテラル。
+        op: ``equals`` / ``notEqual`` 。 等号か不等号かを決める。
+
+    Returns:
+        ``(条件式文字列, 追加 checks)`` のタプル。
+    """
+    symbol = "=" if op == "equals" else "!="
+    days = _next_n_days_count(literal)
+    if days is None:
+        return f"{field_api} {symbol} {literal}", []
+    if days <= 1:
+        # 当日だけなので、 括弧は付けない
+        condition = f"{field_api} {symbol} TODAY"
+        return condition, [
+            f"翌 {days} 日は当日を含めて {days} 日なので TODAY だけにした: {field_api}"
+        ]
+    rest = f"NEXT_N_DAYS:{days - 1}"
+    joiner = " OR " if op == "equals" else " AND "
+    condition = f"( {field_api} {symbol} TODAY{joiner}{field_api} {symbol} {rest} )"
+    return condition, [
+        f"翌 {days} 日は当日を含めて {days} 日なので TODAY と {rest} にした: {field_api}"
+    ]
+
+
 def _format_value_for_field(
     value: str,
     field_type: str,
@@ -804,8 +862,11 @@ def _build_equality_condition(
     field_type: str,
 ) -> tuple[str, list[str], list[str]]:
     """``equals`` / ``notEqual`` を ``=`` / ``!=`` または ``IN`` / ``NOT IN`` に組み立てる。"""
-    if field_type.strip().lower() in _DATETIME_TYPES:
+    field_type_lower = field_type.strip().lower()
+    if field_type_lower in _DATETIME_TYPES:
         return _build_datetime_equality_condition(op, values, field_api)
+    if field_type_lower in _DATE_TYPES:
+        return _build_date_equality_condition(op, values, field_api)
     missing: list[str] = []
     checks: list[str] = []
     parts: list[str] = []
@@ -822,16 +883,66 @@ def _build_equality_condition(
     if op == "equals":
         if len(parts) == 1:
             return f"{field_api} = {parts[0]}", missing, checks
-        if field_type.strip().lower() in _NO_IN_TYPES:
+        if field_type_lower in _NO_IN_TYPES:
             joined = " OR ".join(f"{field_api} = {part}" for part in parts)
             return f"( {joined} )", missing, checks
         return f"{field_api} IN ({', '.join(parts)})", missing, checks
     if len(parts) == 1:
         return f"{field_api} != {parts[0]}", missing, checks
-    if field_type.strip().lower() in _NO_IN_TYPES:
+    if field_type_lower in _NO_IN_TYPES:
         joined = " AND ".join(f"{field_api} != {part}" for part in parts)
         return f"( {joined} )", missing, checks
     return f"{field_api} NOT IN ({', '.join(parts)})", missing, checks
+
+
+def _build_date_equality_condition(
+    op: str,
+    values: list[str],
+    field_api: str,
+) -> tuple[str, list[str], list[str]]:
+    """date 項目の ``equals`` / ``notEqual`` を組み立てる。
+
+    「翌 N 日」 （ ``NEXT_N_DAYS:n`` ） を含むときは、 当日を表す ``TODAY``
+    を足した式 （ 当日を含めて n 日なら ``NEXT_N_DAYS:n-1`` も足す ） にして、
+    他の値と OR / AND で並べる（ 等号なら OR、 不等号なら AND ） 。 「翌 N 日」
+    が無いときは従来どおり ``IN`` / ``NOT IN`` にする。
+    """
+    missing: list[str] = []
+    checks: list[str] = []
+    # (「翌 N 日」で展開したか, リテラルまたは条件式)
+    terms: list[tuple[bool, str]] = []
+    for value in values:
+        literal, extra_missing, extra_checks = _format_value_for_field(value, "date", field_api)
+        if not literal:
+            missing.append(f"演算子 {op} の値が解釈できません: {value!r}")
+            missing.extend(extra_missing)
+            continue
+        checks.extend(extra_checks)
+        if _is_next_n_days(literal):
+            condition, next_n_days_checks = _build_relative_date_condition(field_api, literal, op)
+            checks.extend(next_n_days_checks)
+            terms.append((True, condition))
+        else:
+            terms.append((False, literal))
+    if not terms:
+        return "", missing, checks
+    if not any(expanded for expanded, _text in terms):
+        # 「翌 N 日」 が無いので従来どおり IN / NOT IN にする
+        literals = [text for _expanded, text in terms]
+        if op == "equals":
+            if len(literals) == 1:
+                return f"{field_api} = {literals[0]}", missing, checks
+            return f"{field_api} IN ({', '.join(literals)})", missing, checks
+        if len(literals) == 1:
+            return f"{field_api} != {literals[0]}", missing, checks
+        return f"{field_api} NOT IN ({', '.join(literals)})", missing, checks
+    # 「翌 N 日」 があるので OR / AND で並べる
+    symbol = "=" if op == "equals" else "!="
+    joiner = " OR " if op == "equals" else " AND "
+    parts = [text if expanded else f"{field_api} {symbol} {text}" for expanded, text in terms]
+    if len(parts) == 1:
+        return parts[0], missing, checks
+    return f"( {joiner.join(parts)} )", missing, checks
 
 
 def _build_datetime_equality_condition(
@@ -872,8 +983,8 @@ def _datetime_equality_part(
     """datetime の ``equals`` / ``notEqual`` の 1 値ぶんの式。"""
     literal = _normalize_relative_date(value)
     if literal is not None:
-        symbol = "=" if op == "equals" else "!="
-        return f"{field_api} {symbol} {literal}", [], _relative_date_checks(value, literal)
+        condition, extra_checks = _build_relative_date_condition(field_api, literal, op)
+        return condition, [], _relative_date_checks(value, literal) + extra_checks
     if _is_relative_date_candidate(value):
         return (
             "",
@@ -1280,7 +1391,9 @@ def _relative_date_line(
     literal = _normalize_relative_date(duration)
     if literal is not None:
         checks.extend(_relative_date_checks(duration, literal))
-        return [f"{field_api} = {literal}"]
+        condition, extra_checks = _build_relative_date_condition(field_api, literal, "equals")
+        checks.extend(extra_checks)
+        return [condition]
     missing.append(f"日付条件の durationValue {duration!r} を解釈できない")
     return []
 

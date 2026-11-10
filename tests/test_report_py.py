@@ -64,6 +64,7 @@ def _make_record(
     detail_columns: list[str] | None = None,
     column_map: list[dict[str, str]] | None = None,
     report_filters: list[dict] | None = None,
+    standard_date_filter: dict | None = None,
     unresolved_columns: list[str] | None = None,
     report_name: object = None,
     cross_filters: list[dict] | None = None,
@@ -89,6 +90,8 @@ def _make_record(
         metadata["name"] = report_name
     if report_filters is not None:
         metadata["reportFilters"] = report_filters
+    if standard_date_filter is not None:
+        metadata["standardDateFilter"] = standard_date_filter
     if cross_filters is not None:
         metadata["crossFilters"] = cross_filters
     if column_map is None:
@@ -252,6 +255,33 @@ def test_generated_soql_keeps_incomplete_marker() -> None:
     report_class = namespace["Report1001"]
     assert report_class().soql() == record.soql_draft.soql  # type: ignore[attr-defined]
     assert INCOMPLETE_MARKER in report_class().soql()  # type: ignore[attr-defined]
+
+
+def test_generated_soql_keeps_next_n_days_parentheses() -> None:
+    """「翌 N 日」 の条件が他の条件と AND で結ばれても、 括弧が崩れない。"""
+    column_map = _column_map([("Name", "Name", "件名"), ("CloseDate", "CloseDate", "締切日")])
+    for row in column_map:
+        if row["列キー"] == "CloseDate":
+            row["型"] = "date"
+    record = _make_record(
+        detail_columns=["Name", "CloseDate"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "equals", "value": "テスト"}],
+        standard_date_filter={
+            "column": "CloseDate",
+            "durationValue": "NEXT_N_DAYS:60",
+            "startDate": "",
+            "endDate": "",
+        },
+    )
+    source = build_report_py_source(record, class_name="Report1001")
+    assert source is not None
+    compile(source, "<generated>", "exec")
+    namespace = _load_generated(source)
+    soql = namespace["Report1001"]().soql()  # type: ignore[operator]
+    assert "WHERE Name = 'テスト'" in soql
+    assert "( CloseDate = TODAY OR CloseDate = NEXT_N_DAYS:59 )" in soql
+    assert soql.count("(") == soql.count(")")
 
 
 def test_generated_source_has_no_extra_statements_for_injected_value() -> None:

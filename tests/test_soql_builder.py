@@ -2959,6 +2959,8 @@ _RELATIVE_DATE_TABLE: list[tuple[str, str]] = [
     ("NEXT_30_DAYS", "NEXT_N_DAYS:30"),
     ("次の 30 日間", "NEXT_N_DAYS:30"),
     ("今後 30 日間", "NEXT_N_DAYS:30"),
+    ("NEXT 1 DAYS", "NEXT_N_DAYS:1"),
+    ("翌 1 日", "NEXT_N_DAYS:1"),
     ("60 DAYS AGO", "N_DAYS_AGO:60"),
     ("N_DAYS_AGO:60", "N_DAYS_AGO:60"),
     ("60 日前", "N_DAYS_AGO:60"),
@@ -3014,6 +3016,21 @@ _RELATIVE_DATE_TABLE: list[tuple[str, str]] = [
 ]
 
 
+def _expected_equality_condition(field_api: str, literal: str) -> str:
+    """等号条件の期待値。
+
+    「翌 N 日」 （ ``NEXT_N_DAYS:n`` ） はレポートでは当日を含めて n 日
+    （ 当日 〜 n-1 日後 ） だが SOQL では翌日からなので、 ``TODAY`` を足した形
+    が期待値になる。 n が 1 のときは当日だけなので ``TODAY`` の 1 条件。
+    """
+    if literal.startswith("NEXT_N_DAYS:"):
+        days = int(literal.split(":", 1)[1])
+        if days <= 1:
+            return f"{field_api} = TODAY"
+        return f"( {field_api} = TODAY OR {field_api} = NEXT_N_DAYS:{days - 1} )"
+    return f"{field_api} = {literal}"
+
+
 @pytest.mark.parametrize(("raw", "literal"), _RELATIVE_DATE_TABLE)
 def test_relative_date_notation_is_converted_in_report_filter(raw: str, literal: str) -> None:
     """相対日付の表記ゆれは、 ``reportFilters`` でも SOQL のリテラルになる。"""
@@ -3024,7 +3041,7 @@ def test_relative_date_notation_is_converted_in_report_filter(raw: str, literal:
         report_filters=[{"column": "CloseDate", "operator": "equals", "value": raw}],
     )
     draft = build_soql(record)
-    assert f"WHERE CloseDate = {literal}" in draft.soql
+    assert f"WHERE {_expected_equality_condition('CloseDate', literal)}" in draft.soql
 
 
 @pytest.mark.parametrize(("raw", "literal"), _RELATIVE_DATE_TABLE)
@@ -3039,7 +3056,7 @@ def test_relative_date_notation_is_converted_in_datetime_report_filter(
         report_filters=[{"column": "Done__c", "operator": "equals", "value": raw}],
     )
     draft = build_soql(record)
-    assert f"WHERE Done__c = {literal}" in draft.soql
+    assert f"WHERE {_expected_equality_condition('Done__c', literal)}" in draft.soql
 
 
 @pytest.mark.parametrize(("raw", "literal"), _RELATIVE_DATE_TABLE)
@@ -3059,7 +3076,7 @@ def test_relative_date_notation_is_converted_in_standard_date_filter(
         },
     )
     draft = build_soql(record)
-    assert f"WHERE CloseDate = {literal}" in draft.soql
+    assert f"WHERE {_expected_equality_condition('CloseDate', literal)}" in draft.soql
 
 
 @pytest.mark.parametrize(("raw", "literal"), _RELATIVE_DATE_TABLE)
@@ -3079,7 +3096,7 @@ def test_relative_date_notation_is_converted_in_datetime_standard_date_filter(
         },
     )
     draft = build_soql(record)
-    assert f"WHERE Done__c = {literal}" in draft.soql
+    assert f"WHERE {_expected_equality_condition('Done__c', literal)}" in draft.soql
 
 
 @pytest.mark.parametrize(("raw", "literal"), _RELATIVE_DATE_TABLE)
@@ -3126,6 +3143,193 @@ def test_relative_date_notation_in_string_field_is_kept_as_string() -> None:
     draft = build_soql(record)
     assert "WHERE Name = '今日'" in draft.soql
     assert not any("相対日付" in check for check in draft.checks)
+
+
+# ── 「翌 N 日」 は当日を含めて N 日 ─────────────────────────────────
+
+
+def test_next_n_days_in_standard_date_filter_adds_today() -> None:
+    """期間フィルターの ``NEXT_N_DAYS`` は当日を含めて n 日なので、 TODAY を足す。"""
+    column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+    record = _make_record(
+        detail_columns=["CloseDate"],
+        column_map=column_map,
+        standard_date_filter={
+            "column": "CloseDate",
+            "durationValue": "NEXT_N_DAYS:60",
+            "startDate": "",
+            "endDate": "",
+        },
+    )
+    draft = build_soql(record)
+    assert "WHERE ( CloseDate = TODAY OR CloseDate = NEXT_N_DAYS:59 )" in draft.soql
+    assert any(
+        "翌 60 日は当日を含めて 60 日なので TODAY と NEXT_N_DAYS:59 にした: CloseDate" in check
+        for check in draft.checks
+    )
+
+
+def test_next_n_days_in_datetime_standard_date_filter_adds_today() -> None:
+    """datetime の期間フィルターでも同じ形にする。"""
+    column_map = _column_map_with_types([("Done__c", "Done__c", "datetime")])
+    record = _make_record(
+        detail_columns=["Done__c"],
+        column_map=column_map,
+        standard_date_filter={
+            "column": "Done__c",
+            "durationValue": "NEXT_N_DAYS:60",
+            "startDate": "",
+            "endDate": "",
+        },
+    )
+    draft = build_soql(record)
+    assert "WHERE ( Done__c = TODAY OR Done__c = NEXT_N_DAYS:59 )" in draft.soql
+    assert any(
+        "翌 60 日は当日を含めて 60 日なので TODAY と NEXT_N_DAYS:59 にした: Done__c" in check
+        for check in draft.checks
+    )
+
+
+@pytest.mark.parametrize("raw", ["翌60日", "翌 60 日間", "翌60日間"])
+def test_next_n_days_in_japanese_report_filter_adds_today(raw: str) -> None:
+    """「翌60日」 などは ``NEXT_N_DAYS:60`` として読み、 当日を含める。"""
+    column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+    record = _make_record(
+        detail_columns=["CloseDate"],
+        column_map=column_map,
+        report_filters=[{"column": "CloseDate", "operator": "equals", "value": raw}],
+    )
+    draft = build_soql(record)
+    assert "WHERE ( CloseDate = TODAY OR CloseDate = NEXT_N_DAYS:59 )" in draft.soql
+    assert any(
+        "相対日付を変換した: 翌60日 → NEXT_N_DAYS:60" in check
+        or "相対日付を変換した: 翌 60 日間 → NEXT_N_DAYS:60" in check
+        or "相対日付を変換した: 翌60日間 → NEXT_N_DAYS:60" in check
+        for check in draft.checks
+    ), draft.checks
+    assert any(
+        "翌 60 日は当日を含めて 60 日なので TODAY と NEXT_N_DAYS:59 にした: CloseDate" in check
+        for check in draft.checks
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_api", "field_type"),
+    [("CloseDate", "date"), ("Done__c", "datetime")],
+)
+def test_next_n_days_in_not_equal_report_filter_adds_today(
+    field_api: str,
+    field_type: str,
+) -> None:
+    """``notEqual`` のときは TODAY を足した形にして、 AND でつなぐ。"""
+    column_map = _column_map_with_types([(field_api, field_api, field_type)])
+    record = _make_record(
+        detail_columns=[field_api],
+        column_map=column_map,
+        report_filters=[{"column": field_api, "operator": "notEqual", "value": "NEXT_N_DAYS:60"}],
+    )
+    draft = build_soql(record)
+    assert f"WHERE ( {field_api} != TODAY AND {field_api} != NEXT_N_DAYS:59 )" in draft.soql
+    assert any(
+        f"翌 60 日は当日を含めて 60 日なので TODAY と NEXT_N_DAYS:59 にした: {field_api}" in check
+        for check in draft.checks
+    )
+
+
+@pytest.mark.parametrize(
+    ("op", "expected"),
+    [("equals", "WHERE CloseDate = TODAY"), ("notEqual", "WHERE CloseDate != TODAY")],
+)
+def test_next_n_days_one_day_is_today_only(op: str, expected: str) -> None:
+    """「翌 1 日」 は当日だけなので、 TODAY の 1 条件にする。"""
+    column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+    record = _make_record(
+        detail_columns=["CloseDate"],
+        column_map=column_map,
+        report_filters=[{"column": "CloseDate", "operator": op, "value": "NEXT_N_DAYS:1"}],
+    )
+    draft = build_soql(record)
+    assert expected in draft.soql
+    assert any(
+        "翌 1 日は当日を含めて 1 日なので TODAY だけにした: CloseDate" in check
+        for check in draft.checks
+    )
+
+
+def test_next_n_days_with_another_value_keeps_parentheses() -> None:
+    """「翌 N 日」 と別の値の 2 値では、 括弧が正しく入れ子になる。"""
+    column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+    record = _make_record(
+        detail_columns=["CloseDate"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "CloseDate", "operator": "equals", "value": "NEXT_N_DAYS:60,2024-01-05"}
+        ],
+    )
+    draft = build_soql(record)
+    assert (
+        "WHERE ( ( CloseDate = TODAY OR CloseDate = NEXT_N_DAYS:59 ) OR CloseDate = 2024-01-05 )"
+        in draft.soql
+    )
+
+
+def test_other_relative_dates_are_not_changed() -> None:
+    """「翌 N 日」 以外の相対日付は、 今までと同じ形にする。"""
+    for value, expected in (
+        ("LAST_N_DAYS:60", "WHERE CloseDate = LAST_N_DAYS:60"),
+        ("NEXT_N_WEEKS:2", "WHERE CloseDate = NEXT_N_WEEKS:2"),
+    ):
+        column_map = _column_map_with_types([("CloseDate", "CloseDate", "date")])
+        record = _make_record(
+            detail_columns=["CloseDate"],
+            column_map=column_map,
+            report_filters=[{"column": "CloseDate", "operator": "equals", "value": value}],
+        )
+        draft = build_soql(record)
+        assert expected in draft.soql, value
+        assert not any("当日を含めて" in check for check in draft.checks), value
+
+
+def test_next_n_days_keeps_parentheses_in_whole_where_clause() -> None:
+    """他の条件と AND で結ばれても、 括弧が崩れない。"""
+    column_map = _column_map_with_types(
+        [("Name", "Name", "string"), ("CloseDate", "CloseDate", "date")]
+    )
+    record = _make_record(
+        detail_columns=["Name", "CloseDate"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "equals", "value": "テスト"}],
+        standard_date_filter={
+            "column": "CloseDate",
+            "durationValue": "NEXT_N_DAYS:60",
+            "startDate": "",
+            "endDate": "",
+        },
+    )
+    draft = build_soql(record)
+    assert "WHERE Name = 'テスト'" in draft.soql
+    assert "AND" in draft.soql
+    assert "( CloseDate = TODAY OR CloseDate = NEXT_N_DAYS:59 )" in draft.soql
+    assert draft.soql.count("(") == draft.soql.count(")")
+
+
+def test_next_n_days_keeps_parentheses_in_boolean_filter() -> None:
+    """組立式の中に入っても、 括弧が崩れない。"""
+    column_map = _column_map_with_types(
+        [("Name", "Name", "string"), ("CloseDate", "CloseDate", "date")]
+    )
+    record = _make_record(
+        detail_columns=["Name", "CloseDate"],
+        column_map=column_map,
+        report_filters=[
+            {"column": "Name", "operator": "equals", "value": "テスト"},
+            {"column": "CloseDate", "operator": "equals", "value": "NEXT_N_DAYS:60"},
+        ],
+        report_boolean_filter="1 OR 2",
+    )
+    draft = build_soql(record)
+    assert "( CloseDate = TODAY OR CloseDate = NEXT_N_DAYS:59 )" in draft.soql
+    assert draft.soql.count("(") == draft.soql.count(")")
 
 
 # ── 日付の表記 ───────────────────────────────────────────────────
