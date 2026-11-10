@@ -50,6 +50,9 @@ def _build_master(path: Path, rows: list[dict[str, str]]) -> None:
     # 「2000件超」列は任意。 行のどれかが持つときだけ、 列を足す
     if any("2000件超" in row for row in rows):
         headers.append("2000件超")
+    # 「集計形式」列も任意。 行のどれかが持つときだけ、 列を足す
+    if any("集計形式" in row for row in rows):
+        headers.append("集計形式")
     sheet.append(headers)
     for row in rows:
         sheet.append([row.get(col, "") for col in headers])
@@ -948,3 +951,98 @@ def test_analyze_uses_master_not_over_2000_column(tmp_path: Path, monkeypatch: A
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
     assert overview["1001"]["取り方"].startswith("REST（")
     assert "1000 件以下" in overview["1001"]["取り方"]
+
+
+# ── 管理表の「集計形式」列 ────────────────────────────────────────────────
+
+
+def _master_row_with_report_format(value: str) -> list[dict[str, str]]:
+    """「集計形式」列の値が入った管理表の行。"""
+    rows = _one_report_row()
+    rows[0]["集計形式"] = value
+    return rows
+
+
+def _entry_with_report_format(value: str) -> MasterEntry:
+    """「集計形式」列の値が入った管理表の行（ ``run_fetch`` に直接渡す用 ）。"""
+    return MasterEntry(
+        key="1001",
+        summary="活動一覧",
+        url=f"{DOMAIN}/{REPORT_ID}/view",
+        enabled=True,
+        report_format=value,
+    )
+
+
+def _run_analyze_fetch(value: str, tmp_path: Path) -> Any:
+    """解析の段（ 接続しない ） で 1 件取り ``FetchOutcome`` を返す。"""
+    csv_path = tmp_path / "data" / "項目定義.csv"
+    describe_store = DescribeStore.load(csv_path)
+    describe_store.record_api_success(ORG, "Task", _task_describe())
+    report_store = ReportStore.load(csv_path)
+    report_store.put(ORG, REPORT_ID, _one_column_metadata())
+
+    return run_fetch(
+        [_entry_with_report_format(value)],
+        site_for=offline_site_for(_fake_base_site_for(ORG_DOMAIN_URL)),
+        describe_store=DescribeStore.load(csv_path),
+        report_store=report_store,
+        row_limit=False,
+        **_fetch_settings(),
+    )[0]
+
+
+def test_analyze_delivers_master_report_format_to_record(tmp_path: Path) -> None:
+    """解析の段（ 接続しない ） でも 管理表の「集計形式」列が record に届く。"""
+    outcome = _run_analyze_fetch("サマリー", tmp_path)
+
+    assert outcome.status == "ok"
+    record = outcome.record
+    assert record is not None
+    assert record.report_format == "サマリー"
+
+
+def test_analyze_warns_when_master_report_format_differs(tmp_path: Path) -> None:
+    """管理表の値と レポートの reportFormat が食い違えば 警告が record に残る。"""
+    outcome = _run_analyze_fetch("サマリー", tmp_path)
+
+    assert outcome.status == "ok"
+    record = outcome.record
+    assert record is not None
+    assert any(
+        "管理表の集計形式は サマリー だが、レポートは TABULAR" in warning
+        for warning in record.warnings
+    )
+
+
+def test_analyze_does_not_warn_when_master_report_format_matches(tmp_path: Path) -> None:
+    """管理表の値と レポートの reportFormat が一致すれば 警告は出ない。"""
+    outcome = _run_analyze_fetch("無し", tmp_path)
+
+    assert outcome.status == "ok"
+    record = outcome.record
+    assert record is not None
+    assert not any("集計形式" in warning for warning in record.warnings)
+
+
+def test_analyze_shows_master_report_format_in_overview(tmp_path: Path, monkeypatch: Any) -> None:
+    """解析の段でも 一覧シートの 「集計形式（管理表）」 列に 管理表の値が出る。"""
+    file_paths = _prepare_analyze(tmp_path, monkeypatch, _master_row_with_report_format("サマリー"))
+
+    assert _run_analyze(file_paths) == 0
+
+    sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
+    overview = {row["管理番号"]: row for row in sheets["一覧"]}
+    assert overview["1001"]["集計形式（管理表）"] == "サマリー"
+    # 食い違人心的警告も 一覧の 「警告」 列に出る
+    assert "管理表の集計形式は サマリー だが、レポートは TABULAR" in overview["1001"]["警告"]
+
+
+def test_analyze_shows_master_report_format_in_markdown(tmp_path: Path, monkeypatch: Any) -> None:
+    """解析の段でも Markdown 資料に 管理表の値が出る。"""
+    file_paths = _prepare_analyze(tmp_path, monkeypatch, _master_row_with_report_format("サマリー"))
+
+    assert _run_analyze(file_paths) == 0
+
+    markdown = (tmp_path / "output" / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
+    assert "- 集計形式（管理表）: サマリー" in markdown

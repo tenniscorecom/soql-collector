@@ -10,7 +10,7 @@ from src.fetch.models import FetchOutcome, ReportRecord
 from src.fetch.report_slim import SlimReport, dropped_keys_warning_text
 from src.fetch.row_check import ROW_CHECK_UNKNOWN
 from src.fetch.site_run import FetchState
-from src.master import MasterEntry
+from src.master import MasterEntry, report_format_warning
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,12 @@ def build_fetch_outcome(
     ):
         warnings.append(f"2000件超の判定ができませんでした: {state.row_check.reason}")
 
+    # 管理表の「集計形式」列と レポートの形式が食い違えば、 警告表にも 1 行入れる
+    metadata = state.slim_report.get("reportMetadata") or {}
+    format_warning = report_format_warning(entry.report_format, metadata.get("reportFormat"))
+    if format_warning:
+        warnings.append(format_warning)
+
     soql_draft = soql_builder.build_soql(
         ReportRecord(
             key=entry.key,
@@ -70,6 +76,8 @@ def build_fetch_outcome(
             row_check=state.row_check,
             # 管理表の「2000件超」列。 取り方 （ Bulk / 通常 SOQL ） の判定に使う
             exceeds_row_limit=entry.exceeds_row_limit,
+            # 管理表の「集計形式」列。 レポートの形式との照合にだけ使う
+            report_format=entry.report_format,
             cross_filter_objects=state.cross_filter_objects,
             soql_from_object=state.soql_from_object,
             soql_from_relationship=state.soql_from_relationship,
@@ -96,6 +104,7 @@ def build_fetch_outcome(
         org=state.org,
         source_times=state.source_times,
         exceeds_row_limit=entry.exceeds_row_limit,
+        report_format=entry.report_format,
     )
     return FetchOutcome(
         entry=entry,

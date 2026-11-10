@@ -325,6 +325,45 @@ def test_survey_basic(tmp_path: Path) -> None:
     assert row["SOQL資料"] == "SOQL資料/1001.md"
 
 
+def test_survey_report_format_column(tmp_path: Path) -> None:
+    """一覧シートの 「集計形式（管理表）」 列に 管理表の値が出る。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = dataclasses.replace(
+        _make_record("1001", main_object="Opportunity"), report_format="サマリー"
+    )
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    # 3 行目が見出し、 4 行目以降にデータ
+    headers = [c.value for c in ws[3]]
+    data_rows = list(ws.iter_rows(min_row=4, values_only=True))
+    workbook.close()
+
+    row = dict(zip(headers, data_rows[0], strict=False))
+    assert row["集計形式（管理表）"] == "サマリー"
+
+
+def test_survey_report_format_column_is_unfilled_without_master_value(tmp_path: Path) -> None:
+    """管理表に 「集計形式」 が無いときは 「(未記入)」。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    headers = [c.value for c in ws[3]]
+    data_rows = list(ws.iter_rows(min_row=4, values_only=True))
+    workbook.close()
+
+    row = dict(zip(headers, data_rows[0], strict=False))
+    assert row["集計形式（管理表）"] == "(未記入)"
+
+
 def test_survey_similar_group_text(tmp_path: Path) -> None:
     """似たレポート判定で 1 グループになると 一覧シートの 「似たレポート」 列に
     「グループN: <基準の管理番号> が基準」 の形で出る。"""

@@ -145,6 +145,7 @@ def build_survey_table_rows_from_records(
                 "取り方": soql_fetch_method_for_record(record),
                 "クロスフィルタの繋がり": cross_filter_links_for_record(record),
                 "要対応・要確認の列数": str(unresolved_counts.get(key, 0)),
+                "集計形式（管理表）": record.report_format or "(未記入)",
                 "2000件超": status,
                 "行数": _rows,
                 "個人情報": pii_status,

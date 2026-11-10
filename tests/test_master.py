@@ -6,14 +6,23 @@ comken の ``Excel`` で読むので、実ファイルと同じ配置（``PY_管
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
+import pytest
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from src.fetch.models import ReportRecord, RowCheck
-from src.master import UNKNOWN_MARK, MasterEntry, _is_enabled, filter_survey_targets, read_master
+from src.master import (
+    UNKNOWN_MARK,
+    MasterEntry,
+    _is_enabled,
+    filter_survey_targets,
+    read_master,
+    report_format_warning,
+)
 from src.row_check_status import ROW_CHECK_OVER, ROW_CHECK_UNDER
 from src.row_size import decide_row_size
 from src.soql_builder import build_soql
@@ -46,6 +55,9 @@ def _build_master(path: Path, rows: list[dict]) -> None:
     # 「2000件超」列も任意。 同じ様に、 行のどれかが持つときだけ足す
     if any("2000件超" in row for row in rows):
         headers.append("2000件超")
+    # 「集計形式」列も任意。 同じ様に、 行のどれかが持つときだけ足す
+    if any("集計形式" in row for row in rows):
+        headers.append("集計形式")
     sheet.append(headers)
     for row in rows:
         sheet.append([row.get(col, "") for col in headers])
@@ -491,3 +503,136 @@ def test_unknown_mark_decides_fetch_method_like_missing_column(tmp_path: Path) -
     # 50 件なら通常 SOQL、 2000 件超なら Bulk
     assert build_soql(_record_for_fetch_method(exceeds, under)).use_bulk is False
     assert build_soql(_record_for_fetch_method(exceeds, over)).use_bulk is True
+
+
+# ── 「集計形式」列 ───────────────────────────────────────────────────────
+
+
+def test_read_master_report_format_column(tmp_path: Path) -> None:
+    """「集計形式」列は 「サマリー」/「マトリックス」/「無し」 をそのまま読む。
+
+    空欄は 記入なし（ ``None`` ） として読む。
+    """
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {
+                "ID": "1",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
+                "有効": "○",
+                "集計形式": "サマリー",
+            },
+            {
+                "ID": "2",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view",
+                "有効": "○",
+                "集計形式": "マトリックス",
+            },
+            {
+                "ID": "3",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000CCCCC/view",
+                "有効": "○",
+                "集計形式": "無し",
+            },
+            {
+                "ID": "4",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000DDDDD/view",
+                "有効": "○",
+                "集計形式": "",
+            },
+        ],
+    )
+
+    entries = read_master(path)
+
+    assert [entry.report_format for entry in entries] == [
+        "サマリー",
+        "マトリックス",
+        "無し",
+        None,
+    ]
+
+
+def test_read_master_without_report_format_column(tmp_path: Path) -> None:
+    """「集計形式」列が無い管理表では、 全部 記入なし（ ``None`` ） として読む。"""
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {"ID": "1", "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view", "有効": "○"},
+            {"ID": "2", "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view", "有効": "×"},
+        ],
+    )
+
+    entries = read_master(path)
+
+    assert [entry.report_format for entry in entries] == [None, None]
+
+
+def test_read_master_report_format_invalid_value_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """想定外の値は 記入なし（ ``None`` ） にして WARNING を 1 件出す。 行は捨てない。
+
+    # なぜ: 管理表は人が書くところなので、 書き間違いがあっても処理は止めない。
+    管理番号と値を出して、 直せるようにする
+    """
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {
+                "ID": "1",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
+                "有効": "○",
+                "集計形式": "サマリー",
+            },
+            {
+                "ID": "2",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view",
+                "有効": "○",
+                "集計形式": "SUMMARY",
+            },
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="src.master"):
+        entries = read_master(path)
+
+    # 該当の行だけ 記入なし。 ほかは行ごと残る
+    assert [entry.report_format for entry in entries] == ["サマリー", None]
+    assert [entry.key for entry in entries] == ["1", "2"]
+    assert "集計形式" in caplog.text
+    assert "管理番号=2" in caplog.text
+    assert "SUMMARY" in caplog.text
+
+
+def test_report_format_warning_on_mismatch() -> None:
+    """管理表の値と レポートの reportFormat が食い違えば 警告 1 件分の文言を返す。"""
+    assert (
+        report_format_warning("サマリー", "TABULAR")
+        == "管理表の集計形式は サマリー だが、レポートは TABULAR"
+    )
+
+
+def test_report_format_warning_not_shown_when_matched() -> None:
+    """対応する組み合わせなら 警告しない。"""
+    assert report_format_warning("サマリー", "SUMMARY") is None
+    assert report_format_warning("マトリックス", "MATRIX") is None
+    assert report_format_warning("無し", "TABULAR") is None
+
+
+def test_report_format_warning_not_shown_when_one_side_is_missing() -> None:
+    """どちらか 無ければ 警告しない。"""
+    assert report_format_warning(None, "TABULAR") is None
+    assert report_format_warning("サマリー", None) is None
+    assert report_format_warning("サマリー", "") is None
+
+
+def test_report_format_warning_on_unknown_report_format() -> None:
+    """レポートの形式が対応に無い値（ MULTI_BLOCK など ） でも 食い違いとして警告する。"""
+    assert (
+        report_format_warning("無し", "MULTI_BLOCK")
+        == "管理表の集計形式は 無し だが、レポートは MULTI_BLOCK"
+    )

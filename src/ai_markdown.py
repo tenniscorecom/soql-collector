@@ -397,12 +397,18 @@ def _build_meta_lines(record: ReportRecord, fmt: str) -> list[str]:
         f"- レポートID: {record.report_id}",
         f"- 主オブジェクト: {_format_main_object(record)}",
         f"- レポート形式: {fmt}",
+        f"- 集計形式（管理表）: {_format_master_report_format(record)}",
         f"- 2000件超: {_format_row_check(record)}",
         f"- 個人情報: {_format_pii(record)}",
     ]
     if record.source_times is not None:
         lines.append(f"- 元データの取得日時: {_format_source_times(record.source_times)}")
     return lines
+
+
+def _format_master_report_format(record: ReportRecord) -> str:
+    """管理表の「集計形式」列の値を 1 行の文字列にする。 記入が無いときは 「(未記入)」。"""
+    return record.report_format or "(未記入)"
 
 
 def _format_source_times(source_times: SourceTimes) -> str:

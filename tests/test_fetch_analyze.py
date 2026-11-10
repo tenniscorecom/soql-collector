@@ -25,6 +25,8 @@ from openpyxl.worksheet.table import TableStyleInfo
 
 from src.ai_markdown import AI_FILE_MAX_BYTES, split_markdown
 from src.column_fix_xlsx import COLUMN_FIX_COLUMNS
+from src.fetch import run_fetch
+from src.master import MasterEntry
 from src.run import FilePaths, run
 from src.tables.ai_csv import write_limited_csv
 
@@ -196,16 +198,28 @@ def _must_not_connect_site_for() -> Any:
 # ── 準備 ─────────────────────────────────────────────────────────────────
 
 
-def _build_master(path: Path, report_ids: tuple[str, ...]) -> None:
+def _build_master(
+    path: Path,
+    report_ids: tuple[str, ...],
+    *,
+    report_formats: dict[str, str] | None = None,
+) -> None:
     workbook = Workbook()
     active = workbook.active
     assert active is not None
     workbook.remove(active)
     sheet = workbook.create_sheet("PY_管理表")
     headers = ["ID", "概要", "Salesforce URL", "有効"]
+    # 「集計形式」列は任意。 値があるときだけ、 列を足す
+    if report_formats:
+        headers.append("集計形式")
     sheet.append(headers)
     for index, report_id in enumerate(report_ids, start=1):
-        sheet.append([str(1000 + index), f"概要{index}", f"{REPORT_URL}/{report_id}/view", "○"])
+        key = str(1000 + index)
+        values = [key, f"概要{index}", f"{REPORT_URL}/{report_id}/view", "○"]
+        if report_formats:
+            values.append(report_formats.get(key, ""))
+        sheet.append(values)
     table = XlsxTable(
         displayName="PY_T_ReportEntry",
         ref=f"A1:{get_column_letter(len(headers))}{len(report_ids) + 1}",
@@ -221,11 +235,12 @@ def _setup(
     report_ids: tuple[str, ...] = (REPORT_A,),
     *,
     row_limit: str = "○",
+    report_formats: dict[str, str] | None = None,
 ) -> FilePaths:
     from comken_state import reset_cached_config
 
     tmp_path.mkdir(parents=True, exist_ok=True)
-    _build_master(tmp_path / "master.xlsx", report_ids)
+    _build_master(tmp_path / "master.xlsx", report_ids, report_formats=report_formats)
     (tmp_path / "config.ini").write_text(
         "[FILES]\n"
         f"MASTER_XLSX_PATH = {tmp_path / 'master.xlsx'}\n"
@@ -637,6 +652,54 @@ def test_analyze_makes_soql_for_report_of_1000_rows_or_less(
     assert list((file_paths.output_dir / "SOQLレポート").glob("*.py"))
     text = (file_paths.output_dir / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
     assert "```sql" in text
+
+
+def test_fetch_delivers_master_report_format_to_record() -> None:
+    """取得の段でも 管理表の「集計形式」列が record に届く。
+
+    レポートの形式（ TABULAR ）と食い違えば 警告も 1 件出る
+    """
+    entry = MasterEntry(
+        key="1001",
+        summary="活動レポート",
+        url=f"{REPORT_URL}/{REPORT_A}/view",
+        enabled=True,
+        report_format="サマリー",
+    )
+
+    outcomes = run_fetch([entry], site_for=_site_for(_CountingClient()))
+
+    assert outcomes[0].status == "ok"
+    record = outcomes[0].record
+    assert record is not None
+    assert record.report_format == "サマリー"
+    assert any(
+        "管理表の集計形式は サマリー だが、レポートは TABULAR" in warning
+        for warning in record.warnings
+    )
+
+
+def test_master_report_format_reaches_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """管理表の「集計形式」列が 一覧と AI 資料に出る。"""
+    file_paths = _setup(tmp_path, monkeypatch, report_formats={"1001": "サマリー"})
+    client = _CountingClient()
+    assert run(["--fetch"], site_for=_site_for(client), file_paths=file_paths) == 0
+
+    assert _analyze(file_paths) == 0
+
+    overview = load_workbook(file_paths.output_dir / "SOQL調査.xlsx")["一覧"]
+    rows = list(overview.values)
+    header_index = next(i for i, row in enumerate(rows) if "管理番号" in row)
+    header = rows[header_index]
+    row = dict(zip(header, rows[header_index + 1], strict=True))
+    assert row["集計形式（管理表）"] == "サマリー"
+    # AI に渡す Markdown にも 管理表の値が出る
+    markdown = (file_paths.output_dir / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
+    assert "- 集計形式（管理表）: サマリー" in markdown
+    # レポートの形式と食い違えば 警告も出る
+    assert "- 管理表の集計形式は サマリー だが、レポートは TABULAR" in markdown
 
 
 def test_analyze_fails_when_report_is_missing_and_warns_when_object_is_missing(

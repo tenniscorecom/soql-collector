@@ -144,6 +144,7 @@ def _make_record(
     warnings: tuple[str, ...] = (),
     row_check: RowCheck | None = None,
     exceeds_row_limit: bool | None = None,
+    report_format: str | None = None,
     pii_status: str = "なし",
     report_metadata_override: dict | None = None,
     soql_draft: object | None = None,
@@ -224,6 +225,7 @@ def _make_record(
         pii=pii.ReportPIIResult(status=pii_status, matching_columns=()),
         soql_draft=soql_draft,
         exceeds_row_limit=exceeds_row_limit,
+        report_format=report_format,
     )
 
 
@@ -289,6 +291,7 @@ def test_ai_markdown_tabular_full_text() -> None:
         "- レポートID: 00O000000000001\n"
         "- 主オブジェクト: Task\n"
         "- レポート形式: TABULAR\n"
+        "- 集計形式（管理表）: (未記入)\n"
         "- 2000件超: 超えていない（42件）\n"
         "- 個人情報: なし\n"
         "\n"
@@ -343,6 +346,27 @@ def test_ai_markdown_tabular_full_text() -> None:
     )
 
     assert build_markdown(record) == expected
+
+
+# ── 管理表の「集計形式」列 ───────────────────────────────────────────
+
+
+def test_ai_markdown_meta_has_master_report_format() -> None:
+    """管理表の「集計形式」列の値が、 レポートの基本情報の行に出る。"""
+    record = _make_record(report_format="サマリー")
+
+    markdown = build_markdown(record)
+
+    assert "- 集計形式（管理表）: サマリー" in markdown
+
+
+def test_ai_markdown_meta_report_format_is_unfilled_without_master_value() -> None:
+    """管理表に 「集計形式」 が無いときは 「(未記入)」。"""
+    record = _make_record()
+
+    markdown = build_markdown(record)
+
+    assert "- 集計形式（管理表）: (未記入)" in markdown
 
 
 # ── 似たSOQL ───────────────────────────────────────────────────────
