@@ -25,6 +25,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from src import mapping, relation_diagram, soql_similar
+from src.master import format_uses_rpa
 from src.row_size import decide_row_size
 from src.text_utils import coerce_str as _coerce_str
 
@@ -398,6 +399,7 @@ def _build_meta_lines(record: ReportRecord, fmt: str) -> list[str]:
         f"- 主オブジェクト: {_format_main_object(record)}",
         f"- レポート形式: {fmt}",
         f"- 集計形式（管理表）: {_format_master_report_format(record)}",
+        f"- RPA使用（管理表）: {format_uses_rpa(record.uses_rpa)}",
         f"- 2000件超: {_format_row_check(record)}",
         f"- 個人情報: {_format_pii(record)}",
     ]

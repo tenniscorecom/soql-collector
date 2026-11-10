@@ -131,6 +131,9 @@ class ReportRecord:
     #: 集計かどうかの判断は ``reportFormat`` で行い、 この値は レポートの形式との
     #: 照合と表示にだけ使う
     report_format: str | None = None
+    #: そのレポートを RPA でも使っているか。 管理表の「RPA使用」列の値。
+    #: ``None`` は「記入が無い」（ 管理表に列が無い・セルが空 ）
+    uses_rpa: bool | None = None
 
 
 @dataclass(frozen=True)

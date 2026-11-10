@@ -20,6 +20,7 @@ from src.master import (
     MasterEntry,
     _is_enabled,
     filter_survey_targets,
+    format_uses_rpa,
     read_master,
     report_format_warning,
 )
@@ -58,6 +59,9 @@ def _build_master(path: Path, rows: list[dict]) -> None:
     # 「集計形式」列も任意。 同じ様に、 行のどれかが持つときだけ足す
     if any("集計形式" in row for row in rows):
         headers.append("集計形式")
+    # 「RPA使用」列も任意。 同じ様に、 行のどれかが持つときだけ足す
+    if any("RPA使用" in row for row in rows):
+        headers.append("RPA使用")
     sheet.append(headers)
     for row in rows:
         sheet.append([row.get(col, "") for col in headers])
@@ -636,3 +640,61 @@ def test_report_format_warning_on_unknown_report_format() -> None:
         report_format_warning("無し", "MULTI_BLOCK")
         == "管理表の集計形式は 無し だが、レポートは MULTI_BLOCK"
     )
+
+
+# ── 「RPA使用」列 ───────────────────────────────────────────────────────
+
+
+def test_read_master_uses_rpa_column(tmp_path: Path) -> None:
+    """「RPA使用」列は ○ を真、 × を偽として読む。 空欄は 記入なし（ ``None`` ）。"""
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {
+                "ID": "1",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view",
+                "有効": "○",
+                "RPA使用": "○",
+            },
+            {
+                "ID": "2",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view",
+                "有効": "○",
+                "RPA使用": "×",
+            },
+            {
+                "ID": "3",
+                "Salesforce URL": f"{DOMAIN}/00O5g00000CCCCC/view",
+                "有効": "○",
+                "RPA使用": "",
+            },
+        ],
+    )
+
+    entries = read_master(path)
+
+    assert [entry.uses_rpa for entry in entries] == [True, False, None]
+
+
+def test_read_master_without_uses_rpa_column(tmp_path: Path) -> None:
+    """「RPA使用」列が無い管理表では、 全部 記入なし（ ``None`` ） として読む。"""
+    path = tmp_path / "master.xlsx"
+    _build_master(
+        path,
+        [
+            {"ID": "1", "Salesforce URL": f"{DOMAIN}/00O5g00000AAAAA/view", "有効": "○"},
+            {"ID": "2", "Salesforce URL": f"{DOMAIN}/00O5g00000BBBBB/view", "有効": "×"},
+        ],
+    )
+
+    entries = read_master(path)
+
+    assert [entry.uses_rpa for entry in entries] == [None, None]
+
+
+def test_format_uses_rpa_marks() -> None:
+    """出力の表記は ○ / × / (未記入) 。"""
+    assert format_uses_rpa(True) == "○"
+    assert format_uses_rpa(False) == "×"
+    assert format_uses_rpa(None) == "(未記入)"

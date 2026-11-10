@@ -1,9 +1,9 @@
 """レポート管理表（Excel）から、管理番号ごとの最小行 dict を読む。
 
 soql-collector が管理表で必要とする列は ``ID``・``概要``・``Salesforce URL``・
-``有効`` の4つと、あれば ``調査`` と ``2000件超`` と ``集計形式``。ダウンローダーは
-もっと広い列を読む前提なので、ここでは最小の読み取りを直接書く。comken の ``Excel``
-経由で開くので、シートは ``PY_管理表`` を探す（comken の
+``有効`` の4つと、あれば ``調査`` と ``2000件超`` と ``集計形式`` と ``RPA使用``。
+ダウンローダーはもっと広い列を読む前提なので、ここでは最小の読み取りを直接書く。
+comken の ``Excel`` 経由で開くので、シートは ``PY_管理表`` を探す（comken の
 ``Excel.data_sheet('管理表')`` が ``PY_`` プレフィックスを自動で補う）。
 
 「有効」が ``×`` の行は ``filter_survey_targets`` で落とす。
@@ -22,6 +22,10 @@ soql-collector が管理表で必要とする列は ``ID``・``概要``・``Sale
 形式はレポート定義（ ``reportMetadata.reportFormat`` ） から分かるので、 この列は
 人が記入する確認用。 列が無い・セルが空のときは ``None`` 。 3 つ以外の値を書いた
 行は ``None`` にして WARNING を 1 件出す（ 行は捨てない ） 。
+
+``RPA使用`` 列も任意。 そのレポートを RPA でも使っているかを、 人が記入する。
+値は ``○`` / ``×`` で読み、 列が無い・セルが空のときは ``None`` （ 記入が無い ） 。
+真偽の判定は「有効」列と同じ ``_is_enabled`` （ ``is_enabled_mark`` ） で行う。
 """
 
 from __future__ import annotations
@@ -49,6 +53,15 @@ COL_SURVEY = "調査"
 COL_EXCEEDS_ROW_LIMIT = "2000件超"
 # 任意の列。 レポートの集計形式。 人が記入する確認用
 COL_REPORT_FORMAT = "集計形式"
+# 任意の列。 そのレポートを RPA でも使っているか。 人が記入する確認用
+COL_USES_RPA = "RPA使用"
+
+# 「RPA使用」列の○/× を 出力に書くときの文字
+MARK_TRUE = "○"
+MARK_FALSE = "×"
+
+# 出力に書くときの「記入が無い」の表記
+UNFILLED_MARK = "(未記入)"
 
 # 「2000件超」列に「本番の件数が分からない」と書くときの印。 空欄と同じ扱い
 # （ ``None`` ） にする。 「×」は「2000 件以下だと分かっている」を表すので、
@@ -84,6 +97,9 @@ class MasterEntry:
     #: 管理表の「集計形式」列の値。 ``サマリー`` / ``マトリックス`` / ``無し`` の
     #: どれか。 列が無い・セルが空・想定外の値のときは ``None`` （ 記入が無い ）
     report_format: str | None = None
+    #: そのレポートを RPA でも使っているか。 管理表の「RPA使用」列の値。
+    #: ``None`` は「記入が無い」（ 管理表に列が無い・セルが空 ）
+    uses_rpa: bool | None = None
 
 
 def read_master(path: Path) -> list[MasterEntry]:
@@ -100,6 +116,7 @@ def read_master(path: Path) -> list[MasterEntry]:
     has_survey_column = COL_SURVEY in table.columns
     has_exceeds_column = COL_EXCEEDS_ROW_LIMIT in table.columns
     has_report_format_column = COL_REPORT_FORMAT in table.columns
+    has_uses_rpa_column = COL_USES_RPA in table.columns
     entries: list[MasterEntry] = []
     for raw in raw_rows:
         if all(raw.get(col) in (None, "") for col in (COL_KEY, COL_SUMMARY, COL_URL, COL_ENABLED)):
@@ -120,6 +137,7 @@ def read_master(path: Path) -> list[MasterEntry]:
             if has_report_format_column
             else None
         )
+        uses_rpa = _read_uses_rpa(raw.get(COL_USES_RPA)) if has_uses_rpa_column else None
         entries.append(
             MasterEntry(
                 key=key,
@@ -129,6 +147,7 @@ def read_master(path: Path) -> list[MasterEntry]:
                 survey=survey,
                 exceeds_row_limit=exceeds_row_limit,
                 report_format=report_format,
+                uses_rpa=uses_rpa,
             )
         )
     logger.info("レポート管理表読込完了: path=%s, 件数=%d", path, len(entries))
@@ -208,3 +227,29 @@ def report_format_warning(master_value: str | None, report_format: str | None) -
     if not actual or actual == expected:
         return None
     return f"管理表の集計形式は {master_value} だが、レポートは {actual}"
+
+
+def _read_uses_rpa(value: object) -> bool | None:
+    """管理表の「RPA使用」列の値を ``True`` / ``False`` / ``None`` に直す。
+
+    セルが空のときは ``None`` （ 「記入が無い」 ） 。 値があるときは
+    ``_is_enabled`` （ ``is_enabled_mark`` ） で真偽を判定する。 判定の
+    語集合を「有効」列とそろえるため、 別の判定は作らない。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+    return _is_enabled(value)
+
+
+def format_uses_rpa(uses_rpa: bool | None) -> str:
+    """管理表の「RPA使用」列の値を、 一覧シートと AI 資料で使う表記にする。
+
+    ``True`` は ``○`` 、 ``False`` は ``×`` 、 記入が無いときは ``(未記入)`` 。
+    """
+    if uses_rpa is None:
+        return UNFILLED_MARK
+    return MARK_TRUE if uses_rpa else MARK_FALSE

@@ -78,6 +78,8 @@ def build_fetch_outcome(
             exceeds_row_limit=entry.exceeds_row_limit,
             # 管理表の「集計形式」列。 レポートの形式との照合にだけ使う
             report_format=entry.report_format,
+            # 管理表の「RPA使用」列。 表示にだけ使う
+            uses_rpa=entry.uses_rpa,
             cross_filter_objects=state.cross_filter_objects,
             soql_from_object=state.soql_from_object,
             soql_from_relationship=state.soql_from_relationship,
@@ -105,6 +107,7 @@ def build_fetch_outcome(
         source_times=state.source_times,
         exceeds_row_limit=entry.exceeds_row_limit,
         report_format=entry.report_format,
+        uses_rpa=entry.uses_rpa,
     )
     return FetchOutcome(
         entry=entry,

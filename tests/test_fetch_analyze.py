@@ -203,6 +203,7 @@ def _build_master(
     report_ids: tuple[str, ...],
     *,
     report_formats: dict[str, str] | None = None,
+    uses_rpa: dict[str, str] | None = None,
 ) -> None:
     workbook = Workbook()
     active = workbook.active
@@ -213,12 +214,17 @@ def _build_master(
     # 「集計形式」列は任意。 値があるときだけ、 列を足す
     if report_formats:
         headers.append("集計形式")
+    # 「RPA使用」列も任意。 同じ様に、 値があるときだけ、 列を足す
+    if uses_rpa:
+        headers.append("RPA使用")
     sheet.append(headers)
     for index, report_id in enumerate(report_ids, start=1):
         key = str(1000 + index)
         values = [key, f"概要{index}", f"{REPORT_URL}/{report_id}/view", "○"]
         if report_formats:
             values.append(report_formats.get(key, ""))
+        if uses_rpa:
+            values.append(uses_rpa.get(key, ""))
         sheet.append(values)
     table = XlsxTable(
         displayName="PY_T_ReportEntry",
@@ -236,11 +242,17 @@ def _setup(
     *,
     row_limit: str = "○",
     report_formats: dict[str, str] | None = None,
+    uses_rpa: dict[str, str] | None = None,
 ) -> FilePaths:
     from comken_state import reset_cached_config
 
     tmp_path.mkdir(parents=True, exist_ok=True)
-    _build_master(tmp_path / "master.xlsx", report_ids, report_formats=report_formats)
+    _build_master(
+        tmp_path / "master.xlsx",
+        report_ids,
+        report_formats=report_formats,
+        uses_rpa=uses_rpa,
+    )
     (tmp_path / "config.ini").write_text(
         "[FILES]\n"
         f"MASTER_XLSX_PATH = {tmp_path / 'master.xlsx'}\n"
@@ -700,6 +712,43 @@ def test_master_report_format_reaches_outputs(
     assert "- 集計形式（管理表）: サマリー" in markdown
     # レポートの形式と食い違えば 警告も出る
     assert "- 管理表の集計形式は サマリー だが、レポートは TABULAR" in markdown
+
+
+def test_fetch_delivers_master_uses_rpa_to_record() -> None:
+    """取得の段でも 管理表の「RPA使用」列が record に届く。"""
+    entry = MasterEntry(
+        key="1001",
+        summary="活動レポート",
+        url=f"{REPORT_URL}/{REPORT_A}/view",
+        enabled=True,
+        uses_rpa=True,
+    )
+
+    outcomes = run_fetch([entry], site_for=_site_for(_CountingClient()))
+
+    assert outcomes[0].status == "ok"
+    record = outcomes[0].record
+    assert record is not None
+    assert record.uses_rpa is True
+
+
+def test_master_uses_rpa_reaches_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """管理表の「RPA使用」列が 一覧と AI 資料に出る。"""
+    file_paths = _setup(tmp_path, monkeypatch, uses_rpa={"1001": "○"})
+    client = _CountingClient()
+    assert run(["--fetch"], site_for=_site_for(client), file_paths=file_paths) == 0
+
+    assert _analyze(file_paths) == 0
+
+    overview = load_workbook(file_paths.output_dir / "SOQL調査.xlsx")["一覧"]
+    rows = list(overview.values)
+    header_index = next(i for i, row in enumerate(rows) if "管理番号" in row)
+    header = rows[header_index]
+    row = dict(zip(header, rows[header_index + 1], strict=True))
+    assert row["RPA使用（管理表）"] == "○"
+    # AI に渡す Markdown にも 管理表の値が出る
+    markdown = (file_paths.output_dir / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
+    assert "- RPA使用（管理表）: ○" in markdown
 
 
 def test_analyze_fails_when_report_is_missing_and_warns_when_object_is_missing(

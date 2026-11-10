@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from src import ai_markdown, soql_similar
+from src.master import format_uses_rpa
 from src.soql_builder import (
     CROSS_FILTER_LINK_DIRECT,
     CROSS_FILTER_LINK_NOT_DIRECT,
@@ -146,6 +147,7 @@ def build_survey_table_rows_from_records(
                 "クロスフィルタの繋がり": cross_filter_links_for_record(record),
                 "要対応・要確認の列数": str(unresolved_counts.get(key, 0)),
                 "集計形式（管理表）": record.report_format or "(未記入)",
+                "RPA使用（管理表）": format_uses_rpa(record.uses_rpa),
                 "2000件超": status,
                 "行数": _rows,
                 "個人情報": pii_status,

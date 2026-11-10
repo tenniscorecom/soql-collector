@@ -53,6 +53,9 @@ def _build_master(path: Path, rows: list[dict[str, str]]) -> None:
     # 「集計形式」列も任意。 行のどれかが持つときだけ、 列を足す
     if any("集計形式" in row for row in rows):
         headers.append("集計形式")
+    # 「RPA使用」列も任意。 同じ様に、 行のどれかが持つときだけ、 列を足す
+    if any("RPA使用" in row for row in rows):
+        headers.append("RPA使用")
     sheet.append(headers)
     for row in rows:
         sheet.append([row.get(col, "") for col in headers])
@@ -1046,3 +1049,83 @@ def test_analyze_shows_master_report_format_in_markdown(tmp_path: Path, monkeypa
 
     markdown = (tmp_path / "output" / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
     assert "- 集計形式（管理表）: サマリー" in markdown
+
+
+# ── 管理表の「RPA使用」列 ────────────────────────────────────────────────
+
+
+def _master_row_with_uses_rpa(value: str) -> list[dict[str, str]]:
+    """「RPA使用」列の値が入った管理表の行。"""
+    rows = _one_report_row()
+    rows[0]["RPA使用"] = value
+    return rows
+
+
+def _entry_with_uses_rpa(value: bool) -> MasterEntry:
+    """「RPA使用」列の値が入った管理表の行（ ``run_fetch`` に直接渡す用 ）。"""
+    return MasterEntry(
+        key="1001",
+        summary="活動一覧",
+        url=f"{DOMAIN}/{REPORT_ID}/view",
+        enabled=True,
+        uses_rpa=value,
+    )
+
+
+def _run_analyze_fetch_uses_rpa(value: bool, tmp_path: Path) -> Any:
+    """解析の段（ 接続しない ） で 1 件取り ``FetchOutcome`` を返す。"""
+    csv_path = tmp_path / "data" / "項目定義.csv"
+    describe_store = DescribeStore.load(csv_path)
+    describe_store.record_api_success(ORG, "Task", _task_describe())
+    report_store = ReportStore.load(csv_path)
+    report_store.put(ORG, REPORT_ID, _one_column_metadata())
+
+    return run_fetch(
+        [_entry_with_uses_rpa(value)],
+        site_for=offline_site_for(_fake_base_site_for(ORG_DOMAIN_URL)),
+        describe_store=DescribeStore.load(csv_path),
+        report_store=report_store,
+        row_limit=False,
+        **_fetch_settings(),
+    )[0]
+
+
+def test_analyze_delivers_master_uses_rpa_to_record(tmp_path: Path) -> None:
+    """解析の段（ 接続しない ） でも 管理表の「RPA使用」列が record に届く。"""
+    outcome = _run_analyze_fetch_uses_rpa(True, tmp_path)
+
+    assert outcome.status == "ok"
+    record = outcome.record
+    assert record is not None
+    assert record.uses_rpa is True
+
+
+def test_analyze_delivers_master_uses_rpa_false_to_record(tmp_path: Path) -> None:
+    """管理表が × のときは False が record に届く。"""
+    outcome = _run_analyze_fetch_uses_rpa(False, tmp_path)
+
+    assert outcome.status == "ok"
+    record = outcome.record
+    assert record is not None
+    assert record.uses_rpa is False
+
+
+def test_analyze_shows_master_uses_rpa_in_overview(tmp_path: Path, monkeypatch: Any) -> None:
+    """解析の段でも 一覧シートの 「RPA使用（管理表）」 列に 管理表の値が出る。"""
+    file_paths = _prepare_analyze(tmp_path, monkeypatch, _master_row_with_uses_rpa("○"))
+
+    assert _run_analyze(file_paths) == 0
+
+    sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
+    overview = {row["管理番号"]: row for row in sheets["一覧"]}
+    assert overview["1001"]["RPA使用（管理表）"] == "○"
+
+
+def test_analyze_shows_master_uses_rpa_in_markdown(tmp_path: Path, monkeypatch: Any) -> None:
+    """解析の段でも Markdown 資料に 管理表の値が出る。"""
+    file_paths = _prepare_analyze(tmp_path, monkeypatch, _master_row_with_uses_rpa("○"))
+
+    assert _run_analyze(file_paths) == 0
+
+    markdown = (tmp_path / "output" / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
+    assert "- RPA使用（管理表）: ○" in markdown

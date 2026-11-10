@@ -145,6 +145,7 @@ def _make_record(
     row_check: RowCheck | None = None,
     exceeds_row_limit: bool | None = None,
     report_format: str | None = None,
+    uses_rpa: bool | None = None,
     pii_status: str = "なし",
     report_metadata_override: dict | None = None,
     soql_draft: object | None = None,
@@ -226,6 +227,7 @@ def _make_record(
         soql_draft=soql_draft,
         exceeds_row_limit=exceeds_row_limit,
         report_format=report_format,
+        uses_rpa=uses_rpa,
     )
 
 
@@ -292,6 +294,7 @@ def test_ai_markdown_tabular_full_text() -> None:
         "- 主オブジェクト: Task\n"
         "- レポート形式: TABULAR\n"
         "- 集計形式（管理表）: (未記入)\n"
+        "- RPA使用（管理表）: (未記入)\n"
         "- 2000件超: 超えていない（42件）\n"
         "- 個人情報: なし\n"
         "\n"
@@ -367,6 +370,36 @@ def test_ai_markdown_meta_report_format_is_unfilled_without_master_value() -> No
     markdown = build_markdown(record)
 
     assert "- 集計形式（管理表）: (未記入)" in markdown
+
+
+# ── 管理表の「RPA使用」列 ───────────────────────────────────────────
+
+
+def test_ai_markdown_meta_has_master_uses_rpa() -> None:
+    """管理表の「RPA使用」列の値が、 レポートの基本情報の行に出る。"""
+    record = _make_record(uses_rpa=True)
+
+    markdown = build_markdown(record)
+
+    assert "- RPA使用（管理表）: ○" in markdown
+
+
+def test_ai_markdown_meta_uses_rpa_is_cross_mark_when_false() -> None:
+    """「RPA使用」が × のときは × と出る。"""
+    record = _make_record(uses_rpa=False)
+
+    markdown = build_markdown(record)
+
+    assert "- RPA使用（管理表）: ×" in markdown
+
+
+def test_ai_markdown_meta_uses_rpa_is_unfilled_without_master_value() -> None:
+    """管理表に 「RPA使用」 が無いときは 「(未記入)」。"""
+    record = _make_record()
+
+    markdown = build_markdown(record)
+
+    assert "- RPA使用（管理表）: (未記入)" in markdown
 
 
 # ── 似たSOQL ───────────────────────────────────────────────────────
