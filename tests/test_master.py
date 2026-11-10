@@ -461,7 +461,7 @@ def test_unknown_mark_decides_fetch_method_like_missing_column(tmp_path: Path) -
     「超えている」なら Bulk。 取り方（ Bulk / 通常 SOQL ） まで確かめる。
 
     # なぜ: 「不明」は「2000 件以下だと分かっている」（ × ） ではない。
-    分からないという意思是、 列が無いときと同じ扱いにしたい
+    分からないことは、 列が無いときと同じ扱いにしたい
     """
     path = tmp_path / "master.xlsx"
     _build_master(
