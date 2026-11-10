@@ -25,7 +25,6 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from src import mapping, relation_diagram, soql_similar
-from src.soql_builder import STATUS_SKIPPED
 from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
@@ -855,9 +854,6 @@ def _build_soql_section(record: ReportRecord) -> list[str]:
             "この下書きを、下の資料と照らして直してください。"
             "作れなかった部分は資料から補ってください。"
         )
-    elif draft.status == STATUS_SKIPPED:
-        # 件数が少ないので SOQL を作らなかった
-        lines.append("SOQL: 1000件以下なので SOQL にしない")
     else:
         # ``作れず`` は本文が無いので、 「なし」 の代わりに理由を残す
         lines.append("SOQL: なし")

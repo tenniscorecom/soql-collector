@@ -1,8 +1,9 @@
-"""1000 件以下のレポートを SOQL にしない功能的テスト。
+"""件数 （ 2000 行チェック ） に依らず SOQL を作ることを確かめるテスト。
 
-``src.soql_builder.build_soql`` が ``row_check`` を見て SOQL を作らないこと、
-``.py`` を作らないこと、 ``列の直し.xlsx`` に足さないこと、
-``--analyze`` で同じ判定になること を確かめる。
+``src.soql_builder.build_soql`` は件数を見ずに SOQL を作ること、 件数が
+少ないレポートでも ``.py`` を作ること、 Markdown に SOQL が出ること、
+``列の直し.xlsx`` に未解決の列が足されること、 保存した件数から同じ判定
+になること を確かめる。
 """
 
 from __future__ import annotations
@@ -16,12 +17,7 @@ from src import column_fix_xlsx
 from src.fetch import ReportRecord
 from src.fetch.models import RowCheck
 from src.fetch.row_check import ROW_CHECK_OVER, ROW_CHECK_UNDER, ROW_CHECK_UNKNOWN
-from src.soql_builder import (
-    SOQL_SKIP_MAX_ROWS,
-    STATUS_CREATED,
-    STATUS_SKIPPED,
-    build_soql,
-)
+from src.soql_builder import STATUS_CREATED, build_soql
 
 # ── ヘルパー ──────────────────────────────────────────────────────────────
 
@@ -69,115 +65,88 @@ def _make_record(
     )
 
 
-# ── 境界 ──────────────────────────────────────────────────────────────────
+def _with_draft(record: ReportRecord) -> ReportRecord:
+    """``record`` に ``build_soql`` の結果を入れた record を返す。"""
+    return ReportRecord(
+        key=record.key,
+        summary=record.summary,
+        report_id=record.report_id,
+        url=record.url,
+        main_object=record.main_object,
+        report=record.report,
+        objects=record.objects,
+        relations=record.relations,
+        column_map=record.column_map,
+        warnings=record.warnings,
+        row_check=record.row_check,
+        soql_draft=build_soql(record),
+    )
 
 
-def test_skip_when_rows_is_1000() -> None:
-    """ちょうど 1000 件なら SOQL を作らない。"""
-    record = _make_record(row_check=RowCheck(status=ROW_CHECK_UNDER, rows=1000, reason=None))
-    draft = build_soql(record)
-    assert draft.status == STATUS_SKIPPED
-    assert draft.soql == ""
-    assert draft.count_soql == ""
+# ── 件数にかかわらず SOQL を作る ──────────────────────────────────────────
 
 
-def test_skip_when_rows_is_less_than_1000() -> None:
-    """1000 件未満も SOQL を作らない。"""
-    record = _make_record(row_check=RowCheck(status=ROW_CHECK_UNDER, rows=0, reason=None))
-    draft = build_soql(record)
-    assert draft.status == STATUS_SKIPPED
-    assert draft.soql == ""
-
-
-def test_not_skip_when_rows_is_1001() -> None:
-    """1001 件なら SOQL を作る。"""
-    record = _make_record(row_check=RowCheck(status=ROW_CHECK_UNDER, rows=1001, reason=None))
+@pytest.mark.parametrize("rows", [5, 1000, 1001])
+def test_soql_is_made_when_rows_are_not_over(rows: int) -> None:
+    """「超えていない」 の何件でも SOQL を作る。"""
+    record = _make_record(row_check=RowCheck(status=ROW_CHECK_UNDER, rows=rows, reason=None))
     draft = build_soql(record)
     assert draft.status == STATUS_CREATED
     assert "FROM Opportunity" in draft.soql
 
 
-def test_not_skip_when_over_limit() -> None:
-    """「超えている」 は作らないが SOQL は作る（ 件数が分からない ） 。"""
+def test_soql_is_made_when_rows_are_over_limit() -> None:
+    """「超えている」 は件数が分からないので SOQL を作る。"""
     record = _make_record(row_check=RowCheck(status=ROW_CHECK_OVER, rows=None, reason=None))
     draft = build_soql(record)
     assert draft.status == STATUS_CREATED
     assert "FROM Opportunity" in draft.soql
 
 
-def test_not_skip_when_unknown() -> None:
+def test_soql_is_made_when_row_check_is_unknown() -> None:
     """「判定不可」 は SOQL を作る。"""
     record = _make_record(row_check=RowCheck(status=ROW_CHECK_UNKNOWN, rows=None, reason="失敗"))
     draft = build_soql(record)
     assert draft.status == STATUS_CREATED
 
 
-def test_not_skip_when_row_check_is_none() -> None:
+def test_soql_is_made_when_row_check_is_none() -> None:
     """``row_check`` が無いとき（ 未実施 ） は SOQL を作る。"""
     record = _make_record(row_check=None)
     draft = build_soql(record)
     assert draft.status == STATUS_CREATED
 
 
-def test_skip_max_rows_constant() -> None:
-    """境界の定数が 1000 のまま。"""
-    assert SOQL_SKIP_MAX_ROWS == 1000
-    assert STATUS_SKIPPED == "対象外（1000件以下）"
-
-
 # ── 出力への反映 ──────────────────────────────────────────────────────────
 
 
-def test_report_py_is_not_written_for_skipped_report(tmp_path: Path) -> None:
-    """SOQL が無いので、 レポートの .py を作らない。"""
+def test_report_py_is_written_for_small_report(tmp_path: Path) -> None:
+    """件数が少ないレポートでも、 レポートの .py を作る。"""
     from src import report_py
 
-    record = _make_record(row_check=RowCheck(status=ROW_CHECK_UNDER, rows=10, reason=None))
-    record = ReportRecord(
-        key=record.key,
-        summary=record.summary,
-        report_id=record.report_id,
-        url=record.url,
-        main_object=record.main_object,
-        report=record.report,
-        objects=record.objects,
-        relations=record.relations,
-        column_map=record.column_map,
-        warnings=record.warnings,
-        row_check=record.row_check,
-        soql_draft=build_soql(record),
+    record = _with_draft(
+        _make_record(row_check=RowCheck(status=ROW_CHECK_UNDER, rows=10, reason=None))
     )
     written = report_py.write_report_py_files(tmp_path, [record])
-    assert written == ()
-    assert not (tmp_path / report_py.REPORT_PY_DIR).exists()
+    assert len(written) == 1
+    assert written[0].parent.name == report_py.REPORT_PY_DIR
+    assert "FROM Opportunity" in written[0].read_text(encoding="utf-8")
 
 
-def test_markdown_says_not_made_because_of_rows(tmp_path: Path) -> None:
-    """Markdown は作るが、 SOQL の節は 「1000件以下なので SOQL にしない」 。"""
+def test_markdown_shows_soql_for_small_report() -> None:
+    """件数が少ないレポートでも、 Markdown に SOQL 本文が出る。"""
     from src import ai_markdown
 
-    record = _make_record(row_check=RowCheck(status=ROW_CHECK_UNDER, rows=10, reason=None))
-    record = ReportRecord(
-        key=record.key,
-        summary=record.summary,
-        report_id=record.report_id,
-        url=record.url,
-        main_object=record.main_object,
-        report=record.report,
-        objects=record.objects,
-        relations=record.relations,
-        column_map=record.column_map,
-        warnings=record.warnings,
-        row_check=record.row_check,
-        soql_draft=build_soql(record),
+    record = _with_draft(
+        _make_record(row_check=RowCheck(status=ROW_CHECK_UNDER, rows=10, reason=None))
     )
     markdown = ai_markdown.build_markdown(record)
-    assert "1000件以下なので SOQL にしない" in markdown
-    assert "```sql" not in markdown
+    assert "```sql" in markdown
+    assert "FROM Opportunity" in markdown
 
 
-def test_column_fix_xlsx_does_not_add_rows_of_skipped_report(tmp_path: Path) -> None:
-    """飛ばしたレポートの未解決列は 列の直し.xlsx に足さない。"""
+def test_column_fix_xlsx_adds_rows_of_small_report(tmp_path: Path) -> None:
+    """件数が少ないレポートの未解決列も 列の直し.xlsx に足す。"""
     column_map = [
         {
             "列キー": "Opportunity.MYSTERY",
@@ -190,24 +159,12 @@ def test_column_fix_xlsx_does_not_add_rows_of_skipped_report(tmp_path: Path) -> 
             "備考": "対応フィールドなし",
         }
     ]
-    record = _make_record(
-        row_check=RowCheck(status=ROW_CHECK_UNDER, rows=10, reason=None),
-        detail_columns=["Opportunity.MYSTERY"],
-        column_map=column_map,
-    )
-    record = ReportRecord(
-        key=record.key,
-        summary=record.summary,
-        report_id=record.report_id,
-        url=record.url,
-        main_object=record.main_object,
-        report=record.report,
-        objects=record.objects,
-        relations=record.relations,
-        column_map=record.column_map,
-        warnings=record.warnings,
-        row_check=record.row_check,
-        soql_draft=build_soql(record),
+    record = _with_draft(
+        _make_record(
+            row_check=RowCheck(status=ROW_CHECK_UNDER, rows=10, reason=None),
+            detail_columns=["Opportunity.MYSTERY"],
+            column_map=column_map,
+        )
     )
     path = tmp_path / "列の直し.xlsx"
     column_fix_xlsx.merge_and_write_after_run(
@@ -216,11 +173,11 @@ def test_column_fix_xlsx_does_not_add_rows_of_skipped_report(tmp_path: Path) -> 
         records=[record],
         today=column_fix_xlsx.today_local(),
     )
-    # ファイルは作られるが、 未解決の列の行は足されない
-    assert column_fix_xlsx.load_column_fix(path) == {}
+    rows = column_fix_xlsx.load_column_fix(path)
+    assert ("opportunity", "Opportunity.MYSTERY") in rows
 
 
-def test_column_fix_xlsx_keeps_existing_rows_of_skipped_report(tmp_path: Path) -> None:
+def test_column_fix_xlsx_keeps_existing_rows(tmp_path: Path) -> None:
     """既にある行と人の入力は消さない。"""
     column_map = [
         {
@@ -234,24 +191,12 @@ def test_column_fix_xlsx_keeps_existing_rows_of_skipped_report(tmp_path: Path) -
             "備考": "対応フィールドなし",
         }
     ]
-    record = _make_record(
-        row_check=RowCheck(status=ROW_CHECK_UNDER, rows=10, reason=None),
-        detail_columns=["Opportunity.MYSTERY"],
-        column_map=column_map,
-    )
-    record = ReportRecord(
-        key=record.key,
-        summary=record.summary,
-        report_id=record.report_id,
-        url=record.url,
-        main_object=record.main_object,
-        report=record.report,
-        objects=record.objects,
-        relations=record.relations,
-        column_map=record.column_map,
-        warnings=record.warnings,
-        row_check=record.row_check,
-        soql_draft=build_soql(record),
+    record = _with_draft(
+        _make_record(
+            row_check=RowCheck(status=ROW_CHECK_UNDER, rows=10, reason=None),
+            detail_columns=["Opportunity.MYSTERY"],
+            column_map=column_map,
+        )
     )
     path = tmp_path / "列の直し.xlsx"
     existing = {
@@ -280,38 +225,26 @@ def test_column_fix_xlsx_keeps_existing_rows_of_skipped_report(tmp_path: Path) -
     assert kept.note == "手で直した"
 
 
-def test_similar_soql_skips_skipped_reports() -> None:
-    """「似たSOQL」 の比較から対象外（1000件以下） を外す。"""
+def test_similar_soql_compares_small_reports() -> None:
+    """「似たSOQL」 の比較に、 件数が少ないレポートも入る。"""
     from src import soql_similar
 
     def _record(key: str, rows: int) -> ReportRecord:
-        record = _make_record(row_check=RowCheck(status=ROW_CHECK_UNDER, rows=rows, reason=None))
-        return ReportRecord(
-            key=key,
-            summary=record.summary,
-            report_id=record.report_id,
-            url=record.url,
-            main_object=record.main_object,
-            report=record.report,
-            objects=record.objects,
-            relations=record.relations,
-            column_map=record.column_map,
-            warnings=record.warnings,
-            row_check=record.row_check,
-            soql_draft=build_soql(record),
+        return _with_draft(
+            _make_record(row_check=RowCheck(status=ROW_CHECK_UNDER, rows=rows, reason=None))
         )
 
-    skipped = _record("1001", 10)
-    created = _record("1002", 5000)
-    found = soql_similar.find_similar_soql([skipped, created])
-    assert found == {}
+    small = _record("1001", 10)
+    other = _record("1002", 5000)
+    found = soql_similar.find_similar_soql([small, other])
+    assert found != {}
 
 
-def test_outcome_builds_skipped_draft() -> None:
-    """outcome を通した実行でも、 1000 件以下なら SOQL を作らない。
+def test_outcome_builds_draft_for_small_report() -> None:
+    """outcome を通した実行でも、 件数が少ないレポートの SOQL を作る。
 
     ``build_fetch_outcome`` が ``build_soql`` に渡す仮の ``ReportRecord`` に
-    ``row_check`` を入れないと、 この判定が効かない。
+    ``row_check`` を入れないと、 件数が反映されない。
     """
     from src.fetch.outcome import build_fetch_outcome
     from src.fetch.site_run import FetchState
@@ -358,8 +291,8 @@ def test_outcome_builds_skipped_draft() -> None:
     )
     assert outcome.record is not None
     assert outcome.record.soql_draft is not None
-    assert outcome.record.soql_draft.status == STATUS_SKIPPED
-    assert outcome.record.soql_draft.soql == ""
+    assert outcome.record.soql_draft.status == STATUS_CREATED
+    assert "FROM Opportunity" in outcome.record.soql_draft.soql
 
 
 # ── 件数の保存 ────────────────────────────────────────────────────────────
@@ -367,7 +300,7 @@ def test_outcome_builds_skipped_draft() -> None:
 
 @pytest.mark.parametrize("rows", [0, 1, 999, 1000])
 def test_analyze_uses_saved_rows_for_the_same_judgement(tmp_path: Path, rows: int) -> None:
-    """保存した件数から、 実行時と同じ判定 （ 飛ばす ） になる。"""
+    """保存した件数は、 実行時と同じ判定 （ 超えていない ） になる。"""
     from src.describe_store import DescribeStore
     from src.fetch.offline import OfflineClient
     from src.fetch.site_run import FetchState, run_within_site

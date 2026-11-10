@@ -30,7 +30,7 @@ ROW_CHECK_FORMAT_REASON = (
 
 
 # レポート row check の状態定数は ``src.row_check_status`` に置いている
-# （ ``src.soql_builder`` からも使うので、 循環 import を避けるため ）
+# （ ``src.fetch`` との循環 import を避けるため ）
 
 
 def check_row_count(client: Any, report_id: str) -> RowCheck:

@@ -41,7 +41,6 @@ from typing import TYPE_CHECKING, Any
 from comken.exceptions import ExcelError
 
 from src import mapping, xlsx_style
-from src.soql_builder import STATUS_SKIPPED
 
 if TYPE_CHECKING:
     from src.fetch import ReportRecord
@@ -781,10 +780,6 @@ def merge_and_write_after_run(
         # 「列の直しの適用」 と同じ主オブジェクトに揃えるため）
         main_object = record.soql_from_object or record.main_object
         if not main_object:
-            continue
-        # 1000 件以下で SOQL にしなかったレポートは、 未解決の列を新たに
-        # 追加しない（ 人の作業が増えないようにするため ）
-        if record.soql_draft is not None and record.soql_draft.status == STATUS_SKIPPED:
             continue
         for row in record.column_map:
             note = row["備考"]

@@ -624,18 +624,19 @@ def test_analyze_restores_all_row_check_statuses(
     assert str(row["行数"] or "") == expected_rows
 
 
-def test_analyze_skips_report_of_1000_rows_or_less(
+def test_analyze_makes_soql_for_report_of_1000_rows_or_less(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """件数が 1000 件以下でも SOQL を作る。"""
     file_paths = _setup(tmp_path, monkeypatch)
     client = _CountingClient(row_results={REPORT_A: 1000})
     assert run(["--fetch"], site_for=_site_for(client), file_paths=file_paths) == 0
 
     assert _analyze(file_paths) == 0
 
-    assert not list((file_paths.output_dir / "SOQLレポート").glob("*.py"))
+    assert list((file_paths.output_dir / "SOQLレポート").glob("*.py"))
     text = (file_paths.output_dir / "SOQL資料" / "1001.md").read_text(encoding="utf-8")
-    assert "1000件以下なので SOQL にしない" in text
+    assert "```sql" in text
 
 
 def test_analyze_fails_when_report_is_missing_and_warns_when_object_is_missing(

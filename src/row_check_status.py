@@ -1,9 +1,7 @@
 """``RowCheck`` （ 2000 行チェック ） の状態定数。
 
-``src.fetch.row_check`` と ``src.soql_builder`` の両方から使うので、 循環
-import が無い中立な場所に置いている。 ``src.fetch`` 側は
-``src.soql_builder`` を import するので、 定数を ``src.fetch`` 側に置くと
-import が循環する。
+``src.fetch.row_check`` から使う定数を、 ``src.fetch`` との循環 import が
+無い中立な場所に置いている。
 """
 
 from __future__ import annotations

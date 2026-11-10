@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING, Any
 from src import mapping
 from src.mapping.owner import OWNER_POLYMORPHIC_NOTE
 from src.mapping.row_status import auto_path_parts
-from src.row_check_status import ROW_CHECK_UNDER
 from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
@@ -43,12 +42,6 @@ STATUS_CREATED = "作成済み"
 STATUS_NEEDS_CHECK = "要確認"
 STATUS_PARTIAL = "一部作れず"
 STATUS_NONE = "作れず"
-
-# SOQL にしないレポートの状態。 件数が少ないので SOQL を作らない
-STATUS_SKIPPED = "対象外（1000件以下）"
-
-# この件数以下なら SOQL を作らない。 ちょうど 1000 件なら飛ばし、 1001 件は作る
-SOQL_SKIP_MAX_ROWS = 1000
 
 # 未完成 SOQL の 1 行目に置く印。 ダウンローダーがこの印を見て実行前に止める。
 # 変えるときはダウンローダーと同時に。 この行があると Salesforce に投げても
@@ -2218,8 +2211,6 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
 
     status の判定ルール:
 
-    - ``対象外（1000件以下）`` … 件数が ``SOQL_SKIP_MAX_ROWS`` 以下だった
-      とき。 SOQL は作らない
     - ``作れず`` … 主オブジェクト不明 (``main_object`` が空 / ``None``) または
       SELECT に入れられる列が 1 つも無い ( 全列 ``(不明)`` または全列
       ``missing`` のため SELECT から落ちた ) 。
@@ -2240,16 +2231,6 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
             status=STATUS_NONE,
             missing=("主オブジェクトが不明のため作れず",),
             checks=(),
-        )
-
-    # 件数が少ないレポートは SOQL にしない
-    skip_reason = _soql_skip_reason(record)
-    if skip_reason is not None:
-        return SoqlDraft(
-            soql="",
-            status=STATUS_SKIPPED,
-            missing=(),
-            checks=(skip_reason,),
         )
 
     # ``record.report`` は入口（``make_slim_report``）で形をそろえてある
@@ -2324,27 +2305,6 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
         bulk_blockers=tuple(bulk_blockers),
         cross_filter_links=tuple(links),
     )
-
-
-def _soql_skip_reason(record: ReportRecord) -> str | None:
-    """SOQL を作らない理由。 作るなら ``None`` 。
-
-    ``row_check.status`` が 「超えていない」 で、 件数が
-    ``SOQL_SKIP_MAX_ROWS`` 以下なら SOQL を作らない。 件数が分からないもの
-    （ 「超えている」 / 「判定不可」 / 未実施 / ``row_check`` なし ） は作る。
-    件数の分からないものを飛ばすとレポート以上の範囲を取る事故を防げないため。
-    """
-    row_check = getattr(record, "row_check", None)
-    if row_check is None:
-        return None
-    if row_check.status != ROW_CHECK_UNDER:
-        return None
-    rows = row_check.rows
-    if rows is None:
-        return None
-    if rows > SOQL_SKIP_MAX_ROWS:
-        return None
-    return f"1000件以下（{rows}件）なので SOQL にしない"
 
 
 def _record_main_describe(record: ReportRecord, main_object: str) -> dict[str, Any] | None:
