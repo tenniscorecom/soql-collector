@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,33 @@ logger = logging.getLogger(__name__)
 _ANNOUNCEMENT_TEXT = (
     "直すときは input/列の直し.xlsx の『直したSOQL列名』に書いて、解析.bat を実行してください。"
 )
+
+
+# 数値として書く列（見出し）
+NUMERIC_ID_COLUMN = "管理番号"
+NUMERIC_COUNT_COLUMNS: tuple[str, ...] = ("要対応・要確認の列数", "行数")
+
+# ASCII の数字だけで出来ている文字列（ 全角数字は数字と見ない ）
+_DIGITS_ONLY = re.compile(r"[0-9]+")
+
+
+def numeric_cell_value(header: str, value: str) -> str | int:
+    """Excel に書く値を、 列に応じて数値にする。
+
+    - ``管理番号``: 数字だけで先頭が 0 で無ければ ``int`` 。 先頭 0 付き
+      （ "001" ） や数字以外（ "A-1" ） は文字列のまま（ 0 が消えるのを防ぐ ）
+    - 件数の列: 数字だけなら ``int`` 。 空文字や 「未実施」 などはそのまま
+    - ほかの列: そのまま
+
+    並び替えは行を作る側で行うので、 数値にするだけなら並び順は変わらない
+    """
+    if header == NUMERIC_ID_COLUMN:
+        if _DIGITS_ONLY.fullmatch(value) and not value.startswith("0"):
+            return int(value)
+        return value
+    if header in NUMERIC_COUNT_COLUMNS and _DIGITS_ONLY.fullmatch(value):
+        return int(value)
+    return value
 
 
 def write_xlsx(
@@ -125,7 +153,7 @@ def _write_table(
             worksheet.cell(
                 row=start_row + 1 + row_offset,
                 column=start_col + col_offset,
-                value=row.get(header, ""),
+                value=numeric_cell_value(header, row.get(header, "")),
             )
     end_row = start_row + len(rows)
     end_col = start_col + len(headers) - 1

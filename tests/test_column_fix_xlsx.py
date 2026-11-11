@@ -14,6 +14,7 @@ import pytest
 from comken.exceptions import ExcelError
 
 from src.column_fix_xlsx import (
+    COLUMN_FIX_COLUMNS,
     STATUS_NEEDS_CHECK,
     STATUS_NEEDS_FIX,
     STATUS_OK,
@@ -97,6 +98,39 @@ def test_load_column_fix_raises_on_bad_header(tmp_path: Path) -> None:
 
     with pytest.raises(ExcelError):
         load_column_fix(path)
+
+
+def test_load_column_fix_reads_numeric_management_number_as_text(tmp_path: Path) -> None:
+    """Excel が数値で保存した管理番号は 文字列として読み戻す。
+
+    一覧シートの 管理番号 は数値で書く。 それを Excel でコピーすると 数値の
+    まま保存されるので、 読み戻した値が 管理番号の文字列 （ "1001" ） と
+    一致するようにする
+    """
+    from openpyxl import Workbook
+
+    path = tmp_path / "列の直し.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    if sheet is not None:
+        sheet.title = "列の直し"
+        sheet.append(list(COLUMN_FIX_COLUMNS))
+        for main_object, column_key, used_in_reports in (
+            ("Account", "Account.Name", 1001),
+            ("Account", "Account.Phone", 1002.0),
+        ):
+            values = dict.fromkeys(COLUMN_FIX_COLUMNS, "")
+            values["主オブジェクト"] = main_object
+            values["列キー"] = column_key
+            values["使っているレポート"] = used_in_reports
+            sheet.append([values[column] for column in COLUMN_FIX_COLUMNS])
+    workbook.save(path)
+
+    reloaded = load_column_fix(path)
+
+    # 管理番号の文字列キーと一致する
+    assert reloaded[("account", "Account.Name")].used_in_reports == "1001"
+    assert reloaded[("account", "Account.Phone")].used_in_reports == "1002"
 
 
 # ── 人の値が自動に勝つ（自動で取れた列でも） ───────

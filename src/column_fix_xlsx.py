@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 from comken.exceptions import ExcelError
 
 from src import mapping, xlsx_style
+from src.text_utils import coerce_str as _coerce_str
 
 if TYPE_CHECKING:
     from src.fetch import ReportRecord
@@ -175,8 +176,10 @@ def load_column_fix(
         )
     result: dict[tuple[str, str], ColumnFixRow] = {}
     for row in rows[1:]:
-        # 各セルを文字列に直す。 None は空文字
-        str_row = {h: ("" if v is None else str(v)) for h, v in zip(headers, row, strict=False)}
+        # 各セルを文字列に直す。 None は空文字。
+        # Excel は数字を数値として保存する（ 1001 は 1001 ） ので、 文字列の
+        # 管理番号 （ "1001" ） と突き合わせても取り違えない
+        str_row = {h: _coerce_str(v) for h, v in zip(headers, row, strict=False)}
         row_obj = ColumnFixRow.from_dict(str_row)
         if not row_obj.main_object or not row_obj.column_key:
             continue

@@ -53,18 +53,16 @@ def soql_status_for_record(record: ReportRecord) -> str:
 
 
 def soql_fetch_method_for_record(record: ReportRecord) -> str:
-    """取り方を 1 セル分にする。 ``Bulk`` / ``REST（理由）`` / 空文字。
+    """取り方を 1 セル分にする。 ``Bulk`` / ``REST`` / 空文字。
 
-    下書きが無ければ空文字。 REST のときは理由 （ 副問い合わせの件 ） を
-    括弧の中に付ける。
+    下書きが無ければ空文字。 REST にした理由 （ ``bulk_blockers`` ） は
+    生成 .py の ``USE_BULK`` のコメントと AI チャット用の Markdown 資料に
+    出すので、 ここでは出さない。
     """
     draft = record.soql_draft
     if draft is None:
         return ""
-    if draft.use_bulk:
-        return "Bulk"
-    reasons = "; ".join(draft.bulk_blockers)
-    return f"REST（{reasons}）"
+    return "Bulk" if draft.use_bulk else "REST"
 
 
 def cross_filter_links_for_record(record: ReportRecord) -> str:

@@ -294,7 +294,7 @@ def test_run_e2e_makes_soql_for_small_reports(tmp_path: Path) -> None:
     # 一覧の 「SOQLの状態」 にも出る
     sheets = _read_xlsx(proj / "output" / "SOQL調査.xlsx")
     overview = {r["管理番号"]: r for r in sheets["一覧"]}
-    assert overview["1001"]["SOQLの状態"] == "一部作れず"
+    assert overview[1001]["SOQLの状態"] == "一部作れず"
 
 
 def test_run_e2e_first_run_resolves_fullwidth_colon_and_related(tmp_path: Path) -> None:
@@ -470,7 +470,7 @@ def test_run_e2e_unresolved_user_value_is_need_check_in_both_files(
     # 3. 一覧シートの 「要対応・要確認の列数」 に MYSTERY が 1 件として入る
     overview = sheets["一覧"]
     by_overview_key = {r["管理番号"]: r for r in overview}
-    assert by_overview_key["1001"]["要対応・要確認の列数"] == "1"
+    assert by_overview_key[1001]["要対応・要確認の列数"] == 1
 
 
 # ── 列の直し.xlsx の見栄え （Issue 1） ──────────────────────────

@@ -286,17 +286,17 @@ def test_e2e_run_tables_writes_overview_and_columns_sheet(tmp_path: Path) -> Non
     # 一覧シート
     overview = sheets["一覧"]
     by_key = {row["管理番号"]: row for row in overview}
-    assert by_key["1001"]["2000件超"] == "超えている"
-    assert by_key["1002"]["2000件超"] == "超えていない"
-    assert by_key["1002"]["行数"] == "10"
+    assert by_key[1001]["2000件超"] == "超えている"
+    assert by_key[1002]["2000件超"] == "超えていない"
+    assert by_key[1002]["行数"] == 10
     # Contact.Email が 出力列にあるので 個人情報 は あり
-    assert by_key["1001"]["個人情報"] == "あり"
-    assert by_key["1002"]["個人情報"] == "あり"
+    assert by_key[1001]["個人情報"] == "あり"
+    assert by_key[1002]["個人情報"] == "あり"
     # 該当列に 「メール」 が出る
-    assert "メール" in str(by_key["1001"]["個人情報の該当列"])
+    assert "メール" in str(by_key[1001]["個人情報の該当列"])
     # 似たレポートの列に 「グループN: ... が基準」 の形で出る
-    assert "基準" in str(by_key["1001"]["似たレポート"])
-    assert "基準" in str(by_key["1002"]["似たレポート"])
+    assert "基準" in str(by_key[1001]["似たレポート"])
+    assert "基準" in str(by_key[1002]["似たレポート"])
 
     # 列の対応シート: Contact.Email も出る
     columns_sheet = sheets["列の対応"]

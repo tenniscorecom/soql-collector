@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 
-from src.fetch import RelationRecord, ReportRecord
+from src.describe_store import DescribeStore
+from src.fetch import RelationRecord, ReportRecord, RowCheck
+from src.row_check_status import ROW_CHECK_UNDER
 from src.soql_builder import (
     CROSS_FILTER_LINK_DIRECT,
     CROSS_FILTER_LINK_NOT_DIRECT,
@@ -319,9 +321,9 @@ def test_survey_basic(tmp_path: Path) -> None:
     assert headers == list(SURVEY_COLUMNS)
     assert len(data_rows) == 1
     row = dict(zip(headers, data_rows[0], strict=False))
-    assert row["管理番号"] == "1001"
+    assert row["管理番号"] == 1001
     assert row["主オブジェクト"] == "Opportunity"
-    assert row["要対応・要確認の列数"] == "1"
+    assert row["要対応・要確認の列数"] == 1
     assert row["SOQL資料"] == "SOQL資料/1001.md"
 
 
@@ -436,7 +438,7 @@ def test_survey_similar_group_text(tmp_path: Path) -> None:
     workbook.close()
     rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
     for row in rows:
-        if row["管理番号"] == "1001":
+        if row["管理番号"] == 1001:
             assert str(row["似たレポート"]).startswith("グループ")
         else:
             assert str(row["似たレポート"]).startswith("グループ")
@@ -482,8 +484,8 @@ def test_survey_similar_soql_column(tmp_path: Path) -> None:
     rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
     by_key = {row["管理番号"]: row for row in rows}
     # 両方向に出る。 違いは自分から見た向き
-    assert by_key["1001"]["似たSOQL"] == "1002: WHERE以降が同じ（SELECT 追加: Amount）"
-    assert by_key["1002"]["似たSOQL"] == "1001: WHERE以降が同じ（SELECT 削除: Amount）"
+    assert by_key[1001]["似たSOQL"] == "1002: WHERE以降が同じ（SELECT 追加: Amount）"
+    assert by_key[1002]["似たSOQL"] == "1001: WHERE以降が同じ（SELECT 削除: Amount）"
 
 
 def test_survey_similar_soql_column_is_empty_without_similar(tmp_path: Path) -> None:
@@ -534,7 +536,7 @@ def test_survey_includes_unresolved_count(tmp_path: Path) -> None:
     headers = [c.value for c in ws[3]]
     workbook.close()
     rows = [dict(zip(headers, row, strict=False)) for row in rows_iter]
-    assert rows[0]["要対応・要確認の列数"] == "1"
+    assert rows[0]["要対応・要確認の列数"] == 1
 
 
 # ── 列の対応シート ──────────────────────────────────────────────────────
@@ -909,7 +911,7 @@ def test_output_dir_missing_does_not_raise(tmp_path: Path) -> None:
 
 
 def test_survey_fetch_method_column(tmp_path: Path) -> None:
-    """一覧シートの 「取り方」 列に Bulk / REST（理由） が出る。"""
+    """一覧シートの 「取り方」 列に Bulk / REST が出る（ 理由は付けない ）。"""
     output = tmp_path / "output"
     output.mkdir()
     bulk_record = dataclasses.replace(
@@ -943,7 +945,8 @@ def test_survey_fetch_method_column(tmp_path: Path) -> None:
     rows = {str(row[0]): dict(zip(headers, row, strict=False)) for row in rows_iter}
 
     assert rows["1001"]["取り方"] == "Bulk"
-    assert rows["1002"]["取り方"] == "REST（サブクエリを使うため）"
+    # 理由は 生成 .py の USE_BULK のコメントと AI チャット用の Markdown 資料に書く
+    assert rows["1002"]["取り方"] == "REST"
 
 
 def test_survey_fetch_method_column_is_empty_without_draft(tmp_path: Path) -> None:
@@ -963,6 +966,117 @@ def test_survey_fetch_method_column_is_empty_without_draft(tmp_path: Path) -> No
 
     # 空のセルは Excel では None として読まれる
     assert not row["取り方"]
+
+
+def test_ai_chat_overview_csv_fetch_method_is_short(tmp_path: Path) -> None:
+    """AI チャット用の 一覧.csv も同じ行から作るので、 取り方も Bulk / REST だけ。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = dataclasses.replace(
+        _make_record("1001", main_object="Opportunity"),
+        soql_draft=SoqlDraft(
+            soql="SELECT Name FROM Opportunity",
+            status="要確認",
+            missing=(),
+            checks=(),
+            use_bulk=False,
+            bulk_blockers=("サブクエリを使うため",),
+        ),
+    )
+
+    run_tables(output, [record], describe_store=DescribeStore.empty())
+
+    text = (output / "AIチャット用" / "一覧.csv").read_text(encoding="utf-8-sig")
+    rows = list(csv.DictReader(text.splitlines()))
+    assert rows[0]["取り方"] == "REST"
+    # CSV は対象外なので、 管理番号は文字列のまま
+    assert rows[0]["管理番号"] == "1001"
+
+
+# ── 数値で書くセル ──────────────────────────────────────────────────────
+
+
+def _overview_row(output: Path) -> dict[str, object]:
+    """一覧シートの 1 行目を dict で読む。"""
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_OVERVIEW]
+    headers = [c.value for c in ws[3]]
+    data_rows = list(ws.iter_rows(min_row=4, values_only=True))
+    workbook.close()
+    return dict(zip(headers, data_rows[0], strict=False))
+
+
+def test_survey_management_number_is_number(tmp_path: Path) -> None:
+    """一覧シートの 管理番号 は 数値で書かれる（ 文字列にしない ）。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+
+    run_tables(output, [record])
+
+    row = _overview_row(output)
+    assert isinstance(row["管理番号"], int)
+    assert row["管理番号"] == 1001
+
+
+def test_survey_management_number_with_leading_zero_stays_text(tmp_path: Path) -> None:
+    """管理番号の先頭が 0 のときは 文字列のまま（ 0 が消えるのを防ぐ ）。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("001", main_object="Opportunity")
+
+    run_tables(output, [record])
+
+    row = _overview_row(output)
+    assert isinstance(row["管理番号"], str)
+    assert row["管理番号"] == "001"
+
+
+def test_survey_counts_are_numbers(tmp_path: Path) -> None:
+    """一覧シートの件数の列 （ 行数・要対応・要確認の列数 ） は 数値で書かれる。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = dataclasses.replace(
+        _make_record("1001", main_object="Opportunity"),
+        row_check=RowCheck(status=ROW_CHECK_UNDER, rows=1234, reason=None),
+    )
+
+    run_tables(output, [record])
+
+    row = _overview_row(output)
+    assert row["行数"] == 1234
+    assert row["要対応・要確認の列数"] == 1
+
+
+def test_survey_row_count_is_empty_when_unknown(tmp_path: Path) -> None:
+    """行数が分からないときは空のまま（ 数値にしない ）。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+
+    run_tables(output, [record])
+
+    row = _overview_row(output)
+    assert not row["行数"]
+
+
+def test_columns_sheet_management_number_is_number(tmp_path: Path) -> None:
+    """列の対応シートの 管理番号 も 数値で書かれる。"""
+    output = tmp_path / "output"
+    output.mkdir()
+    record = _make_record("1001", main_object="Opportunity")
+
+    run_tables(output, [record])
+
+    workbook = load_workbook(output / XLSX_NAME)
+    ws = workbook[SHEET_COLUMNS]
+    headers = [c.value for c in ws[3]]
+    data_rows = list(ws.iter_rows(min_row=4, values_only=True))
+    workbook.close()
+    row = dict(zip(headers, data_rows[0], strict=False))
+
+    assert isinstance(row["管理番号"], int)
+    assert row["管理番号"] == 1001
 
 
 # ── 一覧シートの 「クロスフィルタの繋がり」 列 ───────────────────────────

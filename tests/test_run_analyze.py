@@ -518,8 +518,8 @@ def test_analyze_warns_when_object_describe_is_missing(
     # 主オブジェクトは不明（ 普通の実行の 404 と同じ形 ）
     sheets = _read_xlsx(out / "SOQL調査.xlsx")
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
-    assert overview["1001"]["主オブジェクト"] == "(不明)"
-    assert overview["1001"]["SOQLの状態"] == STATUS_NONE
+    assert overview[1001]["主オブジェクト"] == "(不明)"
+    assert overview[1001]["SOQLの状態"] == STATUS_NONE
 
 
 def test_analyze_missing_object_describe_has_same_record_as_normal_404(tmp_path: Path) -> None:
@@ -603,7 +603,7 @@ def test_analyze_uses_column_key_candidate_when_report_type_is_missing(
     assert code == 0
     sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
-    assert overview["1001"]["主オブジェクト"] == "Account"
+    assert overview[1001]["主オブジェクト"] == "Account"
     # (a) の失敗は (b) が成功したときは出さない（ 普通の実行と同じ挙動 ）
     assert "オブジェクト CustomType__c" not in caplog.text
 
@@ -635,7 +635,7 @@ def test_analyze_uses_org_of_connected_site_not_saved_file_name(
 
     sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
-    assert overview["1001"]["主オブジェクト"] == "Account"
+    assert overview[1001]["主オブジェクト"] == "Account"
 
 
 def test_analyze_option_is_read_from_sys_argv(tmp_path: Path, monkeypatch: Any) -> None:
@@ -693,8 +693,8 @@ def test_analyze_does_not_call_row_count_api(tmp_path: Path, monkeypatch: Any) -
 
     sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
-    assert overview["1001"]["2000件超"] == "未実施"
-    assert overview["1001"]["行数"] == ""
+    assert overview[1001]["2000件超"] == "未実施"
+    assert overview[1001]["行数"] == ""
 
 
 def test_analyze_does_not_change_saved_data(tmp_path: Path, monkeypatch: Any) -> None:
@@ -941,7 +941,7 @@ def test_analyze_uses_master_over_2000_column(tmp_path: Path, monkeypatch: Any) 
 
     sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
-    assert overview["1001"]["取り方"] == "Bulk"
+    assert overview[1001]["取り方"] == "Bulk"
 
 
 def test_analyze_uses_master_not_over_2000_column(tmp_path: Path, monkeypatch: Any) -> None:
@@ -952,8 +952,8 @@ def test_analyze_uses_master_not_over_2000_column(tmp_path: Path, monkeypatch: A
 
     sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
-    assert overview["1001"]["取り方"].startswith("REST（")
-    assert "1000 件以下" in overview["1001"]["取り方"]
+    # 一覧シートの 「取り方」 には理由を付けない（ 理由は 生成 .py と Markdown 資料 ）
+    assert overview[1001]["取り方"] == "REST"
 
 
 # ── 管理表の「集計形式」列 ────────────────────────────────────────────────
@@ -1036,9 +1036,9 @@ def test_analyze_shows_master_report_format_in_overview(tmp_path: Path, monkeypa
 
     sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
-    assert overview["1001"]["集計形式（管理表）"] == "サマリー"
+    assert overview[1001]["集計形式（管理表）"] == "サマリー"
     # 食い違人心的警告も 一覧の 「警告」 列に出る
-    assert "管理表の集計形式は サマリー だが、レポートは TABULAR" in overview["1001"]["警告"]
+    assert "管理表の集計形式は サマリー だが、レポートは TABULAR" in overview[1001]["警告"]
 
 
 def test_analyze_shows_master_report_format_in_markdown(tmp_path: Path, monkeypatch: Any) -> None:
@@ -1118,7 +1118,7 @@ def test_analyze_shows_master_uses_rpa_in_overview(tmp_path: Path, monkeypatch: 
 
     sheets = _read_xlsx(tmp_path / "output" / "SOQL調査.xlsx")
     overview = {row["管理番号"]: row for row in sheets["一覧"]}
-    assert overview["1001"]["RPA使用（管理表）"] == "○"
+    assert overview[1001]["RPA使用（管理表）"] == "○"
 
 
 def test_analyze_shows_master_uses_rpa_in_markdown(tmp_path: Path, monkeypatch: Any) -> None:
