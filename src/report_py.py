@@ -2,7 +2,7 @@
 
 ``OUTPUT_DIR/SOQLレポート/report_<管理番号>.py`` に書く。 中身は
 ``SoqlReport`` のサブクラスで、 そのままダウンローダーの
-``src/soql_reports/reports/`` に置けば動く。
+``src/reports/`` に置けば動く。
 
 **文字列はすべて ``repr()`` を通して組み立てる。** レポートから来た値
 （概要・レポート名・レポート ID・missing・checks・表示名） をそのまま書くと、
@@ -114,7 +114,7 @@ def build_report_py_source(record: ReportRecord, class_name: str) -> str | None:
     if column_names:
         lines.append("from typing import ClassVar")
         lines.append("")
-    lines.append("from src.soql_reports.base import SoqlReport")
+    lines.append("from src.reports.base import SoqlReport")
     lines.append("")
     lines.append(f"# 状態: {draft.status}")
     for link in draft.cross_filter_links:

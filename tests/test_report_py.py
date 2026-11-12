@@ -1,7 +1,7 @@
 """``src.report_py`` のテスト。
 
 ダウンローダー用の SOQL レポート Python ファイルが、 そのまま
-``src/soql_reports/reports/`` に置ける形で書かれることを確かめる。
+``src/reports/`` に置ける形で書かれることを確かめる。
 生成されたコードは ``compile()`` → ``ast`` → ``exec()`` の順で読み、 値が
 コードとして実行されないことも確かめる。
 """
@@ -161,22 +161,20 @@ def _report_id_of(url: str) -> str:
 def _load_generated(source: str) -> dict[str, object]:
     """生成した Python を実行して、 モジュールの名前空間返す。
 
-    ダウンローダーの ``src.soql_reports.base`` は Fake を ``sys.modules`` に
+    ダウンローダーの ``src.reports.base`` は Fake を ``sys.modules`` に
     入れて代用する。
     """
-    base_module = types.ModuleType("src.soql_reports.base")
+    base_module = types.ModuleType("src.reports.base")
 
     class SoqlReport:
         KEY: ClassVar[str] = ""
         COLUMN_NAMES: ClassVar[dict[str, str]] = {}
 
     base_module.SoqlReport = SoqlReport  # type: ignore[attr-defined]
-    package_module = types.ModuleType("src.soql_reports")
-    saved = {
-        name: sys.modules.get(name) for name in ("src", "src.soql_reports", "src.soql_reports.base")
-    }
-    sys.modules["src.soql_reports"] = package_module
-    sys.modules["src.soql_reports.base"] = base_module
+    package_module = types.ModuleType("src.reports")
+    saved = {name: sys.modules.get(name) for name in ("src", "src.reports", "src.reports.base")}
+    sys.modules["src.reports"] = package_module
+    sys.modules["src.reports.base"] = base_module
     namespace: dict[str, object] = {"__name__": "generated_report"}
     try:
         exec(compile(source, "<generated>", "exec"), namespace)
