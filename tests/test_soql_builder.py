@@ -445,7 +445,7 @@ def test_where_contains_multiple_becomes_or_group() -> None:
 
 
 def test_where_not_contain_becomes_and_of_not_like() -> None:
-    """``notContain`` は ``( NOT X LIKE '%v%')`` を AND で並べる。"""
+    """``notContain`` は ``(NOT X LIKE '%v%')`` を 1 つずつ括弧で囲んで AND で並べる。"""
     column_map = _column_map_with_types([("Name", "Name", "string")])
     record = _make_record(
         detail_columns=["Name"],
@@ -453,8 +453,8 @@ def test_where_not_contain_becomes_and_of_not_like() -> None:
         report_filters=[{"column": "Name", "operator": "notContain", "value": "ac,foo"}],
     )
     draft = build_soql(record)
-    # ``( NOT (Name LIKE '%ac%') AND NOT (Name LIKE '%foo%') )`` という括弧付きの表現
-    assert "( NOT (Name LIKE '%ac%') AND NOT (Name LIKE '%foo%') )" in draft.soql.replace(
+    # ``((NOT Name LIKE '%ac%') AND (NOT Name LIKE '%foo%'))`` という括弧付きの表現
+    assert "((NOT Name LIKE '%ac%') AND (NOT Name LIKE '%foo%'))" in draft.soql.replace(
         "\n  AND\n  ", " AND "
     )
 
@@ -589,8 +589,8 @@ def test_value_date_with_number_keeps_as_is() -> None:
     assert "WHERE CloseDate = LAST_N_DAYS:30" in draft.soql
 
 
-def test_value_datetime_becomes_utc_midnight_and_adds_check() -> None:
-    """datetime で日付だけの値は ``YYYY-MM-DDT00:00:00Z`` に拡張し checks に追加。"""
+def test_value_datetime_becomes_jst_midnight_and_adds_check() -> None:
+    """datetime で日付だけの値は ``YYYY-MM-DDT00:00:00+09:00`` に拡張し checks に追加。"""
     column_map = _column_map_with_types([("CloseDateTime__c", "CloseDateTime__c", "datetime")])
     record = _make_record(
         detail_columns=["CloseDateTime__c"],
@@ -600,8 +600,8 @@ def test_value_datetime_becomes_utc_midnight_and_adds_check() -> None:
         ],
     )
     draft = build_soql(record)
-    assert "WHERE CloseDateTime__c >= 2025-01-01T00:00:00Z" in draft.soql
-    assert any("日時の条件をタイムゾーン無しの UTC 0 時で置き換えた" in c for c in draft.checks)
+    assert "WHERE CloseDateTime__c >= 2025-01-01T00:00:00+09:00" in draft.soql
+    assert any("日時の条件を日本時間の 0 時として扱った" in c for c in draft.checks)
 
 
 def test_value_datetime_relative_literal_keeps_as_is() -> None:
@@ -832,8 +832,8 @@ def test_standard_date_filter_empty_duration_emits_nothing() -> None:
     assert "WHERE" not in draft.soql
 
 
-def test_standard_date_filter_datetime_uses_utc_with_checks() -> None:
-    """datetime 型の日付条件は ``YYYY-MM-DDT00:00:00Z`` に拡張し checks に追加。"""
+def test_standard_date_filter_datetime_uses_jst_with_checks() -> None:
+    """datetime 型の日付条件は ``YYYY-MM-DDT00:00:00+09:00`` に拡張し checks に追加。"""
     column_map = _column_map_with_types([("CloseDateTime__c", "CloseDateTime__c", "datetime")])
     record = _make_record(
         detail_columns=["CloseDateTime__c"],
@@ -846,9 +846,9 @@ def test_standard_date_filter_datetime_uses_utc_with_checks() -> None:
         },
     )
     draft = build_soql(record)
-    assert "CloseDateTime__c >= 2025-01-01T00:00:00Z" in draft.soql
-    assert "CloseDateTime__c <= 2025-01-31T23:59:59Z" in draft.soql
-    assert any("UTC" in c for c in draft.checks)
+    assert "CloseDateTime__c >= 2025-01-01T00:00:00+09:00" in draft.soql
+    assert "CloseDateTime__c <= 2025-01-31T23:59:59+09:00" in draft.soql
+    assert any("日本時間" in c for c in draft.checks)
 
 
 def test_standard_date_filter_unresolved_column_omitted() -> None:
@@ -1871,7 +1871,7 @@ def test_date_value_with_nonexistent_date_goes_to_missing() -> None:
 
 
 def test_datetime_value_with_slash_is_normalized_to_dash() -> None:
-    """datetime 値の ``/`` 区切りも ``-`` に直して ``T00:00:00Z`` を付ける。"""
+    """datetime 値の ``/`` 区切りも ``-`` に直して ``T00:00:00+09:00`` を付ける。"""
     column_map = _column_map_with_types([("CloseDateTime__c", "CloseDateTime__c", "datetime")])
     record = _make_record(
         detail_columns=["CloseDateTime__c"],
@@ -1885,7 +1885,7 @@ def test_datetime_value_with_slash_is_normalized_to_dash() -> None:
         ],
     )
     draft = build_soql(record)
-    assert "CloseDateTime__c >= 2025-01-01T00:00:00Z" in draft.soql
+    assert "CloseDateTime__c >= 2025-01-01T00:00:00+09:00" in draft.soql
     assert "2025/01/01" not in draft.soql
 
 
@@ -2548,7 +2548,7 @@ def test_not_contain_alias_is_normalized() -> None:
             report_filters=[{"column": "Name", "operator": operator, "value": "ac"}],
         )
         draft = build_soql(record)
-        assert "NOT (Name LIKE '%ac%')" in draft.soql, operator
+        assert "(NOT Name LIKE '%ac%')" in draft.soql, operator
 
 
 def test_unsupported_operator_is_still_missing() -> None:
@@ -2619,10 +2619,10 @@ def _datetime_record(operator: str, value: str) -> ReportRecord:
 def test_datetime_comparison_uses_start_or_end_of_day() -> None:
     """日付だけの値は、 演算子に応じて 0 時 / 終端 を使う。"""
     cases = [
-        ("greaterOrEqual", "WHERE Done__c >= 2025-01-01T00:00:00Z"),
-        ("lessThan", "WHERE Done__c < 2025-01-01T00:00:00Z"),
-        ("lessOrEqual", "WHERE Done__c <= 2025-01-01T23:59:59Z"),
-        ("greaterThan", "WHERE Done__c > 2025-01-01T23:59:59Z"),
+        ("greaterOrEqual", "WHERE Done__c >= 2025-01-01T00:00:00+09:00"),
+        ("lessThan", "WHERE Done__c < 2025-01-01T00:00:00+09:00"),
+        ("lessOrEqual", "WHERE Done__c <= 2025-01-01T23:59:59+09:00"),
+        ("greaterThan", "WHERE Done__c > 2025-01-01T23:59:59+09:00"),
     ]
     for operator, expected in cases:
         draft = build_soql(_datetime_record(operator, "2025-01-01"))
@@ -2632,16 +2632,18 @@ def test_datetime_comparison_uses_start_or_end_of_day() -> None:
 def test_datetime_equals_becomes_day_range() -> None:
     """``equals`` は、 その日の 0 時〜終端の範囲になる。"""
     draft = build_soql(_datetime_record("equals", "2025-01-01"))
-    assert "WHERE ( Done__c >= 2025-01-01T00:00:00Z AND Done__c <= 2025-01-01T23:59:59Z )" in (
-        draft.soql
+    assert (
+        "WHERE ( Done__c >= 2025-01-01T00:00:00+09:00"
+        " AND Done__c <= 2025-01-01T23:59:59+09:00 )" in draft.soql
     )
 
 
 def test_datetime_not_equal_becomes_outside_range() -> None:
     """``notEqual`` は、 その日の 0 時〜終端の外側になる。"""
     draft = build_soql(_datetime_record("notEqual", "2025-01-01"))
-    assert "WHERE ( Done__c < 2025-01-01T00:00:00Z OR Done__c > 2025-01-01T23:59:59Z )" in (
-        draft.soql
+    assert (
+        "WHERE ( Done__c < 2025-01-01T00:00:00+09:00"
+        " OR Done__c > 2025-01-01T23:59:59+09:00 )" in draft.soql
     )
 
 
@@ -2649,9 +2651,10 @@ def test_datetime_multiple_values_are_joined_with_or() -> None:
     """``equals`` の複数値は OR でつなぐ。"""
     draft = build_soql(_datetime_record("equals", "2025-01-01,2025-02-02"))
     assert (
-        "WHERE ( ( Done__c >= 2025-01-01T00:00:00Z AND Done__c <= 2025-01-01T23:59:59Z )"
-        " OR ( Done__c >= 2025-02-02T00:00:00Z AND Done__c <= 2025-02-02T23:59:59Z ) )"
-        in draft.soql
+        "WHERE ( ( Done__c >= 2025-01-01T00:00:00+09:00"
+        " AND Done__c <= 2025-01-01T23:59:59+09:00 )"
+        " OR ( Done__c >= 2025-02-02T00:00:00+09:00"
+        " AND Done__c <= 2025-02-02T23:59:59+09:00 ) )" in draft.soql
     )
 
 
@@ -2659,9 +2662,63 @@ def test_datetime_not_equal_multiple_values_are_joined_with_and() -> None:
     """``notEqual`` の複数値は AND でつなぐ。"""
     draft = build_soql(_datetime_record("notEqual", "2025-01-01,2025-02-02"))
     assert (
-        "WHERE ( ( Done__c < 2025-01-01T00:00:00Z OR Done__c > 2025-01-01T23:59:59Z )"
-        " AND ( Done__c < 2025-02-02T00:00:00Z OR Done__c > 2025-02-02T23:59:59Z ) )" in draft.soql
+        "WHERE ( ( Done__c < 2025-01-01T00:00:00+09:00"
+        " OR Done__c > 2025-01-01T23:59:59+09:00 )"
+        " AND ( Done__c < 2025-02-02T00:00:00+09:00"
+        " OR Done__c > 2025-02-02T23:59:59+09:00 ) )" in draft.soql
     )
+
+
+def test_datetime_boundary_is_japan_time() -> None:
+    """日付だけの値を日時に使うとき、 境界は日本時間（ ``+09:00`` ） で書く。
+
+    レポートの絞り込みは日本時間なので、 UTC の 0 時だと 9 時間ずれる。
+    """
+    cases = [
+        ("greaterOrEqual", "2025-01-01T00:00:00+09:00"),
+        ("lessOrEqual", "2025-01-01T23:59:59+09:00"),
+    ]
+    for operator, expected in cases:
+        draft = build_soql(_datetime_record(operator, "2025-01-01"))
+        assert expected in draft.soql, operator
+        # UTC の ``Z`` 表記は残さない
+        assert "T00:00:00Z" not in draft.soql, operator
+        assert "T23:59:59Z" not in draft.soql, operator
+
+
+def test_datetime_equals_and_not_equal_boundaries_are_japan_time() -> None:
+    """``equals`` / ``notEqual`` の 1 日の区間も日本時間。"""
+    equals = build_soql(_datetime_record("equals", "2025-01-01"))
+    assert "2025-01-01T00:00:00+09:00" in equals.soql
+    assert "2025-01-01T23:59:59+09:00" in equals.soql
+    not_equal = build_soql(_datetime_record("notEqual", "2025-01-01"))
+    assert "2025-01-01T00:00:00+09:00" in not_equal.soql
+    assert "2025-01-01T23:59:59+09:00" in not_equal.soql
+
+
+def test_not_contain_single_value_puts_not_inside_the_parentheses() -> None:
+    """``notContain`` 1 値は ``(NOT f LIKE '%v%')`` 。 ``NOT (f LIKE ...)`` は通らない。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "notContain", "value": "ac"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE (NOT Name LIKE '%ac%')" in draft.soql
+    assert "NOT (Name LIKE" not in draft.soql
+
+
+def test_not_contain_multiple_values_keep_and_between_them() -> None:
+    """``notContain`` の複数値は、 NOT LIKE を 1 つずつ括弧で囲んで AND でつなぐ。"""
+    column_map = _column_map_with_types([("Name", "Name", "string")])
+    record = _make_record(
+        detail_columns=["Name"],
+        column_map=column_map,
+        report_filters=[{"column": "Name", "operator": "notContain", "value": "ac,foo"}],
+    )
+    draft = build_soql(record)
+    assert "WHERE ((NOT Name LIKE '%ac%') AND (NOT Name LIKE '%foo%'))" in draft.soql
 
 
 def test_datetime_relative_literal_is_kept_as_is() -> None:
@@ -2728,7 +2785,7 @@ def test_like_starts_with_multiple_values_becomes_or_group() -> None:
     [
         ("contains", "Name LIKE '%a\\nb%'"),
         ("startsWith", "Name LIKE 'a\\nb%'"),
-        ("notContain", "NOT (Name LIKE '%a\\nb%')"),
+        ("notContain", "(NOT Name LIKE '%a\\nb%')"),
     ],
 )
 def test_like_escapes_newline_in_value(operator: str, expected: str) -> None:

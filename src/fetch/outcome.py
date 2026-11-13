@@ -83,6 +83,8 @@ def build_fetch_outcome(
             cross_filter_objects=state.cross_filter_objects,
             soql_from_object=state.soql_from_object,
             soql_from_relationship=state.soql_from_relationship,
+            child_subquery=state.child_subquery,
+            child_subquery_checks=state.child_subquery_checks,
         )
     )
 
@@ -103,6 +105,8 @@ def build_fetch_outcome(
         cross_filter_objects=state.cross_filter_objects,
         soql_from_object=state.soql_from_object,
         soql_from_relationship=state.soql_from_relationship,
+        child_subquery=state.child_subquery,
+        child_subquery_checks=state.child_subquery_checks,
         org=state.org,
         source_times=state.source_times,
         exceeds_row_limit=entry.exceeds_row_limit,

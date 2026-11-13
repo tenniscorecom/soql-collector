@@ -105,7 +105,7 @@ def apply_child_base(
     if not main_object:
         return ChildBaseResult(switched=False, column_map=column_map)
 
-    relationships = _child_relationships(main_describe)
+    relationships = child_relationships(main_describe)
     if not relationships:
         return ChildBaseResult(switched=False, column_map=column_map)
 
@@ -124,16 +124,16 @@ def apply_child_base(
         _apply_note([row for rows in matched_rows.values() for row in rows], note)
         return ChildBaseResult(switched=False, column_map=column_map, notes=(note,))
 
-    child_object, child_relationships = next(iter(matched.items()))
-    if len(child_relationships) > 1:
+    child_object, child_rel_list = next(iter(matched.items()))
+    if len(child_rel_list) > 1:
         candidates = ", ".join(
-            sorted({_relationship_label(relationship) for relationship in child_relationships})
+            sorted({_relationship_label(relationship) for relationship in child_rel_list})
         )
         note = NOTE_AMBIGUOUS_REFERENCE.format(candidates=candidates)
         _apply_note(matched_rows[child_object], note)
         return ChildBaseResult(switched=False, column_map=column_map, notes=(note,))
 
-    relationship = child_relationships[0]
+    relationship = child_rel_list[0]
     child_describe = fetch_object(child_object) if fetch_object is not None else None
     if child_describe is None:
         note = NOTE_NO_CHILD_DESCRIBE.format(child=child_object)
@@ -181,7 +181,7 @@ def _collect_matching_children(
     対象は 「列キーの最初の ``.`` より前が子に一致し、 かつ主オブジェクト名と
     一致しない行」 。 解決済みかどうかには依存しない。
     さらに、 その接頭辞が 主オブジェクトの親参照にも一致する行は
-    （ ``_is_parent_reference_prefix`` ） 対象から外す。
+    （ ``is_parent_reference_prefix`` ） 対象から外す。
 
     戻り値は ``(子オブジェクト名 -> リレーションのリスト, 子オブジェクト名 ->
     対象にした列のリスト)`` 。
@@ -196,7 +196,7 @@ def _collect_matching_children(
         prefix = _column_prefix(column_key)
         if not prefix or _is_main_object_prefix(prefix, main_object):
             continue
-        if _is_parent_reference_prefix(prefix, main_describe):
+        if is_parent_reference_prefix(prefix, main_describe):
             continue
         for relationship in relationships:
             if not _relationship_matches_prefix(relationship, prefix):
@@ -213,7 +213,7 @@ def _collect_matching_children(
     return matched, matched_rows
 
 
-def _parent_reference_prefixes(main_describe: dict[str, Any] | None) -> set[str]:
+def parent_reference_prefixes(main_describe: dict[str, Any] | None) -> set[str]:
     """主オブジェクトの「親参照」（ 主が参照している先） の接頭辞を小文字で集める。
 
     主オブジェクトの項目の ``relationshipName`` と ``referenceTo`` から作る。
@@ -240,7 +240,7 @@ def _parent_reference_prefixes(main_describe: dict[str, Any] | None) -> set[str]
     return prefixes
 
 
-def _is_parent_reference_prefix(prefix: str, main_describe: dict[str, Any] | None) -> bool:
+def is_parent_reference_prefix(prefix: str, main_describe: dict[str, Any] | None) -> bool:
     """列キーの接頭辞が 主オブジェクトの親参照にも一致するか。
 
     主オブジェクトの項目の ``relationshipName`` が接頭辞と一致するか、
@@ -250,7 +250,7 @@ def _is_parent_reference_prefix(prefix: str, main_describe: dict[str, Any] | Non
     text = prefix.strip().lower()
     if not text:
         return False
-    return text in _parent_reference_prefixes(main_describe)
+    return text in parent_reference_prefixes(main_describe)
 
 
 def _relationship_key(relationship: dict[str, Any]) -> tuple[str, str, str]:
@@ -383,7 +383,7 @@ def _is_child_row(
     列キーの最初の ``.`` より前が子に一致し、 かつ主オブジェクト名と一致
     しないときが子の列。 解決済みかどうかには依存しない。
     さらに、 その接頭辞が 主オブジェクトの親参照にも一致するなら
-    （ ``_is_parent_reference_prefix`` ） 子の列ではない。
+    （ ``is_parent_reference_prefix`` ） 子の列ではない。
     """
     column_key = row.get("列キー", "")
     if "." not in column_key:
@@ -393,7 +393,7 @@ def _is_child_row(
         return False
     if prefix == main_object.strip().lower():
         return False
-    return not _is_parent_reference_prefix(prefix, main_describe)
+    return not is_parent_reference_prefix(prefix, main_describe)
 
 
 def _rewrite_child_column(
@@ -461,7 +461,7 @@ def _column_prefix(column_key: str) -> str:
     return column_key.split(".", 1)[0].strip()
 
 
-def _child_relationships(main_describe: dict[str, Any] | None) -> list[dict[str, Any]]:
+def child_relationships(main_describe: dict[str, Any] | None) -> list[dict[str, Any]]:
     """describe の ``childRelationships`` を dict のリストで返す。"""
     if not main_describe:
         return []

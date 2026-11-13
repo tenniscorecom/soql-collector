@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -504,6 +504,7 @@ def apply_overrides(
     warnings: list[str],
     *,
     fetch_object: Callable[[str], dict[str, Any] | None] | None = None,
+    skip_column_keys: Sequence[str] = (),
 ) -> list[dict[str, str]]:
     """``column_map`` の各行に ``列の直し.xlsx`` の上書きを適用する。
 
@@ -518,14 +519,19 @@ def apply_overrides(
       ヒントを ``warnings`` に足す （値はそのまま使う）
     - たどれなかったときは備考に 「人が直した（要確認: たどれない）」 と付け、
       ``tables`` 側で要確認として数えられるようにする
+    - ``skip_column_keys`` にある列キーは、 別の側で上書きするので触らない
     - 鍵は **``main_object``** （主オブジェクト） 。 同じ ``Opp.Account.Name``
       でも 「所属オブジェクト」 は ``Account`` と ``Opportunity`` で変わる一方、
       SOQL の起点は主オブジェクトなので
     """
+    skipped = set(skip_column_keys)
     new_rows: list[dict[str, str]] = []
     for row in column_map_rows:
         column_key = row["列キー"]
         if not main_object or not column_key:
+            new_rows.append(dict(row))
+            continue
+        if column_key in skipped:
             new_rows.append(dict(row))
             continue
         override = existing.get(_normalize_key(main_object, column_key))

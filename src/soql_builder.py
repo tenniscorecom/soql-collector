@@ -28,6 +28,7 @@ from datetime import date as _date
 from typing import TYPE_CHECKING, Any
 
 from src import mapping
+from src.mapping.child_subquery import ChildSubquery
 from src.mapping.owner import OWNER_POLYMORPHIC_NOTE
 from src.mapping.row_status import auto_path_parts
 from src.row_size import (
@@ -64,6 +65,32 @@ CROSS_FILTER_MAX_SUBQUERIES: int = 2
 # するときの理由。 ``SoqlDraft.bulk_blockers`` に入る。
 BULK_BLOCKER_SUBQUERY: str = (
     "WHERE の副問い合わせを Bulk API 2.0 で動作確認していないため REST で取る"
+)
+
+# 子の副問い合わせ （ ``SELECT (SELECT ... FROM Contacts) FROM Account`` ） を
+# Bulk API 2.0 で取れないため、 REST にするときの理由。
+# ``SoqlDraft.bulk_blockers`` に入る。
+BULK_BLOCKER_CHILD_SUBQUERY: str = (
+    "子の副問い合わせのため（Bulk API 2.0 は子の副問い合わせを受け付けない）"
+)
+
+# 子の副問い合わせにしたときの注意書き。 ``SoqlDraft.checks`` に入る。
+CHILD_SUBQUERY_CHECK: str = (
+    "子の副問い合わせにした（親 {parent}、子リレーション {relation}）。"
+    "子が0件の親も1行出る。レポートと件数を確かめる"
+)
+
+# 子の副問い合わせにしたときの、 件数用の COUNT() についての注意書き。
+# ``SoqlDraft.checks`` に入る。
+CHILD_SUBQUERY_COUNT_CHECK: str = (
+    "件数用の COUNT() は子の副問い合わせを含まないので、親の件数になる"
+)
+
+# 子の副問い合わせにしたときの、 行数についての注意書き。
+# ``SoqlDraft.checks`` に入る。
+CHILD_SUBQUERY_ROWS_CHECK: str = (
+    f"子の副問い合わせは 1 親につき子の行数だけ行が出る。REST で取るので、"
+    f"本番の行数が {REST_MAX_ROWS_WITH_SUBQUERY} 件を超えるなら SOQL を分ける"
 )
 
 # 件数が 1000 件以下なので、 通常 SOQL で取るときの理由。 根拠（ 管理表か
@@ -136,12 +163,18 @@ _DATE_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# 日時として 相対日付リテラル / 日付 → ``YYYY-MM-DDT00:00:00Z`` に変換する型
+# 日時として 相対日付リテラル / 日付 → ``YYYY-MM-DDT00:00:00+09:00`` に変換する型
 _DATETIME_TYPES: frozenset[str] = frozenset(
     {
         "datetime",
     }
 )
+
+# 日時の境界に使う日本時の時差。 レポートの絞り込みは日本時間 （ 業務上の
+# 1 日は 0 時〜23:59:59 JST ） なので、 日付だけの値を日時の値にするときも
+# 日本時間として扱う。 UTC の 0 時だと 9 時間ずれて、 レポートと違う範囲を
+# 取ってしまうため、 時差つきの表記 （ ``+09:00`` ） にする
+JST_UTC_OFFSET: str = "+09:00"
 
 # boolean として true / false を書く型
 _BOOLEAN_TYPES: frozenset[str] = frozenset(
@@ -428,8 +461,8 @@ class SoqlDraft:
             Closed (省いたので件数が増える可能性)」 。
         checks: 人が実行前に確認すべき事項 (1 件 1 要素)。 例: 「ス
             コープ=MyTerritory: 実行ユーザーで結果が変わる。 OwnerId 等
-            の条件を足すか確認」 「日時の条件をタイムゾーン無しの UTC 0 時
-            で置き換えた: CloseDate >= 2025-01-01」 。
+            の条件を足すか確認」 「日時の条件を日本時間の 0 時として扱った:
+            CloseDate >= 2025-01-01」 。
         count_soql: 件数チェック用に ``SELECT COUNT()`` へ書き換えた SOQL
             (``FROM`` / ``WHERE`` は同じ、 ``ORDER BY`` と ``LIMIT`` は
             付けない )。 ``build_soql`` が ``作れず`` のときは空文字。
@@ -785,10 +818,10 @@ def _format_date_value(value: str, field_name: str) -> tuple[str, list[str], lis
     )
 
 
-def _datetime_utc_check(field_name: str, raw_value: str, literal: str, boundary: str) -> str:
-    """日時の値を UTC 境界に置き換えたときの checks メッセージ。"""
+def _datetime_jst_check(field_name: str, raw_value: str, literal: str, boundary: str) -> str:
+    """日時の値を日本時間の境界に置き換えたときの checks メッセージ。"""
     return (
-        f"日時の条件をタイムゾーン無しの {boundary}で置き換えた: "
+        f"日時の条件を日本時間の {boundary}として扱った: "
         f"{field_name} の {raw_value!r} を {literal} に"
     )
 
@@ -798,9 +831,9 @@ def _format_datetime_value(
     field_name: str,
     operator: str = "",
 ) -> tuple[str, list[str], list[str]]:
-    """datetime 系の値を ``YYYY-MM-DDT00:00:00Z`` または相対日付リテラルにして返す。
+    """datetime 系の値を ``YYYY-MM-DDT00:00:00+09:00`` または相対日付リテラルにして返す。
 
-    日付だけの値は UTC 境界に拡張して checks にメッセージを足す。 境界は
+    日付だけの値は日本時間の境界に拡張して checks にメッセージを足す。 境界は
     演算子で決める（ ``<=`` と ``>`` は日の終端、 それ以外は 0 時 ） 。
     解釈できなければ missing。
     """
@@ -815,7 +848,7 @@ def _format_datetime_value(
             [f"値の解釈不可 ({field_name}: 相対日付リテラルが未対応 {value!r}): missing"],
             [],
         )
-    # 日付だけの値なら UTC 境界に拡張して checks 追加
+    # 日付だけの値なら日本時間の境界に拡張して checks 追加
     # (``YYYY/MM/DD`` 表記も ``-`` に正規化してから時刻を付ける)
     if _looks_like_date(value):
         normalized, missing_msg = _normalize_date_literal(value)
@@ -826,12 +859,12 @@ def _format_datetime_value(
                 [],
             )
         if operator in ("lessOrEqual", "greaterThan"):
-            literal = f"{normalized}T23:59:59Z"
-            boundary = "UTC 終端"
+            literal = f"{normalized}T23:59:59{JST_UTC_OFFSET}"
+            boundary = "23:59:59"
         else:
-            literal = f"{normalized}T00:00:00Z"
-            boundary = "UTC 0 時"
-        return literal, [], [_datetime_utc_check(field_name, value, literal, boundary)]
+            literal = f"{normalized}T00:00:00{JST_UTC_OFFSET}"
+            boundary = "0 時"
+        return literal, [], [_datetime_jst_check(field_name, value, literal, boundary)]
     return (
         "",
         [f"値の解釈不可 ({field_name}: datetime として解釈できない {value!r}): missing"],
@@ -1010,9 +1043,9 @@ def _datetime_equality_part(
             [f"値の解釈不可 ({field_api}: datetime として解釈できない {value!r}): missing"],
             [],
         )
-    start = f"{normalized}T00:00:00Z"
-    end = f"{normalized}T23:59:59Z"
-    checks = [_datetime_utc_check(field_api, value, f"{start} 〜 {end}", "UTC 0 時と終端")]
+    start = f"{normalized}T00:00:00{JST_UTC_OFFSET}"
+    end = f"{normalized}T23:59:59{JST_UTC_OFFSET}"
+    checks = [_datetime_jst_check(field_api, value, f"{start} 〜 {end}", "0 時と 23:59:59")]
     if op == "equals":
         return f"( {field_api} >= {start} AND {field_api} <= {end} )", [], checks
     return f"( {field_api} < {start} OR {field_api} > {end} )", [], checks
@@ -1104,9 +1137,13 @@ def _format_like_expression(
         if len(parts) == 1:
             return parts[0], missing, checks
         return f"( {' OR '.join(parts)} )", missing, checks
-    # notContain は NOT (X LIKE '%v%') を AND で並べる
-    parts = [f"NOT ({field_api} LIKE '%{escaped}%')" for _value, escaped in pieces]
-    return f"( {' AND '.join(parts)} )", missing, checks
+    # notContain は (NOT X LIKE '%v%') にする。 NOT (X LIKE '%v%') の形は
+    # SOQL で通らない（ 括弧が NOT の外にあると解釈されない ）。
+    # 複数値は NOT LIKE を 1 つずつ括弧で囲んで AND でつなぐ
+    parts = [f"(NOT {field_api} LIKE '%{escaped}%')" for _value, escaped in pieces]
+    if len(parts) == 1:
+        return parts[0], missing, checks
+    return f"({' AND '.join(parts)})", missing, checks
 
 
 def _build_picklist_inclusion_condition(
@@ -1210,6 +1247,7 @@ def _build_where_clause(
     *,
     judgements: list[_CrossFilterJudgement],
     allow_cross_filter_conversion: bool = True,
+    subquery: ChildSubquery | None = None,
 ) -> tuple[list[str], list[str], list[str], bool, list[CrossFilterLink]]:
     """``reportFilters`` / ``standardDateFilter`` / ``standardFilters`` /
     ``crossFilters`` から WHERE 句を組み立てる。
@@ -1238,7 +1276,9 @@ def _build_where_clause(
     """
     missing: list[str] = []
     checks: list[str] = []
-    filter_conditions = _collect_report_filter_conditions(metadata, column_lookup, missing, checks)
+    filter_conditions = _collect_report_filter_conditions(
+        metadata, column_lookup, missing, checks, subquery
+    )
     date_lines = _collect_standard_date_lines(metadata, column_lookup, missing, checks)
     _collect_standard_filter_checks(metadata, checks)
     cross_filter_lines, links = _build_cross_filter_lines(
@@ -1267,6 +1307,7 @@ def _collect_report_filter_conditions(
     column_lookup: dict[str, dict[str, str]],
     missing: list[str],
     checks: list[str],
+    subquery: ChildSubquery | None = None,
 ) -> dict[int, str]:
     """``reportFilters`` を ``{1 始まりの番号: 条件式}`` に組み立てる。"""
     filter_conditions: dict[int, str] = {}
@@ -1279,11 +1320,18 @@ def _collect_report_filter_conditions(
         if not column_info or column_info["対応フィールドAPI名"] in ("", "(不明)"):
             missing.append(f"条件 {index}: {column} (省いたので件数が増える可能性)")
             continue
+        operator = entry.get("operator", "")
+        field_api = column_info["対応フィールドAPI名"]
+        if _child_field_path(field_api, subquery) is not None:
+            # 子の列の絞り込みは副問い合わせの外 （ WHERE ） に書けない
+            missing.append(
+                f"条件 {index}: {column} "
+                "(子の列の絞り込みは副問い合わせの外に書けないため省いた。件数が増える可能性)"
+            )
+            continue
         values = _extract_filter_values(column_info, index, entry, missing)
         if values is None:
             continue
-        operator = entry.get("operator", "")
-        field_api = column_info["対応フィールドAPI名"]
         field_type = column_info["型"]
         condition, extra_missing, extra_checks = _build_filter_condition(
             operator, values, field_api, field_type
@@ -1369,11 +1417,9 @@ def _custom_date_range_lines(
         if start_reason:
             missing.append(f"日付条件の startDate {start_reason}")
         elif field_type in _DATETIME_TYPES:
-            date_parts.append(f"{field_api} >= {normalized_start}T00:00:00Z")
-            checks.append(
-                "日時の条件をタイムゾーン無しの UTC 0 時で置き換えた: "
-                f"{field_api} >= {normalized_start}T00:00:00Z"
-            )
+            literal = f"{normalized_start}T00:00:00{JST_UTC_OFFSET}"
+            date_parts.append(f"{field_api} >= {literal}")
+            checks.append(_datetime_jst_check(field_api, start, literal, "0 時"))
         else:
             date_parts.append(f"{field_api} >= {normalized_start}")
     if end:
@@ -1381,11 +1427,9 @@ def _custom_date_range_lines(
         if end_reason:
             missing.append(f"日付条件の endDate {end_reason}")
         elif field_type in _DATETIME_TYPES:
-            date_parts.append(f"{field_api} <= {normalized_end}T23:59:59Z")
-            checks.append(
-                "日時の条件をタイムゾーン無しの UTC 終端で置き換えた: "
-                f"{field_api} <= {normalized_end}T23:59:59Z"
-            )
+            literal = f"{normalized_end}T23:59:59{JST_UTC_OFFSET}"
+            date_parts.append(f"{field_api} <= {literal}")
+            checks.append(_datetime_jst_check(field_api, end, literal, "23:59:59"))
         else:
             date_parts.append(f"{field_api} <= {normalized_end}")
     if not date_parts:
@@ -2179,6 +2223,7 @@ def _uppercase_bool_filter_keywords(
 def _build_order_by_clause(
     metadata: dict[str, Any],
     column_lookup: dict[str, dict[str, str]],
+    subquery: ChildSubquery | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """``sortBy`` / ``topRows`` から ORDER BY と LIMIT を組み立てる。
 
@@ -2199,6 +2244,14 @@ def _build_order_by_clause(
             missing.append(f"並び順 {index}: {sort_column} に対応が無い (省いた)")
             continue
         field_api = column_info["対応フィールドAPI名"]
+        if _child_field_path(field_api, subquery) is not None:
+            # 子の列の並び順は副問い合わせの外 （ ORDER BY ） に書けない。
+            # 行は変わらないので checks にする
+            checks.append(
+                f"並び順 {index}: {sort_column} "
+                "(子の列の並び順は副問い合わせの外に書けないため省いた)"
+            )
+            continue
         sort_order = sb.get("sortOrder", "").strip().upper()
         direction = "DESC" if sort_order == "DESC" else "ASC"
         order_parts.append(f"{field_api} {direction}")
@@ -2263,7 +2316,8 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
 
     missing: list[str] = []
     checks: list[str] = []
-    select_lines = _build_select_lines(metadata, column_lookup, missing)
+    subquery = record.child_subquery
+    select_lines, child_lines = _build_select_lines(metadata, column_lookup, missing, subquery)
     _collect_unresolved_metadata_missing(metadata, missing)
     # クロスフィルタの判定は、 SELECT 列入りの早期 return でも残したいので
     # 先に済ませておく
@@ -2274,7 +2328,7 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
         main_describe=main_describe,
         cross_filter_objects=cross_filter_objects,
     )
-    if not select_lines:
+    if not select_lines and not child_lines:
         return SoqlDraft(
             soql="",
             status=STATUS_NONE,
@@ -2289,26 +2343,43 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
         judgements=judgements,
         # FROM を子に切り替えたときは、 副問い合わせの左辺が変わるので変換しない
         allow_cross_filter_conversion=not record.soql_from_object,
+        subquery=subquery,
     )
     missing.extend(where_missing)
     checks.extend(where_checks)
+    checks.extend(record.child_subquery_checks)
     _collect_scope_check(metadata, checks)
     _collect_owner_polymorphic_checks(metadata, column_lookup, checks)
     _collect_auto_path_checks(metadata, column_lookup, checks)
     _collect_child_base_check(record, checks)
-    order_by_clause, order_missing, order_checks = _build_order_by_clause(metadata, column_lookup)
+    _collect_child_subquery_check(record, checks)
+    order_by_clause, order_missing, order_checks = _build_order_by_clause(
+        metadata, column_lookup, subquery
+    )
     missing.extend(order_missing)
     checks.extend(order_checks)
 
     # 取り方: 件数と副問い合わせの有無で決める
     row_size = decide_row_size(record.exceeds_row_limit, record.row_check)
-    use_bulk, bulk_blockers = _decide_use_bulk(has_subquery, row_size)
-    if has_subquery and row_size.over_2000 is not False:
-        # 2000 件超 か 分からないときは、 本番の件数が 5000 件を超えると
+    use_bulk, bulk_blockers = _decide_use_bulk(has_subquery, row_size, subquery)
+    if subquery is not None:
+        if row_size.over_2000 is not False:
+            # 2000 件超 か 分からないときは、 行数が 5000 件を超えると
+            # SOQL を分ける必要がある
+            checks.append(CHILD_SUBQUERY_ROWS_CHECK)
+    elif has_subquery and row_size.over_2000 is not False:
+        # 2000 件超 か 分分からないときは、 本番の件数が 5000 件を超えると
         # SOQL を分ける必要がある
         checks.append(SUBQUERY_ROWS_CHECK)
 
-    soql, count_soql = _assemble_soql_text(select_lines, where_lines, order_by_clause, from_object)
+    soql, count_soql = _assemble_soql_text(
+        select_lines,
+        where_lines,
+        order_by_clause,
+        from_object,
+        child_lines=child_lines,
+        subquery=subquery,
+    )
     status = _decide_status(missing, checks)
     soql, count_soql = _apply_incomplete_marker(soql, count_soql, status)
 
@@ -2320,7 +2391,7 @@ def build_soql(record: ReportRecord) -> SoqlDraft:
         count_soql=count_soql,
         limit=_extract_top_rows_limit(metadata),
         # 「似た SOQL」 の判定に使う部品。 SOQL の文字列を後からパースしない
-        select_items=tuple(select_lines),
+        select_items=(*select_lines, *child_lines),
         where_items=tuple(where_lines),
         order_by=order_by_clause,
         use_bulk=use_bulk,
@@ -2338,9 +2409,14 @@ def _record_main_describe(record: ReportRecord, main_object: str) -> dict[str, A
     return record.objects.get(main_object)
 
 
-def _decide_use_bulk(has_subquery: bool, row_size: RowSize) -> tuple[bool, list[str]]:
+def _decide_use_bulk(
+    has_subquery: bool,
+    row_size: RowSize,
+    subquery: ChildSubquery | None = None,
+) -> tuple[bool, list[str]]:
     """取り方 （ Bulk / 通常 SOQL ） と、 通常 SOQL にした理由を決める。
 
+    - 子の副問い合わせがあるときは、 件数に関係なく通常 SOQL
     - 副問い合わせ （ クロスフィルタ ） があるときは、 件数に関係なく通常 SOQL
     - 副問い合わせが無いときは、 件数が 1000 件以下なら通常 SOQL、 1000 件超
       （ 2000 件超 を含む） なら Bulk
@@ -2350,6 +2426,11 @@ def _decide_use_bulk(has_subquery: bool, row_size: RowSize) -> tuple[bool, list[
         ``(use_bulk, bulk_blockers)`` 。 ``bulk_blockers`` は 通常 SOQL に
         した理由 （ 1 件 1 要素） 。
     """
+    if subquery is not None:
+        blockers = [BULK_BLOCKER_CHILD_SUBQUERY]
+        if row_size.over_1000 is False:
+            blockers.append(_small_rows_reason(row_size))
+        return False, blockers
     if has_subquery:
         blockers = [BULK_BLOCKER_SUBQUERY]
         if row_size.over_1000 is False:
@@ -2369,9 +2450,15 @@ def _build_select_lines(
     metadata: dict[str, Any],
     column_lookup: dict[str, dict[str, str]],
     missing: list[str],
-) -> list[str]:
-    """SELECT 句の ``field_api`` リストを作る。 取得できなかった列は missing に積む。"""
+    subquery: ChildSubquery | None = None,
+) -> tuple[list[str], list[str]]:
+    """SELECT 句の ``field_api`` リストを作る。 取得できなかった列は missing に積む。
+
+    戻り値は ``(親の列, 子の列)`` 。 子の列は ``Contacts.LastName`` の形で、
+    1 つの副問い合わせにまとめる。
+    """
     select_lines: list[str] = []
+    child_lines: list[str] = []
     seen_fields: set[str] = set()
     for column_key in mapping.select_column_keys(metadata):
         column_info = column_lookup.get(column_key)
@@ -2391,8 +2478,27 @@ def _build_select_lines(
             # 重複は除く (同一フィールドが detail / groupings 両方に)
             continue
         seen_fields.add(field_api)
+        if _child_field_path(field_api, subquery) is not None:
+            child_lines.append(field_api)
+            continue
         select_lines.append(field_api)
-    return select_lines
+    return select_lines, child_lines
+
+
+def _child_field_path(field_api: str, subquery: ChildSubquery | None) -> str | None:
+    """``field_api`` が 子の副問い合わせで取る列なら、 子の項目のパスを返す。
+
+    子の副問い合わせでなければ ``None`` 。
+    """
+    if subquery is None:
+        return None
+    prefix = f"{subquery.relation_name}."
+    if not field_api.startswith(prefix):
+        return None
+    path = field_api[len(prefix) :]
+    if path not in subquery.fields:
+        return None
+    return path
 
 
 def _collect_unresolved_metadata_missing(
@@ -2508,6 +2614,21 @@ def _collect_child_base_check(record: ReportRecord, checks: list[str]) -> None:
     )
 
 
+def _collect_child_subquery_check(record: ReportRecord, checks: list[str]) -> None:
+    """子の副問い合わせにしたときの注意書きを checks に積む。"""
+    subquery = record.child_subquery
+    if subquery is None:
+        return
+    parent_object = record.main_object or ""
+    checks.append(
+        CHILD_SUBQUERY_CHECK.format(
+            parent=parent_object,
+            relation=subquery.relation_name,
+        )
+    )
+    checks.append(CHILD_SUBQUERY_COUNT_CHECK)
+
+
 def _used_column_keys(metadata: dict[str, Any]) -> list[str]:
     """SELECT・絞り込み・並び順で使う列キーを重複なしで集める。"""
     keys: list[str] = []
@@ -2532,11 +2653,19 @@ def _assemble_soql_text(
     where_lines: list[str],
     order_by_clause: str,
     main_object: str,
+    *,
+    child_lines: list[str] | None = None,
+    subquery: ChildSubquery | None = None,
 ) -> tuple[str, str]:
-    """組み立て済みの SELECT / WHERE / ORDER BY から、 本文用と件数用の SOQL を返す。"""
+    """組み立て済みの SELECT / WHERE / ORDER BY から、 本文用と件数用の SOQL を返す。
+
+    子の列は ``child_lines`` に ``Contacts.LastName`` の形で入chnet、 1 つの
+    副問い合わせにまとめて SELECT の後ろに置く。 件数用 （ ``COUNT()`` ） は
+    子の副問い合わせを含まない。
+    """
     # 条件のリストを直接整形する (文字列リテラル内の ' AND ' で改行を入れて値を変えない)
     where_block = "\n  AND\n  ".join(where_lines) if where_lines else ""
-    select_block = ",\n  ".join(select_lines)
+    select_block = ",\n  ".join(_select_items(select_lines, child_lines, subquery))
     soql_lines: list[str] = [f"SELECT {select_block}", f"FROM {main_object}"]
     if where_block:
         soql_lines.append(f"WHERE {where_block}")
@@ -2550,6 +2679,21 @@ def _assemble_soql_text(
         count_lines.append(f"WHERE {where_block}")
     count_soql = "\n".join(count_lines)
     return soql, count_soql
+
+
+def _select_items(
+    select_lines: list[str],
+    child_lines: list[str] | None,
+    subquery: ChildSubquery | None,
+) -> list[str]:
+    """SELECT 句に入れる項目。 子の列は 1 つの副問い合わせにまとめる。"""
+    items = list(select_lines)
+    if not child_lines or subquery is None:
+        return items
+    prefix = f"{subquery.relation_name}."
+    fields = [line[len(prefix) :] for line in child_lines]
+    items.append(f"(SELECT {', '.join(fields)} FROM {subquery.relation_name})")
+    return items
 
 
 def _decide_status(missing: list[str], checks: list[str]) -> str:

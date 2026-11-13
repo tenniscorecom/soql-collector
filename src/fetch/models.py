@@ -12,6 +12,7 @@ from dataclasses import field as dc_field
 from typing import Any
 
 from src import pii
+from src.mapping.child_subquery import ChildSubquery
 from src.master import MasterEntry
 
 
@@ -119,6 +120,11 @@ class ReportRecord:
     soql_from_object: str | None = None
     #: 子から取る形にしたときの、 子から親へ戻るリレーション名（例 ``Account`` ）。
     soql_from_relationship: str = ""
+    #: SOQL の SELECT に入れる、 子リレーションの副問い合わせ。
+    #: ``None`` のときは副問い合わせにしない（ 子から取る形、または 子の列が無い ）。
+    child_subquery: ChildSubquery | None = None
+    #: 子の副問い合わせにしたときの要確認。 SOQL の下書きの ``checks`` に入る
+    child_subquery_checks: tuple[str, ...] = ()
     #: 接続先の組織。 AI チャット用の項目定義を保存データから引くときに使う
     org: str = ""
     #: 元データの取得日時。 ``None`` のときは資料に出さない

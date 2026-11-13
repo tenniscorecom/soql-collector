@@ -897,6 +897,11 @@ def _build_fetch_method_section(record: ReportRecord) -> list[str]:
             f"- FROM は子オブジェクトの {record.soql_from_object} にした"
             f"（親 {record.main_object or ''}、経路 {record.soql_from_relationship or ''}）"
         )
+    if record.child_subquery is not None:
+        lines.append(
+            f"- 子の列は SELECT の副問い合わせで取る"
+            f"（子リレーション {record.child_subquery.relation_name}）"
+        )
     if draft.use_bulk:
         lines.append("- Bulk API 2.0 で取る（USE_BULK = True）")
         lines.append(
@@ -1074,6 +1079,12 @@ def _build_notes(record: ReportRecord, metadata: dict[str, Any]) -> list[str]:
     if metadata.get("reportFormat", "") in _AGGREGATE_FORMATS:
         notes.append("- 集計レポート")
         notes.append("- GROUP BY と集計関数を使うなら USE_BULK を False にする")
+
+    if record.child_subquery is not None:
+        notes.append(
+            f"- 子の列は SELECT の副問い合わせで取った"
+            f"（子リレーション {record.child_subquery.relation_name}、REST で取る）"
+        )
 
     return notes
 
