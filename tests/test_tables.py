@@ -282,18 +282,6 @@ def test_each_sheet_has_excel_table(tmp_path: Path) -> None:
         table_names.update(ws.tables.keys())
     workbook.close()
 
-    # comken が ``PY_T_`` プレフィックスを付けるので、 テーブルの有無を
-    # 末尾一致でも確認する
-    workbook = load_workbook(output / XLSX_NAME)
-    for ws in workbook.worksheets:
-        for name in ws.tables:
-            # name は comken の ``PY_T_<name>`` 形式
-            short = name
-            if short.startswith("PY_T_"):
-                short = short[len("PY_T_") :]
-            if short in (TABLE_OVERVIEW, TABLE_COLUMNS, TABLE_DIAGRAM):
-                table_names.add(short)
-    workbook.close()
     assert TABLE_OVERVIEW in table_names
     assert TABLE_COLUMNS in table_names
     assert TABLE_DIAGRAM in table_names

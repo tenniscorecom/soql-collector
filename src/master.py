@@ -3,8 +3,8 @@
 soql-collector が管理表で必要とする列は ``ID``・``概要``・``Salesforce URL``・
 ``有効`` の4つと、あれば ``調査`` と ``2000件超`` と ``集計形式`` と ``RPA使用``。
 ダウンローダーはもっと広い列を読む前提なので、ここでは最小の読み取りを直接書く。
-comken の ``Excel`` 経由で開くので、シートは ``PY_管理表`` を探す（comken の
-``Excel.data_sheet('管理表')`` が ``PY_`` プレフィックスを自動で補う）。
+comken の ``Excel`` 経由で開くので、シートは ``PY_管理表`` を探す（comken は
+``PY_`` プレフィックスを補わないので、接頭辞込みの実名をそのまま書く）。
 
 「有効」が ``×`` の行は ``filter_survey_targets`` で落とす。
 **``調査`` 列がある管理表では**、 さらに「調査」が ``○`` でない行
@@ -39,8 +39,8 @@ from comken.toolbox.excel import Excel
 
 logger = logging.getLogger(__name__)
 
-# 管理表のシート名（comken 規約で実ファイルは ``PY_管理表``）。
-SHEET_NAME = "管理表"
+# 管理表のシート名。 Excel 上の実名をそのまま書く（comken は接頭辞を補わない）。
+SHEET_NAME = "PY_管理表"
 
 # 読む列。
 COL_KEY = "ID"
